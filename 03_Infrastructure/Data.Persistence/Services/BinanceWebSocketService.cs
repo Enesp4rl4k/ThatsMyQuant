@@ -30,14 +30,14 @@ public class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDispos
 
         try
         {
-            // Build streams string: btcusdt@aggTrade/ethusdt@aggTrade/btcusdt@depth20@100ms
+            // Build combined streams string so we can recover the symbol for both trades and depth snapshots.
             var streamParams = string.Join("/", symbols.SelectMany(s => 
             {
                 var formatted = s.Replace("-", "").ToLowerInvariant();
                 return new[] { $"{formatted}@aggTrade", $"{formatted}@depth20@100ms" };
             }));
             
-            var uri = new Uri($"wss://stream.binance.com:9443/ws/{streamParams}");
+            var uri = new Uri($"wss://stream.binance.com:9443/stream?streams={streamParams}");
 
             _logger.LogInformation("Connecting to Binance WS: {Uri}", uri);
             await _webSocket.ConnectAsync(uri, _cts.Token);
@@ -92,14 +92,23 @@ public class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDispos
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
+            var payload = root;
+            string? streamName = null;
 
-            if (root.TryGetProperty("e", out var eventType) && eventType.GetString() == "aggTrade")
+            if (root.TryGetProperty("stream", out var streamElement) &&
+                root.TryGetProperty("data", out var dataElement))
             {
-                string symbol = root.GetProperty("s").GetString() ?? "";
-                string priceStr = root.GetProperty("p").GetString() ?? "0";
-                string qtyStr = root.GetProperty("q").GetString() ?? "0";
-                long ts = root.GetProperty("T").GetInt64();
-                bool isBuyerMaker = root.GetProperty("m").GetBoolean(); // true = seller initiated
+                streamName = streamElement.GetString();
+                payload = dataElement;
+            }
+
+            if (payload.TryGetProperty("e", out var eventType) && eventType.GetString() == "aggTrade")
+            {
+                string symbol = payload.GetProperty("s").GetString() ?? ExtractSymbolFromStream(streamName);
+                string priceStr = payload.GetProperty("p").GetString() ?? "0";
+                string qtyStr = payload.GetProperty("q").GetString() ?? "0";
+                long ts = payload.GetProperty("T").GetInt64();
+                bool isBuyerMaker = payload.GetProperty("m").GetBoolean(); // true = seller initiated
 
                 if (decimal.TryParse(priceStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal price) &&
                     decimal.TryParse(qtyStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal qty))
@@ -110,14 +119,9 @@ public class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDispos
                 }
             }
             // Handling depth20 stream which doesn't have an "e" field, but has "bids" and "asks"
-            else if (root.TryGetProperty("bids", out var bidsElement) && root.TryGetProperty("asks", out var asksElement))
+            else if (payload.TryGetProperty("bids", out var bidsElement) && payload.TryGetProperty("asks", out var asksElement))
             {
-                // The depth stream payload doesn't include the symbol or time implicitly in the fast root 
-                // but when connecting strictly to explicit streams we might need to parse or map it.
-                // Assuming we can extract symbol from a wrapped stream if we use combined stream format.
-                // If it's single stream, we mock symbol, if combined, we should parse 'stream' wrapping.
-                
-                string symbol = "UNKNOWN"; // We would extract this from stream name or subscribe differently, leaving placeholder
+                string symbol = ExtractSymbolFromStream(streamName);
                 
                 var bids = ParseLevels(bidsElement);
                 var asks = ParseLevels(asksElement);
@@ -130,6 +134,22 @@ public class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDispos
         {
             _logger.LogWarning(ex, "Failed to parse Binance WS message: {Json}", json);
         }
+    }
+
+    private static string ExtractSymbolFromStream(string? streamName)
+    {
+        if (string.IsNullOrWhiteSpace(streamName))
+        {
+            return "UNKNOWN";
+        }
+
+        var separatorIndex = streamName.IndexOf('@');
+        if (separatorIndex <= 0)
+        {
+            return streamName.ToUpperInvariant();
+        }
+
+        return streamName[..separatorIndex].ToUpperInvariant();
     }
 
     private OrderBookLevel[] ParseLevels(JsonElement element)

@@ -1,5 +1,6 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
 using ThatsMyQuant.Application.Commands;
 using ThatsMyQuant.Application.Resilience;
 using ThatsMyQuant.Application.Strategy;
@@ -15,17 +16,20 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
     private readonly IExchangeService _exchangeService;
     private readonly ITradeRepository _tradeRepository;
     private readonly HftExecutionService _hftExecutionService;
+    private readonly ExitPolicyLearningService? _exitPolicyLearningService;
 
     public ExecuteTradeHandler(
         ILogger<ExecuteTradeHandler> logger, 
         IExchangeService exchangeService,
         ITradeRepository tradeRepository,
-        HftExecutionService hftExecutionService)
+        HftExecutionService hftExecutionService,
+        ExitPolicyLearningService? exitPolicyLearningService = null)
     {
         _logger = logger;
         _exchangeService = exchangeService;
         _tradeRepository = tradeRepository;
         _hftExecutionService = hftExecutionService;
+        _exitPolicyLearningService = exitPolicyLearningService;
     }
 
     public async Task<Trade> Handle(ExecuteTradeCommand request, CancellationToken cancellationToken)
@@ -58,6 +62,15 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
             trade.Side = request.Signal.Side;
             trade.StrategyTag = request.Signal.StrategyTag;
             trade.RegimeTag = request.Signal.RegimeTag;
+            trade.ExitPolicyTag = request.Signal.Metadata.GetValueOrDefault("ExitPolicyTag", trade.ExitPolicyTag);
+            trade.EdgeBand = request.Signal.Metadata.GetValueOrDefault("EdgeBand", string.Empty);
+            trade.ExecutionMode = request.Signal.Metadata.GetValueOrDefault("ExecutionMode", "REAL");
+            trade.PromotionStage = request.Signal.Metadata.GetValueOrDefault("PromotionStage", "Backtest");
+            if (decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var edgeScore) ||
+                decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), out edgeScore))
+            {
+                trade.EdgeScore = edgeScore;
+            }
             if (trade.Status == default)
             {
                 trade.Status = TradeStatus.Executed;
@@ -85,6 +98,14 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
                 Status = TradeStatus.Failed,
                 StrategyTag = request.Signal.StrategyTag,
                 RegimeTag = request.Signal.RegimeTag,
+                ExitPolicyTag = request.Signal.Metadata.GetValueOrDefault("ExitPolicyTag", "TrendRunner"),
+                EdgeBand = request.Signal.Metadata.GetValueOrDefault("EdgeBand", string.Empty),
+                ExecutionMode = request.Signal.Metadata.GetValueOrDefault("ExecutionMode", "REAL"),
+                PromotionStage = request.Signal.Metadata.GetValueOrDefault("PromotionStage", "Backtest"),
+                EdgeScore = decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var failedEdgeScore) ||
+                            decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), out failedEdgeScore)
+                    ? failedEdgeScore
+                    : 0m,
                 EntrySlippagePercent = 0m,
                 EntryTime = DateTime.UtcNow
             };
@@ -92,6 +113,7 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
 
         // Persist trade result
         await _tradeRepository.AddAsync(trade);
+        _exitPolicyLearningService?.RecordLiveState(new[] { trade });
 
         _logger.LogInformation("Trade {Status}: {TradeId} @ {Price}",
             trade.Status, trade.Id, trade.EntryPrice);

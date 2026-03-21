@@ -17,11 +17,16 @@ public class QuantIndicatorService : ITechnicalAnalysisService
 {
     private readonly ILogger<QuantIndicatorService> _logger;
     private readonly IReadOnlyList<IStrategyRouter> _strategyRouters;
+    private readonly ExitPolicyLearningService? _exitPolicyLearningService;
     private const int MinimumCandles = 52;
 
-    public QuantIndicatorService(ILogger<QuantIndicatorService> logger, IEnumerable<IStrategyRouter>? strategyRouters = null)
+    public QuantIndicatorService(
+        ILogger<QuantIndicatorService> logger,
+        IEnumerable<IStrategyRouter>? strategyRouters = null,
+        ExitPolicyLearningService? exitPolicyLearningService = null)
     {
         _logger = logger;
+        _exitPolicyLearningService = exitPolicyLearningService;
         _strategyRouters = strategyRouters?.ToList()
             ?? new List<IStrategyRouter>
             {
@@ -204,9 +209,23 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             (decimal)atr,
             reasons));
 
-        _logger.LogInformation("Trade APPROVED via {Router}: {Reasoning}", router.StrategyTag, routedDecision.Reasoning);
+        var learnedDecision = _exitPolicyLearningService?.ApplyLearnedPolicy(signal, routedDecision, currentPrice, (decimal)atr)
+                             ?? routedDecision;
+        learnedDecision = _exitPolicyLearningService?.ApplyLiveSizingConfidence(signal, learnedDecision)
+                          ?? learnedDecision;
 
-        return routedDecision;
+        if (!string.Equals(learnedDecision.ExitPolicyTag, routedDecision.ExitPolicyTag, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogInformation(
+                "Exit learning override for {Symbol}: {FromPolicy} -> {ToPolicy}",
+                signal.Symbol,
+                routedDecision.ExitPolicyTag,
+                learnedDecision.ExitPolicyTag);
+        }
+
+        _logger.LogInformation("Trade APPROVED via {Router}: {Reasoning}", router.StrategyTag, learnedDecision.Reasoning);
+
+        return learnedDecision;
     }
 
     private static (bool Passed, string Reason) EvaluateTradeabilityGate(

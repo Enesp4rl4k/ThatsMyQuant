@@ -1,2 +1,0 @@
-obj\Release\net9.0\Protos/TradeEngine.cs \
-obj\Release\net9.0\Protos/TradeEngineGrpc.cs: Protos/TradeEngine.proto

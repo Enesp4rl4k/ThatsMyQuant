@@ -53,6 +53,9 @@ public record BacktestTradeResult
     public string Side { get; init; } = "";
     public string StrategyTag { get; init; } = "TrendConfluence";
     public string RegimeTag { get; init; } = "Unknown";
+    public string ExitPolicyTag { get; init; } = "TrendRunner";
+    public string ExecutionMode { get; init; } = "SIMULATED";
+    public string PromotionStage { get; init; } = "Backtest";
     public decimal EntryPrice { get; init; }
     public decimal ExitPrice { get; init; }
     public decimal PnL { get; init; }

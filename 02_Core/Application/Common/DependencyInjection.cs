@@ -11,10 +11,13 @@ public static class DependencyInjection
         services.AddSingleton<RiskAgent>();
         services.AddSingleton<StrategyExpectancyService>();
         services.AddSingleton<SymbolExpectancyService>();
+        services.AddSingleton<EdgeScoreService>();
         services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
         services.AddSingleton<StrategyPromotionService>();
+        services.AddSingleton<ExitPolicyLearningService>();
         services.AddSingleton<MarketExecutionProfileService>();
         services.AddSingleton<HftExecutionService>();
+        services.AddSingleton<IHftMarketDataService, HftMarketDataService>();
         services.AddSingleton<IHftSignalGenerationService, HftSignalGenerationService>();
         services.AddSingleton<SentimentAgent>();
         services.AddSingleton<SwarmOrchestrator>();

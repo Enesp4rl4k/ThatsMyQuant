@@ -1,2 +1,0 @@
-obj\Release\net9.0-windows/TradeEngine.cs \
-obj\Release\net9.0-windows/TradeEngineGrpc.cs: ../../01_Services/Gateway.Api/Protos/TradeEngine.proto

@@ -48,7 +48,34 @@ public class SymbolExpectancyServiceTests
         result.SizeMultiplier.Should().BeLessThan(1m);
     }
 
-    private static Trade CreateTrade(string symbol, decimal pnl) => new()
+    [Fact]
+    public void Evaluate_ShouldUseSessionBucketBeforeGlobalSymbolHistory()
+    {
+        var signal = new Signal
+        {
+            Symbol = "THYAO",
+            Timestamp = new DateTime(2026, 03, 21, 8, 30, 0, DateTimeKind.Utc)
+        };
+
+        var trades = new[]
+        {
+            CreateTrade("THYAO", -120m, new DateTime(2026, 03, 20, 8, 0, 0, DateTimeKind.Utc)),
+            CreateTrade("THYAO", -110m, new DateTime(2026, 03, 19, 8, 15, 0, DateTimeKind.Utc)),
+            CreateTrade("THYAO", -90m, new DateTime(2026, 03, 18, 8, 20, 0, DateTimeKind.Utc)),
+            CreateTrade("THYAO", -80m, new DateTime(2026, 03, 17, 8, 25, 0, DateTimeKind.Utc)),
+            CreateTrade("THYAO", 140m, new DateTime(2026, 03, 20, 2, 0, 0, DateTimeKind.Utc)),
+            CreateTrade("THYAO", 130m, new DateTime(2026, 03, 19, 2, 0, 0, DateTimeKind.Utc)),
+            CreateTrade("THYAO", 120m, new DateTime(2026, 03, 18, 2, 0, 0, DateTimeKind.Utc)),
+            CreateTrade("THYAO", 110m, new DateTime(2026, 03, 17, 2, 0, 0, DateTimeKind.Utc))
+        };
+
+        var result = _service.Evaluate(trades, signal);
+
+        result.Approved.Should().BeFalse();
+        result.Reason.Should().Contain("blocked");
+    }
+
+    private static Trade CreateTrade(string symbol, decimal pnl, DateTime? exitTime = null) => new()
     {
         Symbol = symbol,
         Side = TradeSide.Buy,
@@ -56,6 +83,6 @@ public class SymbolExpectancyServiceTests
         ExitPrice = 100m + pnl,
         Quantity = 1m,
         Status = TradeStatus.Executed,
-        ExitTime = DateTime.UtcNow.AddHours(-1)
+        ExitTime = exitTime ?? DateTime.UtcNow.AddHours(-1)
     };
 }

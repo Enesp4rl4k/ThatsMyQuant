@@ -55,6 +55,10 @@ public class QuantDbContext : DbContext
             entity.Property(t => t.EntryPrice).HasPrecision(18, 8);
             entity.Property(t => t.ExitPrice).HasPrecision(18, 8);
             entity.Property(t => t.Quantity).HasPrecision(18, 8);
+            entity.Property(t => t.EdgeScore).HasPrecision(18, 8);
+            entity.Property(t => t.EdgeBand).HasMaxLength(20);
+            entity.Property(t => t.ExecutionMode).HasMaxLength(20);
+            entity.Property(t => t.PromotionStage).HasMaxLength(20);
             entity.Property(t => t.EntrySlippagePercent).HasPrecision(18, 8);
             entity.Property(t => t.ExecutionLatencyMs);
             entity.Property(t => t.Side).HasConversion<string>().HasMaxLength(10);

@@ -21,6 +21,7 @@ public class ProcessSignalHandlerTests : IDisposable
     private readonly IMediator _mediator;
     private readonly IAiReasoningService _aiService;
     private readonly IMarketDataService _marketDataService;
+    private readonly IHftMarketDataService _hftMarketDataService;
     private readonly ISignalRepository _signalRepository;
     private readonly ITradeRepository _tradeRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
@@ -29,8 +30,10 @@ public class ProcessSignalHandlerTests : IDisposable
     private readonly StrategyExpectancyService _expectancyService;
     private readonly SymbolExpectancyService _symbolExpectancyService;
     private readonly StrategyPromotionService _promotionService;
+    private readonly EdgeScoreService _edgeScoreService;
     private readonly IConfiguration _configuration;
     private readonly ProcessSignalHandler _handler;
+    private static readonly DateTime TestSessionUtc = new(2026, 03, 21, 8, 30, 0, DateTimeKind.Utc);
 
     public ProcessSignalHandlerTests()
     {
@@ -41,6 +44,7 @@ public class ProcessSignalHandlerTests : IDisposable
         _mediator = Substitute.For<IMediator>();
         _aiService = Substitute.For<IAiReasoningService>();
         _marketDataService = Substitute.For<IMarketDataService>();
+        _hftMarketDataService = Substitute.For<IHftMarketDataService>();
         _signalRepository = Substitute.For<ISignalRepository>();
         _tradeRepository = Substitute.For<ITradeRepository>();
         _technicalAnalysis = Substitute.For<ITechnicalAnalysisService>();
@@ -49,6 +53,7 @@ public class ProcessSignalHandlerTests : IDisposable
         _expectancyService = new StrategyExpectancyService();
         _symbolExpectancyService = new SymbolExpectancyService();
         _promotionService = new StrategyPromotionService(new InMemoryStrategyPerformanceStore());
+        _edgeScoreService = new EdgeScoreService();
         _configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
@@ -59,7 +64,7 @@ public class ProcessSignalHandlerTests : IDisposable
 
         _handler = new ProcessSignalHandler(
             _logger, _mediator, _aiService, _marketDataService,
-            _signalRepository, _tradeRepository, _technicalAnalysis, _riskAgent, _expectancyService, _symbolExpectancyService, _promotionService, _configuration, _hftSignalGenerationService);
+            _signalRepository, _tradeRepository, _technicalAnalysis, _hftMarketDataService, _riskAgent, _expectancyService, _symbolExpectancyService, _promotionService, _edgeScoreService, _configuration, _hftSignalGenerationService);
     }
 
     public void Dispose()
@@ -74,7 +79,8 @@ public class ProcessSignalHandlerTests : IDisposable
         Symbol = "THYAO",
         Side = TradeSide.Buy,
         Price = 285.50m,
-        Source = "TradingView"
+        Source = "TradingView",
+        Timestamp = TestSessionUtc
     };
 
     private static List<Candle> CreateTestCandles() =>
@@ -105,9 +111,12 @@ public class ProcessSignalHandlerTests : IDisposable
                 Reasoning = "RSI + MACD + EMA confluence",
                 StopLoss = 280m,
                 TakeProfit = 295m,
-                PositionSizePercent = 0.03m
+                PositionSizePercent = 0.03m,
+                StrategyTag = "TrendConfluence",
+                RegimeTag = "Trending"
             });
         _aiService.ShouldExecuteAsync(Arg.Any<Signal>()).Returns(true);
+        SeedPromotionReady();
         _mediator.Send(Arg.Any<ExecuteTradeCommand>(), Arg.Any<CancellationToken>())
             .Returns(new Trade
             {
@@ -166,8 +175,11 @@ public class ProcessSignalHandlerTests : IDisposable
                 Reasoning = "Strong confluence",
                 StopLoss = 280m,
                 TakeProfit = 295m,
-                PositionSizePercent = 0.04m
+                PositionSizePercent = 0.04m,
+                StrategyTag = "TrendConfluence",
+                RegimeTag = "Trending"
             });
+        SeedPromotionReady();
         _aiService.ShouldExecuteAsync(Arg.Any<Signal>()).Returns(false);
         _aiService.GetReasoningAsync(Arg.Any<Signal>()).Returns("Negative news detected");
 
@@ -285,7 +297,7 @@ public class ProcessSignalHandlerTests : IDisposable
         signal.Metadata["ExecutionMode"] = "HFT";
         var candles = CreateTestCandles();
 
-        _marketDataService.GetCandlesAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>())
+        _hftMarketDataService.GetCandlesAsync(Arg.Any<Signal>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(candles);
         _hftSignalGenerationService.AnalyzeAsync(Arg.Any<Signal>(), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>())
             .Returns(new TradeDecision
@@ -300,6 +312,7 @@ public class ProcessSignalHandlerTests : IDisposable
                 StrategyTag = "HftMicroEdge",
                 RegimeTag = "Volatile"
             });
+        SeedPromotionReady("THYAO", "HftMicroEdge", "Volatile");
         _aiService.ShouldExecuteAsync(Arg.Any<Signal>()).Returns(true);
         _mediator.Send(Arg.Any<ExecuteTradeCommand>(), Arg.Any<CancellationToken>())
             .Returns(new Trade
@@ -317,6 +330,8 @@ public class ProcessSignalHandlerTests : IDisposable
         var result = await _handler.Handle(new ProcessSignalCommand(signal), CancellationToken.None);
 
         result.Should().BeTrue();
+        await _hftMarketDataService.Received(1)
+            .GetCandlesAsync(Arg.Any<Signal>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _hftSignalGenerationService.Received(1)
             .AnalyzeAsync(Arg.Any<Signal>(), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>());
         await _technicalAnalysis.DidNotReceive()
@@ -338,8 +353,8 @@ public class ProcessSignalHandlerTests : IDisposable
             Status = TradeStatus.Executed,
             StrategyTag = "TrendConfluence",
             RegimeTag = "Trending",
-            EntryTime = DateTime.UtcNow.AddHours(-5),
-            ExitTime = DateTime.UtcNow.AddHours(-1)
+            EntryTime = TestSessionUtc.AddHours(-1),
+            ExitTime = TestSessionUtc.AddMinutes(15)
         };
     }
 
@@ -357,5 +372,44 @@ public class ProcessSignalHandlerTests : IDisposable
         public StrategyPerformanceState Load() => _state;
 
         public void Save(StrategyPerformanceState state) => _state = state;
+    }
+
+    private void SeedPromotionReady(string symbol = "THYAO", string strategyTag = "TrendConfluence", string regimeTag = "Trending")
+    {
+        _promotionService.RecordBacktestState(new BacktestResult
+        {
+            Symbol = symbol,
+            Trades = Enumerable.Range(0, 8)
+                .Select(index => new BacktestTradeResult
+                {
+                    EntryTime = TestSessionUtc.AddMinutes(-(index + 1) * 30),
+                    ExitTime = TestSessionUtc.AddMinutes(index),
+                    Side = "Buy",
+                    StrategyTag = strategyTag,
+                    RegimeTag = regimeTag,
+                    ExecutionMode = "SIMULATED",
+                    PromotionStage = "Backtest",
+                    EntryPrice = 100m,
+                    ExitPrice = 108m,
+                    PnL = index < 6 ? 12m : -4m,
+                    PnLPercent = index < 6 ? 12m : -4m
+                })
+                .ToList()
+        });
+
+        _promotionService.RecordPaperState(Enumerable.Range(0, 8)
+            .Select(index => new PaperPosition
+            {
+                Symbol = symbol,
+                Side = "Buy",
+                EntryPrice = 100m,
+                CurrentPrice = 100m,
+                Quantity = 1m,
+                RealizedPnL = index < 6 ? 10m : -3m,
+                ExitTime = TestSessionUtc.AddMinutes(index),
+                StrategyTag = strategyTag,
+                RegimeTag = regimeTag
+            })
+            .ToList());
     }
 }

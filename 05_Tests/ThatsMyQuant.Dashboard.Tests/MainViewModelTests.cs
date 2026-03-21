@@ -299,6 +299,16 @@ public class MainViewModelTests
     }
 
     [Fact]
+    public void CreateViewModel_ShouldExposeConfigValidationState()
+    {
+        var viewModel = CreateViewModel();
+
+        viewModel.ConfigValidationStatus.Should().NotBeNullOrWhiteSpace();
+        viewModel.ConfigValidationSummary.Should().NotBeNullOrWhiteSpace();
+        viewModel.PortfolioExecutionModeLabel.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
     public async Task ReviewTradeCommand_ShouldPopulateCoachingFeedback()
     {
         var viewModel = CreateViewModel();
@@ -420,6 +430,96 @@ public class MainViewModelTests
         viewModel.CapitalAllocationRows.Should().NotBeEmpty();
         viewModel.CapitalAllocatorSummary.Should().Contain("Allocator");
         viewModel.CapitalAllocationRows.Sum(row => row.RecommendedCapital).Should().BeGreaterThan(0);
+        viewModel.CapitalAllocationRows.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.PromotionStage));
+        viewModel.CapitalAllocationRows.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.Symbol));
+        viewModel.CapitalAllocationRows.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.SessionTag));
+        viewModel.CapitalAllocatorSummary.Should().Contain("symbol-session ladder buckets");
+        viewModel.StrategyLeaderboardStatus.Should().Contain("Dominant ladder stage");
+    }
+
+    [Fact]
+    public async Task RefreshStrategyLeaderboardAsync_ShouldPopulateEdgeAnalytics()
+    {
+        var now = DateTime.UtcNow;
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", ExecutionMode = "PAPER", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 112m, Quantity = 1, EdgeScore = 86m, EdgeBand = "Full", ExitPolicyTag = "TrendRunner", EntrySlippagePercent = 0.04m, ExecutionLatencyMs = 90, ExitTime = now.AddHours(-3.4) },
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", ExecutionMode = "PAPER", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 110m, Quantity = 1, EdgeScore = 84m, EdgeBand = "Reduced", ExitPolicyTag = "TrendRunner", EntrySlippagePercent = 0.05m, ExecutionLatencyMs = 95, ExitTime = now.AddHours(-3.2) },
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", ExecutionMode = "REAL", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 103m, Quantity = 1, EdgeScore = 88m, EdgeBand = "Full", ExitPolicyTag = "TrendRunner", EntrySlippagePercent = 0.08m, ExecutionLatencyMs = 180, ExitTime = now.AddHours(-3) },
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", ExecutionMode = "REAL", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 96m, Quantity = 1, EdgeScore = 83m, EdgeBand = "Reduced", ExitPolicyTag = "TrendRunner", EntrySlippagePercent = 0.07m, ExecutionLatencyMs = 160, ExitTime = now.AddHours(-2.5) },
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 95m, Quantity = 1, EdgeScore = 61m, EdgeBand = "Probe", ExitPolicyTag = "BreakoutFailure", EntrySlippagePercent = 0.42m, ExecutionLatencyMs = 1350, ExitTime = now.AddHours(-2) },
+            new Trade { Symbol = "BTCUSDT", StrategyTag = "BreakoutHunter", RegimeTag = "Volatile", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 116m, Quantity = 1, EdgeScore = 74m, EdgeBand = "Reduced", ExitPolicyTag = "BreakoutExpansion", EntrySlippagePercent = 0.05m, ExecutionLatencyMs = 120, ExitTime = now.AddHours(-1) },
+            new Trade { Symbol = "ETHUSDT", StrategyTag = "HftMicroEdge", RegimeTag = "Volatile", Status = TradeStatus.Failed, Side = TradeSide.Sell, EntryPrice = 100m, Quantity = 1, EntryTime = now.AddMinutes(-40) }
+        });
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository);
+
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.EdgeScoreBands.Should().NotBeEmpty();
+        viewModel.EdgeScoreBands.Any(row => row.Band == "Full").Should().BeTrue();
+        viewModel.EdgeScoreBands.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.ExecutionMode));
+        viewModel.EdgeScoreBands.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.PromotionStage));
+        viewModel.EdgeFailureConditions.Should().NotBeEmpty();
+        viewModel.EdgeFailureConditions.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.ExecutionModeScope));
+        viewModel.EdgeFailureConditions.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.PromotionStageScope));
+        viewModel.EdgeOpportunities.Should().NotBeEmpty();
+        viewModel.EdgeOpportunities.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.ExecutionMode));
+        viewModel.EdgeOpportunities.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.PromotionStage));
+        viewModel.ExitPolicyWinners.Should().NotBeEmpty();
+        viewModel.ExitPolicyWinners.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.ExitPolicyTag));
+        viewModel.ExitPolicyWinners.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.Symbol));
+        viewModel.ExitPolicyWinners.Should().OnlyContain(row => !string.IsNullOrWhiteSpace(row.SessionTag));
+        viewModel.ExitPolicyDriftRows.Should().NotBeEmpty();
+        viewModel.ExitPolicyDriftRows.Should().OnlyContain(row => row.PaperTrades >= 2);
+        viewModel.ExitPolicyDriftRows.Should().OnlyContain(row => row.LiveTrades >= 2);
+        viewModel.EdgeAnalyticsStatus.Should().Contain("Opportunity zones");
+        viewModel.BestEdgeZoneSummary.Should().NotBeNullOrWhiteSpace();
+        viewModel.WorstEdgeFailureSummary.Should().NotBeNullOrWhiteSpace();
+        viewModel.ExitPolicyAnalyticsSummary.Should().NotBeNullOrWhiteSpace();
+        viewModel.ExitPolicyDriftSummary.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task RefreshStrategyLeaderboardAsync_ShouldDisableStrategyWhenHighEdgeBandsStillLose()
+    {
+        var now = DateTime.UtcNow;
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 96m, Quantity = 1, EdgeScore = 88m, EdgeBand = "Full", ExitTime = now.AddHours(-4) },
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 97m, Quantity = 1, EdgeScore = 82m, EdgeBand = "Reduced", ExitTime = now.AddHours(-3) },
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 98m, Quantity = 1, EdgeScore = 79m, EdgeBand = "Reduced", ExitTime = now.AddHours(-2) }
+        });
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository);
+
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.DisabledStrategies.Should().Contain(strategy => strategy.Equals("TrendConfluence", StringComparison.OrdinalIgnoreCase));
+        viewModel.DisabledStrategiesSummary.Should().Contain("Edge-band");
+    }
+
+    [Fact]
+    public async Task RefreshStrategyLeaderboardAsync_ShouldExposePortfolioPromotionStageSummary()
+    {
+        var now = DateTime.UtcNow;
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 108m, Quantity = 1, ExecutionMode = "REAL", PromotionStage = "ScaledLive", ExitTime = now.AddHours(-4) },
+            new Trade { Symbol = "THYAO", StrategyTag = "TrendConfluence", RegimeTag = "Trending", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 106m, Quantity = 1, ExecutionMode = "REAL", PromotionStage = "ScaledLive", ExitTime = now.AddHours(-2) },
+            new Trade { Symbol = "BTC-USD", StrategyTag = "BreakoutHunter", RegimeTag = "Volatile", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 102m, Quantity = 1, ExecutionMode = "PAPER", PromotionStage = "Paper", ExitTime = now.AddHours(-1) }
+        });
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository);
+
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.PortfolioPromotionStageLabel.Should().Be("ScaledLive");
+        viewModel.PortfolioRangeSummary.Should().Contain("Stage ScaledLive");
+        viewModel.PortfolioGrowthSubtext.Should().Contain("Dominant stage");
     }
 
     private static MainViewModel CreateViewModel(

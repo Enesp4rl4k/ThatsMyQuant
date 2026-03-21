@@ -15,15 +15,21 @@ public class BacktestEngine
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly ILogger<BacktestEngine> _logger;
     private readonly MarketExecutionProfileService _executionProfiles;
+    private readonly StrategyPromotionService? _promotionService;
+    private readonly ExitPolicyLearningService? _exitPolicyLearningService;
 
     public BacktestEngine(
         ITechnicalAnalysisService technicalAnalysis,
         ILogger<BacktestEngine> logger,
-        MarketExecutionProfileService? executionProfiles = null)
+        MarketExecutionProfileService? executionProfiles = null,
+        StrategyPromotionService? promotionService = null,
+        ExitPolicyLearningService? exitPolicyLearningService = null)
     {
         _technicalAnalysis = technicalAnalysis;
         _logger = logger;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
+        _promotionService = promotionService;
+        _exitPolicyLearningService = exitPolicyLearningService;
     }
 
     public async Task<BacktestResult> RunAsync(
@@ -76,6 +82,7 @@ public class BacktestEngine
                 openPosition.BarsHeld++;
                 openPosition.CurrentPrice = candle.Close;
                 ApplyBreakevenProtection(openPosition, candle);
+                var previousCandle = i > 0 ? historicalCandles[i - 1] : candle;
 
                 if (!openPosition.HasTakenPartialProfit && openPosition.PartialTakeProfit > 0)
                 {
@@ -123,6 +130,9 @@ public class BacktestEngine
                                     Side = openPosition.Side,
                                     StrategyTag = openPosition.StrategyTag,
                                     RegimeTag = openPosition.RegimeTag,
+                                    ExitPolicyTag = openPosition.ExitPolicyTag,
+                                    ExecutionMode = openPosition.ExecutionMode,
+                                    PromotionStage = openPosition.PromotionStage,
                                     EntryPrice = openPosition.EntryPrice,
                                     ExitPrice = openPosition.PartialTakeProfit,
                                     PnL = partialPnl,
@@ -184,6 +194,15 @@ public class BacktestEngine
                     { exitReason = "TakeProfit"; exitPrice = openPosition.TakeProfit; }
                 }
 
+                if (exitReason == null)
+                {
+                    exitReason = TryGetStrategyPolicyExit(openPosition, candle, previousCandle);
+                    if (exitReason != null)
+                    {
+                        exitPrice = candle.Close;
+                    }
+                }
+
                 if (exitReason == null && openPosition.MaxHoldingBars > 0 && openPosition.BarsHeld >= openPosition.MaxHoldingBars)
                 {
                     exitReason = $"TimeStop({openPosition.ExitPolicyTag})";
@@ -219,6 +238,9 @@ public class BacktestEngine
                         Side = openPosition.Side,
                         StrategyTag = openPosition.StrategyTag,
                         RegimeTag = openPosition.RegimeTag,
+                        ExitPolicyTag = openPosition.ExitPolicyTag,
+                        ExecutionMode = openPosition.ExecutionMode,
+                        PromotionStage = openPosition.PromotionStage,
                         EntryPrice = openPosition.EntryPrice,
                         ExitPrice = exitPrice,
                         PnL = netPnL,
@@ -306,6 +328,8 @@ public class BacktestEngine
                         MaxHoldingBars = decision.MaxHoldingBars,
                         StrategyTag = decision.StrategyTag,
                         RegimeTag = decision.RegimeTag,
+                        ExecutionMode = "SIMULATED",
+                        PromotionStage = "Backtest",
                         TrailingStopPrice = 0,
                         HighestPriceSinceEntry = candle.Close,
                         EntryTime = candle.Timestamp
@@ -340,6 +364,8 @@ public class BacktestEngine
             {
                 EntryTime = openPosition.EntryTime, ExitTime = lastCandle.Timestamp,
                 Side = openPosition.Side, StrategyTag = openPosition.StrategyTag, RegimeTag = openPosition.RegimeTag,
+                ExitPolicyTag = openPosition.ExitPolicyTag,
+                ExecutionMode = openPosition.ExecutionMode, PromotionStage = openPosition.PromotionStage,
                 EntryPrice = openPosition.EntryPrice,
                 ExitPrice = lastCandle.Close, PnL = netPnL, ExitReason = openPosition.HasTakenPartialProfit ? "PartialTakeProfit -> EndOfData" : "EndOfData"
             });
@@ -378,6 +404,8 @@ public class BacktestEngine
             "Backtest Complete: {Trades} trades | WinRate={WR:F1}% | PnL=₺{PnL:N0} | Sharpe={S:F2} | MaxDD={DD:F1}%",
             result.TotalTrades, result.WinRate, result.TotalPnL, result.SharpeRatio, result.MaxDrawdownPercent);
 
+        _promotionService?.RecordBacktestState(result);
+        _exitPolicyLearningService?.RecordBacktestState(result);
         return result;
     }
 
@@ -450,6 +478,28 @@ public class BacktestEngine
                 ? position.EntryPrice - breakevenBuffer
                 : Math.Min(position.StopLoss, position.EntryPrice - breakevenBuffer);
         }
+    }
+
+    private static string? TryGetStrategyPolicyExit(PaperPosition position, Candle candle, Candle previousCandle)
+    {
+        var bearishBar = candle.Close < candle.Open && candle.Close < previousCandle.Close;
+        var bullishBar = candle.Close > candle.Open && candle.Close > previousCandle.Close;
+
+        return position.ExitPolicyTag switch
+        {
+            "TrendRunner" when position.IsBreakevenArmed &&
+                               position.BarsHeld >= Math.Max(6, position.MaxHoldingBars / 2) &&
+                               ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
+                => "TrendMomentumFade",
+            "MeanReversion" when position.BarsHeld >= 4 && !position.IsBreakevenArmed
+                => "MeanReversionTimeout",
+            "BreakoutExpansion" when position.BarsHeld >= 3 && position.IsBreakevenArmed &&
+                                      ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
+                => "BreakoutFailure",
+            "HftScalp" when position.BarsHeld >= 2
+                => "HftMicroExit",
+            _ => null
+        };
     }
 
     private static bool IsPreferredTradeWindow(string market, DateTime timestamp)

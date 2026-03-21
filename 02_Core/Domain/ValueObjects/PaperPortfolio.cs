@@ -50,6 +50,8 @@ public class PaperPosition
     public int MaxHoldingBars { get; set; }
     public string StrategyTag { get; set; } = "TrendConfluence";
     public string RegimeTag { get; set; } = "Unknown";
+    public string ExecutionMode { get; set; } = "PAPER";
+    public string PromotionStage { get; set; } = "Paper";
     public decimal TrailingStopPrice { get; set; }
     public decimal HighestPriceSinceEntry { get; set; }
     public DateTime EntryTime { get; set; } = DateTime.UtcNow;

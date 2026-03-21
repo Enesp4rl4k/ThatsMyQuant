@@ -97,6 +97,73 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistEdgeScoreMetadata()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["EdgeScore"] = "82.50";
+        signal.Metadata["EdgeBand"] = "Reduced";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.EdgeScore.Should().Be(82.50m);
+        result.EdgeBand.Should().Be("Reduced");
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.EdgeScore == 82.50m &&
+            trade.EdgeBand == "Reduced"));
+    }
+
+    [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistExitPolicyTag()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["ExitPolicyTag"] = "MeanReversion";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.ExitPolicyTag.Should().Be("MeanReversion");
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.ExitPolicyTag == "MeanReversion"));
+    }
+
+    [Fact]
     public async Task Handle_HftSignalWithWeakLiquidity_ShouldReturnFailedTrade()
     {
         var signal = new Signal

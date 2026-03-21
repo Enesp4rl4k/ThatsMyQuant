@@ -7,12 +7,7 @@ public sealed class SymbolExpectancyService
 {
     public SymbolGuardResult Evaluate(IReadOnlyList<Trade> recentTrades, Signal signal)
     {
-        var symbolTrades = recentTrades
-            .Where(trade => trade.IsClosed &&
-                            string.Equals(trade.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(trade => trade.ExitTime)
-            .Take(20)
-            .ToList();
+        var symbolTrades = FindBestSymbolBucket(recentTrades, signal);
 
         if (symbolTrades.Count < 4)
         {
@@ -50,6 +45,42 @@ public sealed class SymbolExpectancyService
 
     private static decimal GetPnl(Trade trade)
         => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == TradeSide.Sell ? -1 : 1);
+
+    private static List<Trade> FindBestSymbolBucket(IReadOnlyList<Trade> recentTrades, Signal signal)
+    {
+        var sessionTag = ResolveSessionBucket(signal.Timestamp);
+        var closedTrades = recentTrades
+            .Where(trade => trade.IsClosed &&
+                            string.Equals(trade.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(trade => trade.ExitTime)
+            .ToList();
+        var sessionTrades = closedTrades
+            .Where(trade => string.Equals(ResolveSessionBucket(trade.ExitTime ?? trade.EntryTime), sessionTag, StringComparison.OrdinalIgnoreCase))
+            .Take(20)
+            .ToList();
+
+        if (sessionTrades.Count >= 4)
+        {
+            return sessionTrades;
+        }
+
+        return closedTrades.Take(20).ToList();
+    }
+
+    private static string ResolveSessionBucket(DateTime timestamp)
+    {
+        var turkeyTime = timestamp.Kind == DateTimeKind.Utc
+            ? TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp, "Turkey Standard Time")
+            : TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp.ToUniversalTime(), "Turkey Standard Time");
+
+        return turkeyTime.Hour switch
+        {
+            >= 10 and < 13 => "London Killzone",
+            >= 15 and < 18 => "NY Killzone",
+            >= 3 and < 10 => "Asia",
+            _ => "Close / Dead Zone"
+        };
+    }
 }
 
 public readonly record struct SymbolGuardResult(bool Approved, decimal SizeMultiplier, string Reason);

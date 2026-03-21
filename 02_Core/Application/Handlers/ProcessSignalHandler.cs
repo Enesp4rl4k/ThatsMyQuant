@@ -20,11 +20,14 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     private readonly ISignalRepository _signalRepository;
     private readonly ITradeRepository _tradeRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
+    private readonly IHftMarketDataService _hftMarketDataService;
     private readonly RiskAgent _riskAgent;
     private readonly StrategyExpectancyService _expectancyService;
     private readonly SymbolExpectancyService _symbolExpectancyService;
     private readonly StrategyPromotionService _promotionService;
+    private readonly EdgeScoreService _edgeScoreService;
     private readonly IHftSignalGenerationService _hftSignalGenerationService;
+    private readonly ExitPolicyLearningService? _exitPolicyLearningService;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
@@ -35,12 +38,15 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         ISignalRepository signalRepository,
         ITradeRepository tradeRepository,
         ITechnicalAnalysisService technicalAnalysis,
+        IHftMarketDataService? hftMarketDataService,
         RiskAgent riskAgent,
         StrategyExpectancyService expectancyService,
         SymbolExpectancyService symbolExpectancyService,
         StrategyPromotionService promotionService,
+        EdgeScoreService? edgeScoreService,
         IConfiguration configuration,
-        IHftSignalGenerationService? hftSignalGenerationService = null)
+        IHftSignalGenerationService? hftSignalGenerationService = null,
+        ExitPolicyLearningService? exitPolicyLearningService = null)
     {
         _logger = logger;
         _mediator = mediator;
@@ -49,11 +55,14 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         _signalRepository = signalRepository;
         _tradeRepository = tradeRepository;
         _technicalAnalysis = technicalAnalysis;
+        _hftMarketDataService = hftMarketDataService ?? new HftMarketDataService(marketDataService);
         _riskAgent = riskAgent;
         _expectancyService = expectancyService;
         _symbolExpectancyService = symbolExpectancyService;
         _promotionService = promotionService;
+        _edgeScoreService = edgeScoreService ?? new EdgeScoreService();
         _hftSignalGenerationService = hftSignalGenerationService ?? new HftSignalGenerationService(technicalAnalysis);
+        _exitPolicyLearningService = exitPolicyLearningService;
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
     }
@@ -86,7 +95,12 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         // STEP 1: Fetch Candle Data for Indicator Computation
         // ═══════════════════════════════════════════════════════
         var candles = await pipeline.ExecuteAsync(async ct =>
-            await _marketDataService.GetCandlesAsync(request.Signal.Symbol, 100, market), cancellationToken);
+            IsHftSignal(request.Signal)
+                ? await _hftMarketDataService.GetCandlesAsync(request.Signal, market, ct)
+                : await _marketDataService.GetCandlesAsync(request.Signal.Symbol, 100, market), cancellationToken);
+
+        var recentTrades = await _tradeRepository.GetAllAsync(500);
+        _exitPolicyLearningService?.RecordLiveState(recentTrades);
 
         // ═══════════════════════════════════════════════════════
         // STEP 1.5: Detect Market Regime — Adapt Risk Parameters
@@ -134,6 +148,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         request.Signal.Reasoning = decision.Reasoning;
         request.Signal.StrategyTag = decision.StrategyTag;
         request.Signal.RegimeTag = decision.RegimeTag;
+        request.Signal.Metadata["ExitPolicyTag"] = decision.ExitPolicyTag;
 
         // ═══════════════════════════════════════════════════════
         // STEP 3: Decision Gate — Execute or Reject
@@ -151,7 +166,6 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         request.Signal.Side = decision.Side;
 
         // Portfolio-wide risk guardrails (drawdown kill-switch / open-trade cap).
-        var recentTrades = await _tradeRepository.GetAllAsync(500);
         var expectancyGuard = _expectancyService.Evaluate(recentTrades, request.Signal, decision);
         if (!expectancyGuard.Approved)
         {
@@ -187,6 +201,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         }
 
         var promotionGuard = _promotionService.Evaluate(request.Signal, decision, recentTrades);
+        request.Signal.Metadata["PromotionStage"] = promotionGuard.PromotionStage;
+        request.Signal.Metadata["ExecutionMode"] = "REAL";
         if (!promotionGuard.Approved)
         {
             request.Signal.Status = TradeStatus.Rejected;
@@ -228,6 +244,39 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             return false;
         }
         decision = decision with { PositionSizePercent = riskVote.SafePositionSizePercent };
+
+        var edgeScore = _edgeScoreService.Evaluate(
+            request.Signal,
+            decision,
+            expectancyGuard,
+            symbolGuard,
+            promotionGuard,
+            portfolioGuard,
+            riskVote);
+
+        request.Signal.Metadata["EdgeScore"] = decimal.Round(edgeScore.AdjustedEdgeScore, 2).ToString("F2");
+        request.Signal.Metadata["EdgeBand"] = edgeScore.DecisionBand;
+        request.Signal.Reasoning += $" | Edge Score: {edgeScore.AdjustedEdgeScore:F1}/100 [{edgeScore.DecisionBand}]";
+
+        if (!edgeScore.Approved)
+        {
+            request.Signal.Status = TradeStatus.Rejected;
+            await _signalRepository.UpdateAsync(request.Signal);
+            _logger.LogWarning(
+                "❌ EDGE SCORE BLOCK: Adjusted={Adjusted:F1} Execution={Execution:F1} Risk={Risk:F1}",
+                edgeScore.AdjustedEdgeScore,
+                edgeScore.ExecutionEdge,
+                edgeScore.RiskContext);
+            return false;
+        }
+
+        if (edgeScore.RecommendedSizeMultiplier < 1.0m)
+        {
+            decision = decision with
+            {
+                PositionSizePercent = Math.Max(0m, decision.PositionSizePercent * edgeScore.RecommendedSizeMultiplier)
+            };
+        }
 
         _logger.LogInformation("✅ APPROVED: Confidence={Confidence}/100 | SL={SL:F2} | TP={TP:F2} | Size={Size:P1}",
             decision.Confidence, decision.StopLoss, decision.TakeProfit, decision.PositionSizePercent);

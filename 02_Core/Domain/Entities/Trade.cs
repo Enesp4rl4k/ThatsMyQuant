@@ -14,6 +14,11 @@ public class Trade
     public TradeStatus Status { get; set; } = TradeStatus.Pending;
     public string StrategyTag { get; set; } = "TrendConfluence";
     public string RegimeTag { get; set; } = "Unknown";
+    public string ExitPolicyTag { get; set; } = "TrendRunner";
+    public decimal EdgeScore { get; set; }
+    public string EdgeBand { get; set; } = string.Empty;
+    public string ExecutionMode { get; set; } = "REAL";
+    public string PromotionStage { get; set; } = "Backtest";
     public decimal EntrySlippagePercent { get; set; }
     public long ExecutionLatencyMs { get; set; }
     public DateTime EntryTime { get; set; }

@@ -26,6 +26,8 @@ public sealed class HftExecutionService
     {
         var market = ResolveMarket(signal.Symbol);
         var profile = _executionProfiles.ResolveForSymbol(signal.Symbol, signal.Metadata);
+        var projectedLatencyMs = EstimateProjectedLatencyMs(signal, profile);
+        var projectedSlippagePercent = EstimateProjectedSlippagePercent(signal, profile);
         var sessionAllowed = IsPreferredHftWindow(market, signal.Timestamp);
         if (!sessionAllowed)
         {
@@ -40,6 +42,8 @@ public sealed class HftExecutionService
                 Status = TradeStatus.Failed,
                 StrategyTag = signal.StrategyTag,
                 RegimeTag = signal.RegimeTag,
+                ExecutionMode = "REAL",
+                PromotionStage = signal.Metadata.GetValueOrDefault("PromotionStage", "LiveProbe"),
                 EntryTime = DateTime.UtcNow
             };
         }
@@ -62,6 +66,54 @@ public sealed class HftExecutionService
                 Status = TradeStatus.Failed,
                 StrategyTag = signal.StrategyTag,
                 RegimeTag = signal.RegimeTag,
+                ExecutionMode = "REAL",
+                PromotionStage = signal.Metadata.GetValueOrDefault("PromotionStage", "LiveProbe"),
+                EntryTime = DateTime.UtcNow
+            };
+        }
+
+        if (projectedLatencyMs > profile.PreferredMaxLatencyMs * 1.35)
+        {
+            _logger.LogWarning(
+                "HFT execution blocked for {Symbol}: projected latency {ProjectedLatency:F0}ms exceeds venue budget {LatencyBudget}ms.",
+                signal.Symbol,
+                projectedLatencyMs,
+                profile.PreferredMaxLatencyMs);
+            return new Trade
+            {
+                SignalId = signal.Id,
+                Symbol = signal.Symbol,
+                Side = signal.Side,
+                EntryPrice = signal.Price,
+                Quantity = 0,
+                Status = TradeStatus.Failed,
+                StrategyTag = signal.StrategyTag,
+                RegimeTag = signal.RegimeTag,
+                ExecutionMode = "REAL",
+                PromotionStage = signal.Metadata.GetValueOrDefault("PromotionStage", "LiveProbe"),
+                EntryTime = DateTime.UtcNow
+            };
+        }
+
+        if (projectedSlippagePercent > profile.SlippagePercent * 1.75m)
+        {
+            _logger.LogWarning(
+                "HFT execution blocked for {Symbol}: projected slippage {ProjectedSlippage:F4}% exceeds guardrail {SlippageBudget:F4}%.",
+                signal.Symbol,
+                projectedSlippagePercent,
+                profile.SlippagePercent * 1.75m);
+            return new Trade
+            {
+                SignalId = signal.Id,
+                Symbol = signal.Symbol,
+                Side = signal.Side,
+                EntryPrice = signal.Price,
+                Quantity = 0,
+                Status = TradeStatus.Failed,
+                StrategyTag = signal.StrategyTag,
+                RegimeTag = signal.RegimeTag,
+                ExecutionMode = "REAL",
+                PromotionStage = signal.Metadata.GetValueOrDefault("PromotionStage", "LiveProbe"),
                 EntryTime = DateTime.UtcNow
             };
         }
@@ -70,6 +122,8 @@ public sealed class HftExecutionService
         var trade = await _exchangeService.ExecuteOrderAsync(signal);
         stopwatch.Stop();
 
+        trade.ExecutionMode = "REAL";
+        trade.PromotionStage = signal.Metadata.GetValueOrDefault("PromotionStage", "LiveProbe");
         trade.ExecutionLatencyMs = stopwatch.ElapsedMilliseconds;
         trade.EntrySlippagePercent = signal.Price > 0
             ? Math.Abs((trade.EntryPrice - signal.Price) / signal.Price) * 100m
@@ -104,5 +158,26 @@ public sealed class HftExecutionService
             : TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp.ToUniversalTime(), "Turkey Standard Time");
 
         return turkeyTime.Hour is >= 10 and < 13 or >= 15 and < 18;
+    }
+
+    private static double EstimateProjectedLatencyMs(Signal signal, MarketExecutionProfile profile)
+    {
+        var confidencePenalty = Math.Max(0, 80 - signal.Confidence) * 0.8;
+        var volumeRatio = signal.Volume24h <= 0 || profile.MinHftVolume24h <= 0
+            ? 1m
+            : signal.Volume24h / profile.MinHftVolume24h;
+        var liquidityPenalty = volumeRatio >= 2m ? 0 : (double)((2m - volumeRatio) * 35m);
+        return profile.PreferredMaxLatencyMs + confidencePenalty + liquidityPenalty;
+    }
+
+    private static decimal EstimateProjectedSlippagePercent(Signal signal, MarketExecutionProfile profile)
+    {
+        var volumeRatio = signal.Volume24h <= 0 || profile.MinHftVolume24h <= 0
+            ? 1m
+            : signal.Volume24h / profile.MinHftVolume24h;
+        var multiplier = volumeRatio >= 2m ? 0.85m :
+            volumeRatio >= 1.25m ? 1.00m :
+            volumeRatio >= 1m ? 1.35m : 1.80m;
+        return profile.SlippagePercent * multiplier;
     }
 }

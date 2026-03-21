@@ -1,7 +1,0 @@
-{
-  "Listener.Api, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\01_Services\\Listener.Api",
-  "ThatsMyQuant.AI.DeepSeek, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\AI.DeepSeek",
-  "ThatsMyQuant.Application, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application",
-  "ThatsMyQuant.Domain, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain",
-  "ThatsMyQuant.Infrastructure, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null": "C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\Data.Persistence"
-}

@@ -16,6 +16,7 @@ public class PaperTradingService
     private readonly IMarketDataService _marketData;
     private readonly ILogger<PaperTradingService> _logger;
     private readonly StrategyPromotionService? _promotionService;
+    private readonly ExitPolicyLearningService? _exitPolicyLearningService;
     private readonly MarketExecutionProfileService _executionProfiles;
     public PaperPortfolio Portfolio { get; } = new();
 
@@ -24,12 +25,14 @@ public class PaperTradingService
         IMarketDataService marketData,
         ILogger<PaperTradingService> logger,
         StrategyPromotionService? promotionService = null,
+        ExitPolicyLearningService? exitPolicyLearningService = null,
         MarketExecutionProfileService? executionProfiles = null)
     {
         _analysis = analysis;
         _marketData = marketData;
         _logger = logger;
         _promotionService = promotionService;
+        _exitPolicyLearningService = exitPolicyLearningService;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
     }
 
@@ -66,6 +69,7 @@ public class PaperTradingService
             position.BarsHeld++;
             position.CurrentPrice = currentPrice;
             ApplyBreakevenProtection(position, candles.Last());
+            var previousCandle = candles.Count > 1 ? candles[^2] : candles.Last();
 
             // Check trailing stop
             double atr = candles.Count > 14
@@ -82,7 +86,14 @@ public class PaperTradingService
             else if (position.Side == "Buy" && currentPrice >= position.TakeProfit) exitReason = "TakeProfit";
             else if (position.Side == "Sell" && currentPrice >= position.StopLoss) exitReason = "StopLoss";
             else if (position.Side == "Sell" && currentPrice <= position.TakeProfit) exitReason = "TakeProfit";
-            else if (position.MaxHoldingBars > 0 && position.BarsHeld >= position.MaxHoldingBars) exitReason = $"TimeStop({position.ExitPolicyTag})";
+            else
+            {
+                exitReason = TryGetStrategyPolicyExit(position, candles.Last(), previousCandle);
+                if (exitReason == null && position.MaxHoldingBars > 0 && position.BarsHeld >= position.MaxHoldingBars)
+                {
+                    exitReason = $"TimeStop({position.ExitPolicyTag})";
+                }
+            }
 
             if (exitReason != null)
             {
@@ -111,6 +122,7 @@ public class PaperTradingService
                 Portfolio.OpenPositions.Remove(position);
                 Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
                 _promotionService?.RecordPaperState(Portfolio.ClosedPositions);
+                _exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions);
 
                 _logger.LogInformation("📄 PAPER {Exit}: {Symbol} PnL=₺{PnL:N2} ({Reason})",
                     exitReason, symbol, position.RealizedPnL, exitReason);
@@ -187,6 +199,8 @@ public class PaperTradingService
             ExitPolicyTag = decision.ExitPolicyTag,
             BreakevenTriggerFraction = decision.BreakevenTriggerFraction,
             MaxHoldingBars = decision.MaxHoldingBars,
+            ExecutionMode = "PAPER",
+            PromotionStage = "Paper",
             HighestPriceSinceEntry = currentPrice,
             EntryTime = DateTime.UtcNow
         };
@@ -250,5 +264,27 @@ public class PaperTradingService
             : TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp.ToUniversalTime(), "Turkey Standard Time");
 
         return turkeyTime.Hour is >= 10 and < 13 or >= 15 and < 18;
+    }
+
+    private static string? TryGetStrategyPolicyExit(PaperPosition position, Candle candle, Candle previousCandle)
+    {
+        var bearishBar = candle.Close < candle.Open && candle.Close < previousCandle.Close;
+        var bullishBar = candle.Close > candle.Open && candle.Close > previousCandle.Close;
+
+        return position.ExitPolicyTag switch
+        {
+            "TrendRunner" when position.IsBreakevenArmed &&
+                               position.BarsHeld >= Math.Max(6, position.MaxHoldingBars / 2) &&
+                               ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
+                => "TrendMomentumFade",
+            "MeanReversion" when position.BarsHeld >= 4 && !position.IsBreakevenArmed
+                => "MeanReversionTimeout",
+            "BreakoutExpansion" when position.BarsHeld >= 3 && position.IsBreakevenArmed &&
+                                      ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
+                => "BreakoutFailure",
+            "HftScalp" when position.BarsHeld >= 2
+                => "HftMicroExit",
+            _ => null
+        };
     }
 }

@@ -1,6 +1,8 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using System.IO;
 using System.Collections.ObjectModel;
+using System.Text.RegularExpressions;
 using System.Windows.Media;
 using ThatsMyQuant.Dashboard.Services;
 using ThatsMyQuant.Domain.Entities;
@@ -82,6 +84,16 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _analysisTimestamp = "Not analyzed yet";
     [ObservableProperty] private string _botStatusSummary = "The bot is waiting for the next qualified HTF setup.";
     [ObservableProperty] private string _dailyMarketBriefing = "Daily market briefing will appear after the next analysis cycle.";
+    [ObservableProperty] private string _runtimeIntegrityStatus = "Runtime integrity pending";
+    [ObservableProperty] private Brush _runtimeIntegrityColor = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
+    [ObservableProperty] private string _executionServiceStatus = "Execution service pending";
+    [ObservableProperty] private string _aiProviderStatus = "AI provider pending";
+    [ObservableProperty] private string _configValidationStatus = "Startup validation pending";
+    [ObservableProperty] private string _configValidationSummary = "Runtime configuration will be validated at startup.";
+    [ObservableProperty] private bool _isHftRuntimeAvailable = false;
+    [ObservableProperty] private string _portfolioExecutionModeLabel = "Execution mode pending";
+    [ObservableProperty] private Brush _portfolioExecutionModeColor = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
+    [ObservableProperty] private string _portfolioPromotionStageLabel = "Stage pending";
     [ObservableProperty] private string _selectedPortfolioRange = "Monthly";
     [ObservableProperty] private string _portfolioGrowthHeadline = "100,000";
     [ObservableProperty] private string _portfolioGrowthSubtext = "No realized growth history yet";
@@ -97,6 +109,11 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private int _totalTrades = 0;
     [ObservableProperty] private double _profitFactor = 0;
     [ObservableProperty] private string _strategyLeaderboardStatus = "Waiting for trade analytics...";
+    [ObservableProperty] private string _edgeAnalyticsStatus = "Waiting for edge analytics...";
+    [ObservableProperty] private string _bestEdgeZoneSummary = "Edge opportunity zones will appear after more closed trades.";
+    [ObservableProperty] private string _worstEdgeFailureSummary = "Failure diagnostics will appear after more closed trades.";
+    [ObservableProperty] private string _exitPolicyAnalyticsSummary = "Exit-policy winners will appear after more closed trades.";
+    [ObservableProperty] private string _exitPolicyDriftSummary = "Exit-policy drift will appear once paper and real history overlap.";
     [ObservableProperty] private string _backtestStatus = "Backtest not run yet.";
     [ObservableProperty] private string _backtestScenario = "Select a symbol, timeframe, and risk profile to test the current strategy stack.";
     [ObservableProperty] private string _backtestDateRange = "Date range: --";
@@ -275,6 +292,11 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<StrategyLeaderboardRow> StrategyLeaderboard { get; } = new();
     public ObservableCollection<StrategyAllocationRow> CapitalAllocationRows { get; } = new();
     public ObservableCollection<SessionPerformanceRow> SessionPerformanceRows { get; } = new();
+    public ObservableCollection<EdgeScoreBandRow> EdgeScoreBands { get; } = new();
+    public ObservableCollection<EdgeFailureConditionRow> EdgeFailureConditions { get; } = new();
+    public ObservableCollection<EdgeOpportunityRow> EdgeOpportunities { get; } = new();
+    public ObservableCollection<ExitPolicyWinnerRow> ExitPolicyWinners { get; } = new();
+    public ObservableCollection<ExitPolicyDriftRow> ExitPolicyDriftRows { get; } = new();
     public ObservableCollection<SessionContextViewModel> SessionContexts { get; } = new();
     public ObservableCollection<PositionViewModel> ActivePositions { get; } = new();
     public ObservableCollection<string> DisabledStrategies { get; } = new();
@@ -316,6 +338,7 @@ public partial class MainViewModel : ObservableObject
         LoadSymbols();
         _persistedStrategyHealth.AddRange(_strategyHealthStore.Load());
         RefreshDisabledStrategiesFromHealth();
+        UpdateRuntimeIntegrityStatus();
         AddSystemLog("SYSTEM: Terminal initialized. Multi-asset support active.");
         AddSystemLog("INFRA: WebSocket connection to global exchanges established.");
         AddSystemLog("AI: Reasoning engine v2.4-Institutional loaded.");
@@ -392,6 +415,7 @@ public partial class MainViewModel : ObservableObject
                 _tradeCache.Clear();
                 RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
                 UpdatePortfolioGrowth();
+                RefreshEdgeAnalytics(Array.Empty<Trade>());
                 StrategyThrottleStatus = "Unrated";
                 StrategyThrottleReason = "No strategy bucket has enough trade history yet.";
                 StrategyThrottleColor = GrayBrush;
@@ -421,6 +445,8 @@ public partial class MainViewModel : ObservableObject
                     {
                         StrategyTag = g.Key.Strategy,
                         RegimeTag = g.Key.Regime,
+                        ExecutionMode = ResolveExecutionModeScope(g),
+                        PromotionStage = ResolvePromotionStageScope(g),
                         Trades = g.Count(),
                         WinRate = g.Count() > 0 ? wins * 100.0 / g.Count() : 0,
                         TotalPnL = pnls.Sum(),
@@ -481,9 +507,16 @@ public partial class MainViewModel : ObservableObject
 
             PersistStrategyHealth();
             RefreshSessionPerformance(tradeRows);
+            RefreshEdgeAnalytics(tradeRows);
             RefreshCapitalAllocation();
 
-            StrategyLeaderboardStatus = $"Tracking {rows.Count} strategy buckets from {tradeRows.Count} trades.";
+            var dominantStage = rows
+                .GroupBy(row => string.IsNullOrWhiteSpace(row.PromotionStage) ? "UNKNOWN" : row.PromotionStage)
+                .OrderByDescending(group => group.Count())
+                .Select(group => group.Key)
+                .FirstOrDefault() ?? "UNKNOWN";
+
+            StrategyLeaderboardStatus = $"Tracking {rows.Count} strategy buckets from {tradeRows.Count} trades. Dominant ladder stage: {dominantStage}.";
             EvaluateStrategyThrottle();
             UpdateBotLaunchSummary();
             UpdateSessionSummary();
@@ -494,6 +527,7 @@ public partial class MainViewModel : ObservableObject
             RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
             UpdatePortfolioGrowth();
             RefreshSessionPerformance(Array.Empty<Trade>());
+            RefreshEdgeAnalytics(Array.Empty<Trade>());
             RefreshDisabledStrategiesFromHealth();
             RefreshCapitalAllocation();
             StrategyThrottleStatus = "Unavailable";
@@ -537,13 +571,671 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    private void RefreshEdgeAnalytics(IEnumerable<Trade> trades)
+    {
+        EdgeScoreBands.Clear();
+        EdgeFailureConditions.Clear();
+        EdgeOpportunities.Clear();
+        ExitPolicyWinners.Clear();
+        ExitPolicyDriftRows.Clear();
+
+        var closedTrades = trades
+            .Where(t => t.Status == TradeStatus.Executed && t.IsClosed && t.ExitTime.HasValue)
+            .ToList();
+
+        if (closedTrades.Count == 0)
+        {
+            EdgeAnalyticsStatus = "Edge analytics need closed trades.";
+            BestEdgeZoneSummary = "No closed trades yet, so edge zones are still unconfirmed.";
+            WorstEdgeFailureSummary = "No closed trades yet, so failure conditions are still unconfirmed.";
+            ExitPolicyAnalyticsSummary = "No closed trades yet, so exit-policy winners are still unconfirmed.";
+            ExitPolicyDriftSummary = "No closed trades yet, so exit-policy drift is still unconfirmed.";
+            return;
+        }
+
+        var journaledEdgeSignals = TradeJournal
+            .Select(ParseEdgeJournalEntry)
+            .Where(item => item != null)
+            .Cast<ParsedEdgeJournalEntry>()
+            .OrderBy(item => item.Time)
+            .ToList();
+
+        PopulateEdgeScoreBands(journaledEdgeSignals, closedTrades);
+        PopulateEdgeFailureConditions(closedTrades);
+        PopulateEdgeOpportunities(closedTrades);
+        PopulateExitPolicyWinners(closedTrades);
+        PopulateExitPolicyDrift(closedTrades);
+
+        var scoreStatus = EdgeScoreBands.Count > 0
+            ? $"Observed score bands from {EdgeScoreBands.Sum(row => row.Trades)} edge-scored outcomes."
+            : "Score bands will fill as edge-scored outcomes accumulate.";
+        EdgeAnalyticsStatus = $"{scoreStatus} Opportunity zones, failure conditions, exit-policy winners, and exit drift use closed trade history.";
+    }
+
+    private void PopulateEdgeScoreBands(
+        IReadOnlyList<ParsedEdgeJournalEntry> journaledEdgeSignals,
+        IReadOnlyList<Trade> closedTrades)
+    {
+        var persistedBandRows = closedTrades
+            .Where(trade => trade.EdgeScore > 0m || !string.IsNullOrWhiteSpace(trade.EdgeBand))
+            .GroupBy(trade => NormalizeEdgeBand(trade.EdgeBand, trade.EdgeScore))
+            .Select(group =>
+            {
+                var pnls = group.Select(CalculateTradePnL).ToList();
+                var wins = pnls.Count(pnl => pnl > 0);
+                var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+                var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+                var averageScore = group.Average(item => item.EdgeScore);
+                return new EdgeScoreBandRow
+                {
+                    Band = group.Key,
+                    ExecutionMode = ResolveExecutionModeScope(group),
+                    PromotionStage = ResolvePromotionStageScope(group),
+                    Trades = group.Count(),
+                    WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
+                    ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
+                    TotalPnL = pnls.Sum(),
+                    Summary = $"Avg score {averageScore:F1}. {wins}/{group.Count()} winners from {ResolveExecutionModeScope(group)} / {ResolvePromotionStageScope(group)} trades.",
+                    PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
+                };
+            })
+            .OrderByDescending(row => row.ProfitFactor)
+            .ThenByDescending(row => row.TotalPnL)
+            .ToList();
+
+        if (persistedBandRows.Count > 0)
+        {
+            foreach (var row in persistedBandRows)
+            {
+                EdgeScoreBands.Add(row);
+            }
+
+            return;
+        }
+
+        if (journaledEdgeSignals.Count == 0)
+        {
+            return;
+        }
+
+        var matchedTradeIds = new HashSet<Guid>();
+        var matched = new List<(ParsedEdgeJournalEntry Journal, Trade Trade)>();
+
+        foreach (var entry in journaledEdgeSignals)
+        {
+            var nearestTrade = closedTrades
+                .Where(trade => trade.Symbol.Equals(entry.Symbol, StringComparison.OrdinalIgnoreCase))
+                .Where(trade => !matchedTradeIds.Contains(trade.Id))
+                .Select(trade => new
+                {
+                    Trade = trade,
+                    Distance = Math.Abs(((trade.ExitTime ?? trade.EntryTime) - entry.Time).TotalHours)
+                })
+                .Where(item => item.Distance <= 36)
+                .OrderBy(item => item.Distance)
+                .FirstOrDefault();
+
+            if (nearestTrade == null)
+            {
+                continue;
+            }
+
+            matchedTradeIds.Add(nearestTrade.Trade.Id);
+            matched.Add((entry, nearestTrade.Trade));
+        }
+
+        foreach (var row in matched
+                     .GroupBy(item => NormalizeEdgeBand(item.Journal.Band, item.Journal.Score))
+                     .Select(group =>
+                     {
+                         var pnls = group.Select(item => CalculateTradePnL(item.Trade)).ToList();
+                         var wins = pnls.Count(pnl => pnl > 0);
+                         var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+                         var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+                         var averageScore = group.Average(item => item.Journal.Score);
+                         return new EdgeScoreBandRow
+                         {
+                             Band = group.Key,
+                             ExecutionMode = "JOURNAL-LINKED",
+                             PromotionStage = "UNKNOWN",
+                             Trades = group.Count(),
+                             WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
+                             ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
+                             TotalPnL = pnls.Sum(),
+                             Summary = $"Avg score {averageScore:F1}. {wins}/{group.Count()} winners linked from edge-scored journal entries.",
+                             PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
+                         };
+                     })
+                     .OrderByDescending(row => row.ProfitFactor)
+                     .ThenByDescending(row => row.TotalPnL))
+        {
+            EdgeScoreBands.Add(row);
+        }
+    }
+
+    private void PopulateEdgeFailureConditions(IReadOnlyList<Trade> closedTrades)
+    {
+        var failedTrades = _tradeCache.Where(trade => trade.Status == TradeStatus.Failed).ToList();
+        var losingTrades = closedTrades.Where(trade => CalculateTradePnL(trade) <= 0).ToList();
+        var completedCount = Math.Max(1, closedTrades.Count + failedTrades.Count);
+
+        var weakBucketTrades = closedTrades
+            .GroupBy(trade => new
+            {
+                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
+                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag
+            })
+            .Where(group =>
+            {
+                var pnls = group.Select(CalculateTradePnL).ToList();
+                var wins = pnls.Count(pnl => pnl > 0);
+                var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+                var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+                var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+                var winRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count();
+                return profitFactor < 1.0 || winRate < 45;
+            })
+            .SelectMany(group => group)
+            .ToList();
+
+        var conditions = new List<EdgeFailureConditionRow>();
+
+        AddFailureConditionIfAny(
+            conditions,
+            "Execution failures",
+            failedTrades,
+            completedCount,
+            "Broker/exchange path failed before a clean fill.",
+            ResolveExecutionModeScope(failedTrades),
+            ResolvePromotionStageScope(failedTrades));
+
+        AddFailureConditionIfAny(
+            conditions,
+            "Slippage drag",
+            losingTrades.Where(trade => trade.EntrySlippagePercent >= 0.35m).ToList(),
+            completedCount,
+            "Entry slippage is eroding edge before the trade has room to work.",
+            ResolveExecutionModeScope(losingTrades.Where(trade => trade.EntrySlippagePercent >= 0.35m)),
+            ResolvePromotionStageScope(losingTrades.Where(trade => trade.EntrySlippagePercent >= 0.35m)));
+
+        AddFailureConditionIfAny(
+            conditions,
+            "Latency drag",
+            losingTrades.Where(trade => trade.ExecutionLatencyMs >= 900).ToList(),
+            completedCount,
+            "Execution latency is too slow for the current setup quality.",
+            ResolveExecutionModeScope(losingTrades.Where(trade => trade.ExecutionLatencyMs >= 900)),
+            ResolvePromotionStageScope(losingTrades.Where(trade => trade.ExecutionLatencyMs >= 900)));
+
+        AddFailureConditionIfAny(
+            conditions,
+            "Weak bucket drift",
+            weakBucketTrades,
+            completedCount,
+            "Strategy/regime buckets are underperforming their recent baseline.",
+            ResolveExecutionModeScope(weakBucketTrades),
+            ResolvePromotionStageScope(weakBucketTrades));
+
+        foreach (var row in conditions
+                     .OrderByDescending(item => item.Failures)
+                     .ThenByDescending(item => item.FailureRate))
+        {
+            EdgeFailureConditions.Add(row);
+        }
+
+        WorstEdgeFailureSummary = EdgeFailureConditions.FirstOrDefault()?.Summary
+            ?? "No concentrated failure condition detected in the recent closed-trade window.";
+    }
+
+    private void PopulateEdgeOpportunities(IReadOnlyList<Trade> closedTrades)
+    {
+        var rows = closedTrades
+            .GroupBy(trade => new
+            {
+                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
+                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
+                Session = ResolveSessionBucket(trade.ExitTime ?? trade.EntryTime)
+            })
+            .Select(group =>
+            {
+                var pnls = group.Select(CalculateTradePnL).ToList();
+                var wins = pnls.Count(pnl => pnl > 0);
+                var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+                var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+                var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+                var totalPnl = pnls.Sum();
+
+                return new EdgeOpportunityRow
+                {
+                    StrategyTag = group.Key.Strategy,
+                    RegimeTag = group.Key.Regime,
+                    SessionTag = group.Key.Session,
+                    ExecutionMode = ResolveExecutionModeScope(group),
+                    PromotionStage = ResolvePromotionStageScope(group),
+                    Trades = group.Count(),
+                    WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
+                    ProfitFactor = profitFactor,
+                    TotalPnL = totalPnl,
+                    EdgeNote = BuildEdgeOpportunityNote(group.Key.Strategy, group.Key.Regime, group.Key.Session, group.Count(), profitFactor, totalPnl),
+                    PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
+                };
+            })
+            .Where(row => row.TotalPnL > 0 || row.ProfitFactor >= 1.2)
+            .OrderByDescending(row => row.ProfitFactor)
+            .ThenByDescending(row => row.TotalPnL)
+            .Take(5)
+            .ToList();
+
+        foreach (var row in rows)
+        {
+            EdgeOpportunities.Add(row);
+        }
+
+        BestEdgeZoneSummary = EdgeOpportunities.FirstOrDefault()?.EdgeNote
+            ?? "No durable edge zone stands out yet. Keep collecting closed trades.";
+    }
+
+    private void PopulateExitPolicyWinners(IReadOnlyList<Trade> closedTrades)
+    {
+        var winners = closedTrades
+            .Where(trade => !string.IsNullOrWhiteSpace(trade.ExitPolicyTag))
+            .GroupBy(trade => new
+            {
+                trade.Symbol,
+                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
+                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
+                Session = ResolveSessionBucketForTrade(trade)
+            })
+            .Select(bucket =>
+            {
+                var winningPolicy = bucket
+                    .GroupBy(trade => string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "Unlabeled" : trade.ExitPolicyTag)
+                    .Select(policyGroup =>
+                    {
+                        var pnls = policyGroup.Select(CalculateTradePnL).ToList();
+                        var wins = pnls.Count(pnl => pnl > 0);
+                        var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+                        var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+                        var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+                        var totalPnl = pnls.Sum();
+                        var executionMode = ResolveExecutionModeScope(policyGroup);
+                        var promotionStage = ResolvePromotionStageScope(policyGroup);
+
+                        return new ExitPolicyWinnerRow
+                        {
+                            Symbol = bucket.Key.Symbol,
+                            StrategyTag = bucket.Key.Strategy,
+                            RegimeTag = bucket.Key.Regime,
+                            SessionTag = bucket.Key.Session,
+                            ExitPolicyTag = policyGroup.Key,
+                            ExecutionMode = executionMode,
+                            PromotionStage = promotionStage,
+                            Trades = policyGroup.Count(),
+                            WinRate = policyGroup.Count() == 0 ? 0 : wins * 100.0 / policyGroup.Count(),
+                            ProfitFactor = profitFactor,
+                            TotalPnL = totalPnl,
+                            Summary = BuildExitPolicyWinnerSummary(
+                                bucket.Key.Symbol,
+                                bucket.Key.Strategy,
+                                bucket.Key.Regime,
+                                bucket.Key.Session,
+                                policyGroup.Key,
+                                policyGroup.Count(),
+                                profitFactor,
+                                totalPnl,
+                                executionMode,
+                                promotionStage),
+                            PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
+                        };
+                    })
+                    .OrderByDescending(row => row.ProfitFactor)
+                    .ThenByDescending(row => row.TotalPnL)
+                    .ThenByDescending(row => row.WinRate)
+                    .FirstOrDefault();
+
+                return winningPolicy;
+            })
+            .Where(row => row is not null && (row.TotalPnL > 0 || row.ProfitFactor >= 1.1))
+            .Cast<ExitPolicyWinnerRow>()
+            .OrderByDescending(row => row.ProfitFactor)
+            .ThenByDescending(row => row.TotalPnL)
+            .Take(6)
+            .ToList();
+
+        foreach (var row in winners)
+        {
+            ExitPolicyWinners.Add(row);
+        }
+
+        ExitPolicyAnalyticsSummary = ExitPolicyWinners.FirstOrDefault()?.Summary
+            ?? "No exit policy stands out yet at the exact-bucket level. Keep collecting closed trades.";
+    }
+
+    private static string BuildExitPolicyWinnerSummary(
+        string symbol,
+        string strategy,
+        string regime,
+        string session,
+        string exitPolicy,
+        int trades,
+        double profitFactor,
+        decimal totalPnl,
+        string executionMode,
+        string promotionStage)
+    {
+        var pnlDirection = totalPnl >= 0 ? "positive" : "negative";
+        return $"{exitPolicy} is leading {symbol} in {strategy}/{regime} during {session}. " +
+               $"PF {profitFactor:F2} across {trades} trades with {pnlDirection} PnL. " +
+               $"Scope: {executionMode} / {promotionStage}.";
+    }
+
+    private void PopulateExitPolicyDrift(IReadOnlyList<Trade> closedTrades)
+    {
+        var rows = closedTrades
+            .Where(trade => !string.IsNullOrWhiteSpace(trade.ExitPolicyTag))
+            .GroupBy(trade => new
+            {
+                trade.Symbol,
+                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
+                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
+                Session = ResolveSessionBucketForTrade(trade),
+                ExitPolicy = string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "TrendRunner" : trade.ExitPolicyTag
+            })
+            .Select(group =>
+            {
+                var paperTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "PAPER", StringComparison.OrdinalIgnoreCase)).ToList();
+                var liveTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "REAL", StringComparison.OrdinalIgnoreCase)).ToList();
+                if (paperTrades.Count < 2 || liveTrades.Count < 2)
+                {
+                    return null;
+                }
+
+                var paperPnls = paperTrades.Select(CalculateTradePnL).ToList();
+                var livePnls = liveTrades.Select(CalculateTradePnL).ToList();
+                var paperWinRate = paperPnls.Count(pnl => pnl > 0) * 100.0 / paperTrades.Count;
+                var liveWinRate = livePnls.Count(pnl => pnl > 0) * 100.0 / liveTrades.Count;
+                var paperProfitFactor = ComputeProfitFactorFromPnls(paperPnls);
+                var liveProfitFactor = ComputeProfitFactorFromPnls(livePnls);
+                var paperExpectedValue = paperPnls.Average();
+                var liveExpectedValue = livePnls.Average();
+                var driftScore = ComputeExitPolicyDriftScore(paperWinRate, liveWinRate, paperProfitFactor, liveProfitFactor, paperExpectedValue, liveExpectedValue);
+
+                return new ExitPolicyDriftRow
+                {
+                    Symbol = group.Key.Symbol,
+                    StrategyTag = group.Key.Strategy,
+                    RegimeTag = group.Key.Regime,
+                    SessionTag = group.Key.Session,
+                    ExitPolicyTag = group.Key.ExitPolicy,
+                    PaperTrades = paperTrades.Count,
+                    LiveTrades = liveTrades.Count,
+                    DriftScore = driftScore,
+                    PaperWinRate = paperWinRate,
+                    LiveWinRate = liveWinRate,
+                    PaperProfitFactor = paperProfitFactor,
+                    LiveProfitFactor = liveProfitFactor,
+                    PaperExpectedValue = paperExpectedValue,
+                    LiveExpectedValue = liveExpectedValue,
+                    Summary = BuildExitPolicyDriftSummary(group.Key.Symbol, group.Key.Strategy, group.Key.Regime, group.Key.Session, group.Key.ExitPolicy, driftScore, paperExpectedValue, liveExpectedValue, paperProfitFactor, liveProfitFactor),
+                    SeverityColor = driftScore >= 0.65 ? RedBrush : driftScore >= 0.45 ? OrangeBrush : GrayBrush
+                };
+            })
+            .Where(row => row is not null && row.DriftScore >= 0.25)
+            .Cast<ExitPolicyDriftRow>()
+            .OrderByDescending(row => row.DriftScore)
+            .ThenByDescending(row => Math.Abs(row.PaperExpectedValue - row.LiveExpectedValue))
+            .Take(6)
+            .ToList();
+
+        foreach (var row in rows)
+        {
+            ExitPolicyDriftRows.Add(row);
+        }
+
+        ExitPolicyDriftSummary = ExitPolicyDriftRows.FirstOrDefault()?.Summary
+            ?? "No meaningful live-vs-paper exit drift is visible yet for exact buckets.";
+    }
+
+    private static double ComputeProfitFactorFromPnls(IReadOnlyCollection<decimal> pnls)
+    {
+        var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+        var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+        return grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+    }
+
+    private static double ComputeExitPolicyDriftScore(
+        double paperWinRate,
+        double liveWinRate,
+        double paperProfitFactor,
+        double liveProfitFactor,
+        decimal paperExpectedValue,
+        decimal liveExpectedValue)
+    {
+        var winRateDrift = Math.Abs(paperWinRate - liveWinRate) / 100.0;
+        var profitFactorBase = Math.Max(0.5, paperProfitFactor);
+        var profitFactorDrift = Math.Abs(paperProfitFactor - liveProfitFactor) / profitFactorBase;
+        var expectedValueBase = Math.Max(1m, Math.Abs(paperExpectedValue));
+        var expectedValueDrift = (double)(Math.Abs(paperExpectedValue - liveExpectedValue) / expectedValueBase);
+        return Math.Min(1.50, (winRateDrift * 0.35) + (profitFactorDrift * 0.35) + (expectedValueDrift * 0.30));
+    }
+
+    private static string BuildExitPolicyDriftSummary(
+        string symbol,
+        string strategy,
+        string regime,
+        string session,
+        string exitPolicy,
+        double driftScore,
+        decimal paperExpectedValue,
+        decimal liveExpectedValue,
+        double paperProfitFactor,
+        double liveProfitFactor)
+    {
+        return $"{exitPolicy} is drifting on {symbol} {strategy}/{regime} in {session}. " +
+               $"Drift {driftScore:F2}; paper EV {paperExpectedValue:F2} / PF {paperProfitFactor:F2} vs live EV {liveExpectedValue:F2} / PF {liveProfitFactor:F2}.";
+    }
+
+    private static string NormalizeExecutionMode(string? executionMode)
+        => string.IsNullOrWhiteSpace(executionMode) ? "REAL" : executionMode.Trim().ToUpperInvariant();
+
+    private void AddFailureConditionIfAny(
+        ICollection<EdgeFailureConditionRow> rows,
+        string condition,
+        IReadOnlyCollection<Trade> trades,
+        int completedCount,
+        string summary,
+        string executionModeScope,
+        string promotionStageScope)
+    {
+        if (trades.Count == 0)
+        {
+            return;
+        }
+
+        var failureRate = trades.Count * 100.0 / completedCount;
+        var avgSlippage = trades.Count == 0 ? 0m : trades.Average(trade => trade.EntrySlippagePercent);
+        var avgLatency = trades.Count == 0 ? 0 : trades.Average(trade => (double)trade.ExecutionLatencyMs);
+
+        rows.Add(new EdgeFailureConditionRow
+        {
+            Condition = condition,
+            ExecutionModeScope = executionModeScope,
+            PromotionStageScope = promotionStageScope,
+            Failures = trades.Count,
+            FailureRate = failureRate,
+            AverageSlippagePercent = Math.Round(avgSlippage, 3),
+            AverageLatencyMs = Math.Round(avgLatency, 0),
+            Summary = $"{summary} {trades.Count} recent failures/losers, {failureRate:F1}% of the observed window. Scope: {executionModeScope} / {promotionStageScope}.",
+            SeverityColor = failureRate >= 35 ? RedBrush : failureRate >= 20 ? OrangeBrush : GrayBrush
+        });
+    }
+
+    private static string ResolveExecutionModeScope(IEnumerable<Trade> trades)
+    {
+        var modes = trades
+            .Select(trade => string.IsNullOrWhiteSpace(trade.ExecutionMode) ? "REAL" : trade.ExecutionMode.Trim().ToUpperInvariant())
+            .Distinct()
+            .OrderBy(mode => mode)
+            .ToList();
+
+        return modes.Count == 0 ? "UNKNOWN" : string.Join("/", modes);
+    }
+
+    private static string ResolvePromotionStageScope(IEnumerable<Trade> trades)
+    {
+        var stages = trades
+            .Select(InferPromotionStage)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(stage => stage)
+            .ToList();
+
+        return stages.Count == 0 ? "UNKNOWN" : string.Join("/", stages);
+    }
+
+    private static string InferPromotionStage(Trade trade)
+    {
+        if (!string.IsNullOrWhiteSpace(trade.PromotionStage))
+        {
+            return trade.PromotionStage.Trim();
+        }
+
+        var executionMode = string.IsNullOrWhiteSpace(trade.ExecutionMode)
+            ? "REAL"
+            : trade.ExecutionMode.Trim().ToUpperInvariant();
+
+        return executionMode switch
+        {
+            "SIMULATED" => "Backtest",
+            "PAPER" => "Paper",
+            "REAL" => "LiveProbe",
+            _ => "UNKNOWN"
+        };
+    }
+
+    private static string ResolveSessionBucketForTrade(Trade trade)
+    {
+        var referenceTime = trade.ExitTime ?? trade.EntryTime;
+        if (referenceTime == default)
+        {
+            return "Unknown Session";
+        }
+
+        var turkeyTime = referenceTime.Kind == DateTimeKind.Utc
+            ? TimeZoneInfo.ConvertTimeBySystemTimeZoneId(referenceTime, "Turkey Standard Time")
+            : TimeZoneInfo.ConvertTimeBySystemTimeZoneId(referenceTime.ToUniversalTime(), "Turkey Standard Time");
+
+        return turkeyTime.Hour switch
+        {
+            >= 10 and < 13 => "London Killzone",
+            >= 15 and < 18 => "NY Killzone",
+            >= 3 and < 10 => "Asia",
+            _ => "Close / Dead Zone"
+        };
+    }
+
+    private ParsedEdgeJournalEntry? ParseEdgeJournalEntry(TradeJournalEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(entry.Reasoning))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(entry.Reasoning, @"Edge Score:\s*(?<score>\d+(?:\.\d+)?)\/100\s*\[(?<band>[^\]]+)\]", RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return null;
+        }
+
+        if (!decimal.TryParse(match.Groups["score"].Value, out var score))
+        {
+            return null;
+        }
+
+        return new ParsedEdgeJournalEntry(entry.Symbol, entry.Time, score, match.Groups["band"].Value.Trim());
+    }
+
+    private static string NormalizeEdgeBand(string band, decimal score)
+    {
+        if (!string.IsNullOrWhiteSpace(band))
+        {
+            return band;
+        }
+
+        if (score >= 85m) return "Full";
+        if (score >= 70m) return "Reduced";
+        if (score >= 55m) return "Probe";
+        return "Reject";
+    }
+
+    private static string BuildEdgeOpportunityNote(string strategy, string regime, string session, int trades, double profitFactor, decimal totalPnl)
+    {
+        return $"{strategy} in {regime} during {session} is the cleanest observed edge zone so far: {trades} trades, PF {profitFactor:F2}, PnL {totalPnl:N2}.";
+    }
+
+    private sealed record ParsedEdgeJournalEntry(string Symbol, DateTime Time, decimal Score, string Band);
+
+    private List<string> GetEdgeBandFailureStrategies()
+    {
+        return _tradeCache
+            .Where(trade => trade.Status == TradeStatus.Executed && trade.IsClosed)
+            .Where(trade => string.Equals(trade.EdgeBand, "Full", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(trade.EdgeBand, "Reduced", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(trade => trade.StrategyTag)
+            .Where(group =>
+            {
+                var pnls = group.Select(CalculateTradePnL).ToList();
+                if (pnls.Count < 3)
+                {
+                    return false;
+                }
+
+                var wins = pnls.Count(pnl => pnl > 0);
+                var winRate = wins * 100.0 / pnls.Count;
+                return pnls.Sum() < 0 || winRate < 40;
+            })
+            .Select(group => group.Key)
+            .ToList();
+    }
+
+    private bool HasEdgeBandFailure(string strategyTag, string? regimeTag = null)
+    {
+        var relevantTrades = _tradeCache
+            .Where(trade => trade.Status == TradeStatus.Executed && trade.IsClosed)
+            .Where(trade => trade.StrategyTag.Equals(strategyTag, StringComparison.OrdinalIgnoreCase))
+            .Where(trade => string.IsNullOrWhiteSpace(regimeTag) ||
+                            trade.RegimeTag.Equals(regimeTag, StringComparison.OrdinalIgnoreCase))
+            .Where(trade => string.Equals(trade.EdgeBand, "Full", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(trade.EdgeBand, "Reduced", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (relevantTrades.Count < 3)
+        {
+            return false;
+        }
+
+        var pnls = relevantTrades.Select(CalculateTradePnL).ToList();
+        var wins = pnls.Count(pnl => pnl > 0);
+        var winRate = wins * 100.0 / pnls.Count;
+        return pnls.Sum() < 0 || winRate < 40;
+    }
+
+    private string BuildEdgeBandFailureReason(string strategyTag, string? regimeTag = null)
+    {
+        return string.IsNullOrWhiteSpace(regimeTag)
+            ? $"{strategyTag} is failing even when the engine rates trades as Full/Reduced edge. Recovery should stay cautious until the edge bands heal."
+            : $"{strategyTag} in {regimeTag} is failing even on Full/Reduced edge trades. Keep it disabled or in reduced recovery until high-edge executions start paying again.";
+    }
+
     private void RefreshDisabledStrategiesFromHealth()
     {
         DisabledStrategies.Clear();
 
+        var edgeBandFailures = GetEdgeBandFailureStrategies();
+
         var blocked = _persistedStrategyHealth
             .Where(row => row.ManuallyDisabled || (!row.ForceEnabled && row.Trades >= 3 && (row.ProfitFactor < 1.0 || (row.TotalPnL < 0 && row.WinRate < 45))))
             .Select(row => row.StrategyTag)
+            .Concat(edgeBandFailures)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(row => row)
             .ToList();
@@ -555,7 +1247,7 @@ public partial class MainViewModel : ObservableObject
 
         DisabledStrategiesSummary = blocked.Count == 0
             ? "No strategies are disabled."
-            : $"Disabled: {string.Join(", ", blocked)}";
+            : $"Disabled: {string.Join(", ", blocked)}. Edge-band failures are included in disable/recovery flow.";
     }
 
     private void RefreshCapitalAllocation()
@@ -563,14 +1255,53 @@ public partial class MainViewModel : ObservableObject
         CapitalAllocationRows.Clear();
 
         var allocatableCapital = BotRecommendedFunding > 0 ? BotRecommendedFunding : Math.Round(BotFundingAmount * 0.25m, 0);
-        var candidateRows = StrategyLeaderboard
-            .Where(row => !DisabledStrategies.Any(disabled => disabled.Equals(row.StrategyTag, StringComparison.OrdinalIgnoreCase)))
-            .Select(row => new
+        var candidateRows = _tradeCache
+            .Where(trade =>
+                trade.Status == TradeStatus.Executed &&
+                trade.IsClosed &&
+                trade.ExitTime.HasValue &&
+                !DisabledStrategies.Any(disabled => disabled.Equals(trade.StrategyTag, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(trade => new
             {
-                Row = row,
-                Score = Math.Max(0.05, (row.ProfitFactor - 0.9) * 0.55 + Math.Max(0, (row.WinRate - 45) / 55.0) * 0.30 + Math.Min(row.Trades, 12) / 12.0 * 0.15)
+                Symbol = string.IsNullOrWhiteSpace(trade.Symbol) ? "UNKNOWN" : trade.Symbol,
+                StrategyTag = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
+                RegimeTag = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
+                SessionTag = ResolveSessionBucketForTrade(trade)
             })
-            .Where(item => item.Score > 0.05)
+            .Select(group =>
+            {
+                var pnls = group.Select(CalculateTradePnL).ToList();
+                var wins = pnls.Count(pnl => pnl > 0);
+                var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+                var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+                var executionMode = ResolveExecutionModeScope(group);
+                var promotionStage = ResolvePromotionStageScope(group);
+                var effectiveStage = promotionStage == "Backtest" && executionMode.Contains("REAL", StringComparison.OrdinalIgnoreCase)
+                    ? "LiveProbe"
+                    : promotionStage;
+                var stageMultiplier = effectiveStage switch
+                {
+                    "ScaledLive" => 1.15,
+                    "LiveProbe" => 0.55,
+                    "Paper" => 0.15,
+                    _ => 0.05
+                };
+                var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+                var winRate = group.Count() > 0 ? wins * 100.0 / group.Count() : 0;
+                var precisionBonus = group.Count() >= 3 ? 1.08 : 0.95;
+                var score = Math.Max(0.05, (profitFactor - 0.9) * 0.55 + Math.Max(0, (winRate - 45) / 55.0) * 0.30 + Math.Min(group.Count(), 12) / 12.0 * 0.15);
+
+                return new
+                {
+                    group.Key.Symbol,
+                    group.Key.StrategyTag,
+                    group.Key.RegimeTag,
+                    group.Key.SessionTag,
+                    EffectiveStage = effectiveStage,
+                    Score = score * stageMultiplier * precisionBonus
+                };
+            })
+            .Where(item => item.Score > 0.05 && item.EffectiveStage != "Backtest")
             .OrderByDescending(item => item.Score)
             .Take(4)
             .ToList();
@@ -588,18 +1319,29 @@ public partial class MainViewModel : ObservableObject
             var capital = Math.Round(allocatableCapital * (decimal)(allocationPercent / 100.0), 0);
             CapitalAllocationRows.Add(new StrategyAllocationRow
             {
-                StrategyTag = item.Row.StrategyTag,
-                RegimeTag = item.Row.RegimeTag,
+                Symbol = item.Symbol,
+                StrategyTag = item.StrategyTag,
+                RegimeTag = item.RegimeTag,
+                SessionTag = item.SessionTag,
+                PromotionStage = item.EffectiveStage,
                 AllocationPercent = allocationPercent,
                 RecommendedCapital = capital,
-                Status = allocationPercent >= 35 ? "Core" : allocationPercent >= 20 ? "Satellite" : "Watch",
-                StatusColor = allocationPercent >= 35 ? GreenBrush : allocationPercent >= 20 ? OrangeBrush : GrayBrush
+                Status = item.EffectiveStage == "ScaledLive"
+                    ? (allocationPercent >= 35 ? "Core" : "Scaled")
+                    : item.EffectiveStage == "LiveProbe"
+                        ? "Probe"
+                        : "Watch",
+                StatusColor = item.EffectiveStage == "ScaledLive"
+                    ? (allocationPercent >= 35 ? GreenBrush : OrangeBrush)
+                    : item.EffectiveStage == "LiveProbe"
+                        ? OrangeBrush
+                        : GrayBrush
             });
         }
 
         CapitalAllocatorSummary =
-            $"Allocator is distributing up to {allocatableCapital:N0} {SelectedBotQuoteAsset} across {CapitalAllocationRows.Count} healthy buckets. " +
-            $"Heavier weights go to stronger profit factor, win rate, and sample depth.";
+            $"Allocator is distributing up to {allocatableCapital:N0} {SelectedBotQuoteAsset} across {CapitalAllocationRows.Count} symbol-session ladder buckets. " +
+            $"Heavier weights go to exact symbol + session edge, sample depth, and promotion stage.";
     }
 
     private void PersistStrategyHealth()
@@ -1019,6 +1761,24 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        if (HasEdgeBandFailure(focusBucket.StrategyTag, focusBucket.RegimeTag))
+        {
+            if (selectedForceEnabled)
+            {
+                StrategyThrottleStatus = "Reduced";
+                StrategyThrottleReason = $"{BuildEdgeBandFailureReason(focusBucket.StrategyTag, focusBucket.RegimeTag)} Manual recovery is active, so size stays cut until the edge bands recover.";
+                StrategyThrottleColor = OrangeBrush;
+            }
+            else
+            {
+                StrategyThrottleStatus = "Blocked";
+                StrategyThrottleReason = BuildEdgeBandFailureReason(focusBucket.StrategyTag, focusBucket.RegimeTag);
+                StrategyThrottleColor = RedBrush;
+            }
+
+            return;
+        }
+
         if (focusBucket.ProfitFactor < 1.0 || (focusBucket.TotalPnL < 0 && focusBucket.WinRate < 45))
         {
             if (selectedForceEnabled)
@@ -1078,6 +1838,35 @@ public partial class MainViewModel : ObservableObject
             StrategyThrottleReason = $"{decision.StrategyTag} in {decision.RegimeTag} is still gathering enough samples.";
             StrategyThrottleColor = GrayBrush;
             return decision;
+        }
+
+        if (HasEdgeBandFailure(decision.StrategyTag, decision.RegimeTag))
+        {
+            if (forceEnabled)
+            {
+                StrategyThrottleStatus = "Reduced";
+                StrategyThrottleReason = $"{BuildEdgeBandFailureReason(decision.StrategyTag, decision.RegimeTag)} Manual recovery keeps sizing aggressively reduced.";
+                StrategyThrottleColor = OrangeBrush;
+
+                return decision with
+                {
+                    ShouldTrade = decision.ShouldTrade,
+                    Confidence = Math.Min(decision.Confidence, 55),
+                    PositionSizePercent = Math.Min(decision.PositionSizePercent, 0.01m),
+                    Reasoning = $"Edge-band recovery override reduced {decision.StrategyTag} in {decision.RegimeTag}. {decision.Reasoning}"
+                };
+            }
+
+            StrategyThrottleStatus = "Blocked";
+            StrategyThrottleReason = BuildEdgeBandFailureReason(decision.StrategyTag, decision.RegimeTag);
+            StrategyThrottleColor = RedBrush;
+
+            return decision with
+            {
+                ShouldTrade = false,
+                Confidence = Math.Min(decision.Confidence, 45),
+                Reasoning = $"Edge-band failure blocked {decision.StrategyTag} in {decision.RegimeTag}. {decision.Reasoning}"
+            };
         }
 
         if (bucket.ProfitFactor < 1.0 || (bucket.TotalPnL < 0 && bucket.WinRate < 45))
@@ -1742,6 +2531,10 @@ public partial class MainViewModel : ObservableObject
                     Price = ind.CurrentPrice,
                     Confidence = decision.Confidence,
                     Status = "Signal Approved",
+                    ExecutionMode = GetCurrentExecutionModeLabel(),
+                    ExecutionModeColor = GetCurrentExecutionModeColor(),
+                    SideColor = decision.Side == TradeSide.Buy ? GreenBrush : RedBrush,
+                    PnL = 0m,
                     Reasoning = decision.Reasoning.Length > 60
                         ? decision.Reasoning[..60] + "..."
                         : decision.Reasoning
@@ -2098,6 +2891,153 @@ public partial class MainViewModel : ObservableObject
     {
         TradingModeLabel = IsPaperMode ? "PAPER" : "LIVE";
         TradingModeColor = IsPaperMode ? OrangeBrush : RedBrush;
+        UpdateRuntimeIntegrityStatus();
+    }
+
+    private void UpdateRuntimeIntegrityStatus()
+    {
+        var simulationMode = string.Equals(
+            Environment.GetEnvironmentVariable("TMQ_SIMULATION_MODE"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Disabled";
+        var hasGeminiKey = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY"));
+        var hasBinanceKeys =
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_KEY")) &&
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_SECRET"));
+
+        if ((exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase) || simulationMode) && !hasBinanceKeys)
+        {
+            ExecutionServiceStatus = "SIMULATION BROKER";
+        }
+        else if ((exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
+                  exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)) && hasBinanceKeys)
+        {
+            ExecutionServiceStatus = exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)
+                ? "BINANCE TESTNET"
+                : "BINANCE LIVE";
+        }
+        else
+        {
+            ExecutionServiceStatus = "EXECUTION DISABLED";
+        }
+
+        IsHftRuntimeAvailable =
+            exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
+            exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
+
+        AiProviderStatus = hasGeminiKey
+            ? "GEMINI LIVE"
+            : simulationMode
+                ? "AI SIMULATION"
+                : "RULE-BASED FALLBACK";
+
+        var configIssues = new List<string>();
+        if (!IsHftRuntimeAvailable)
+        {
+            configIssues.Add("HFT streaming disabled");
+        }
+        var telegramToken = Environment.GetEnvironmentVariable("TMQ_TELEGRAM_BOT_TOKEN");
+        var telegramChatId = Environment.GetEnvironmentVariable("TMQ_TELEGRAM_CHAT_ID");
+        var webhookUrl = Environment.GetEnvironmentVariable("TMQ_ALERT_WEBHOOK_URL");
+        if (string.IsNullOrWhiteSpace(telegramToken) || string.IsNullOrWhiteSpace(telegramChatId))
+        {
+            configIssues.Add("telegram alert not configured");
+        }
+        if (string.IsNullOrWhiteSpace(webhookUrl))
+        {
+            configIssues.Add("webhook alert not configured");
+        }
+        var modelPath = Path.Combine(AppContext.BaseDirectory, "models", "price_prediction.onnx");
+        if (!File.Exists(modelPath))
+        {
+            configIssues.Add("onnx model path missing");
+        }
+        if (ExecutionServiceStatus == "EXECUTION DISABLED")
+        {
+            configIssues.Add("no live exchange configured");
+        }
+        if (AiProviderStatus == "RULE-BASED FALLBACK")
+        {
+            configIssues.Add("no live AI provider configured");
+        }
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY")) && !simulationMode)
+        {
+            configIssues.Add("AI analyst running on deterministic fallback");
+        }
+
+        if (configIssues.Count == 0)
+        {
+            ConfigValidationStatus = "CONFIG VALID";
+            ConfigValidationSummary = "Runtime is configured for real services with no major startup gaps.";
+        }
+        else
+        {
+            ConfigValidationStatus = simulationMode ? "SIMULATION CONFIG" : "CONFIG GAPS";
+            ConfigValidationSummary = string.Join(" | ", configIssues.Distinct(StringComparer.OrdinalIgnoreCase));
+        }
+
+        if (ExecutionServiceStatus == "EXECUTION DISABLED")
+        {
+            PortfolioExecutionModeLabel = "SAFE / DISABLED EXECUTION";
+            PortfolioExecutionModeColor = RedBrush;
+        }
+        else if (IsPaperMode || ExecutionServiceStatus == "SIMULATION BROKER")
+        {
+            PortfolioExecutionModeLabel = "SIMULATED EXECUTION";
+            PortfolioExecutionModeColor = OrangeBrush;
+        }
+        else
+        {
+            PortfolioExecutionModeLabel = "REAL EXECUTION";
+            PortfolioExecutionModeColor = GreenBrush;
+        }
+
+        if (ExecutionServiceStatus == "EXECUTION DISABLED")
+        {
+            RuntimeIntegrityStatus = "SAFE MODE";
+            RuntimeIntegrityColor = RedBrush;
+            return;
+        }
+
+        if (ExecutionServiceStatus == "SIMULATION BROKER" || AiProviderStatus == "AI SIMULATION")
+        {
+            RuntimeIntegrityStatus = "SIMULATION MODE";
+            RuntimeIntegrityColor = OrangeBrush;
+            return;
+        }
+
+        if (AiProviderStatus == "RULE-BASED FALLBACK")
+        {
+            RuntimeIntegrityStatus = "LIVE RULES ONLY";
+            RuntimeIntegrityColor = OrangeBrush;
+            return;
+        }
+
+        RuntimeIntegrityStatus = "REAL SERVICES";
+        RuntimeIntegrityColor = GreenBrush;
+    }
+
+    private string GetCurrentExecutionModeLabel()
+    {
+        if (ExecutionServiceStatus == "EXECUTION DISABLED")
+        {
+            return "SAFE";
+        }
+
+        return IsPaperMode || ExecutionServiceStatus == "SIMULATION BROKER"
+            ? "SIM"
+            : "REAL";
+    }
+
+    private Brush GetCurrentExecutionModeColor()
+    {
+        return GetCurrentExecutionModeLabel() switch
+        {
+            "REAL" => GreenBrush,
+            "SAFE" => RedBrush,
+            _ => OrangeBrush
+        };
     }
 
     private int _lastSessionHour = -1;
@@ -2480,6 +3420,14 @@ public partial class MainViewModel : ObservableObject
             .Where(t => t.IsClosed && t.ExitTime.HasValue && t.Status == TradeStatus.Executed)
             .OrderBy(t => t.ExitTime)
             .ToList();
+        var dominantStage = closedTrades.Count == 0
+            ? "No ladder data yet"
+            : closedTrades
+                .GroupBy(InferPromotionStage)
+                .OrderByDescending(group => group.Count())
+                .Select(group => group.Key)
+                .FirstOrDefault() ?? "UNKNOWN";
+        PortfolioPromotionStageLabel = dominantStage;
 
         var labels = new List<string>();
         var values = new List<double>();
@@ -2489,7 +3437,7 @@ public partial class MainViewModel : ObservableObject
             BuildFlatPortfolioSeries(labels, values, baseline);
             PortfolioGrowthHeadline = $"{Balance:N0}";
             PortfolioGrowthSubtext = "No realized growth history yet";
-            PortfolioRangeSummary = $"{SelectedPortfolioRange} view is waiting for closed trades";
+            PortfolioRangeSummary = $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | {SelectedPortfolioRange} view is waiting for closed trades";
             PortfolioGrowthColor = GrayBrush;
             ApplyPortfolioSeries(labels, values);
             return;
@@ -2502,22 +3450,22 @@ public partial class MainViewModel : ObservableObject
             case "Daily":
                 windowStart = now.Date;
                 labelSelector = d => d.ToString("HH");
-                PortfolioRangeSummary = "Daily equity curve from realized trades";
+                PortfolioRangeSummary = $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Daily equity curve from realized trades";
                 break;
             case "Weekly":
                 windowStart = now.Date.AddDays(-6);
                 labelSelector = d => d.ToString("ddd");
-                PortfolioRangeSummary = "Weekly realized portfolio growth";
+                PortfolioRangeSummary = $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Weekly realized portfolio growth";
                 break;
             case "Yearly":
                 windowStart = new DateTime(now.Year, 1, 1);
                 labelSelector = d => $"Q{((d.Month - 1) / 3) + 1}";
-                PortfolioRangeSummary = "Yearly realized portfolio growth";
+                PortfolioRangeSummary = $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Yearly realized portfolio growth";
                 break;
             default:
                 windowStart = new DateTime(now.Year, now.Month, 1);
                 labelSelector = d => $"W{((d.Day - 1) / 7) + 1}";
-                PortfolioRangeSummary = "Monthly realized portfolio growth";
+                PortfolioRangeSummary = $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Monthly realized portfolio growth";
                 break;
         }
 
@@ -2529,7 +3477,7 @@ public partial class MainViewModel : ObservableObject
         {
             BuildFlatPortfolioSeries(labels, values, baseline);
             PortfolioGrowthHeadline = $"{Balance:N0}";
-            PortfolioGrowthSubtext = $"No closed trades in the {SelectedPortfolioRange.ToLowerInvariant()} window";
+            PortfolioGrowthSubtext = $"No closed trades in the {SelectedPortfolioRange.ToLowerInvariant()} window. Dominant stage: {PortfolioPromotionStageLabel}.";
             PortfolioGrowthColor = GrayBrush;
             ApplyPortfolioSeries(labels, values);
             return;
@@ -2547,7 +3495,7 @@ public partial class MainViewModel : ObservableObject
         var last = values.LastOrDefault(baseline);
         var changePercent = first == 0 ? 0 : ((last - first) / first) * 100d;
         PortfolioGrowthHeadline = $"{last:N0}";
-        PortfolioGrowthSubtext = $"{changePercent:+0.00;-0.00;0.00}% realized";
+        PortfolioGrowthSubtext = $"{changePercent:+0.00;-0.00;0.00}% realized | Dominant stage {PortfolioPromotionStageLabel}";
         PortfolioGrowthColor = changePercent >= 0 ? GreenBrush : RedBrush;
 
         ApplyPortfolioSeries(labels, values);
