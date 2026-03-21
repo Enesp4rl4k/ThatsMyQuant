@@ -1,0 +1,487 @@
+{
+  "format": 1,
+  "restore": {
+    "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\04_UI\\ThatsMyQuant.Dashboard\\ThatsMyQuant.Dashboard.csproj": {}
+  },
+  "projects": {
+    "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\ThatsMyQuant.Application.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\ThatsMyQuant.Application.csproj",
+        "projectName": "ThatsMyQuant.Application",
+        "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\ThatsMyQuant.Application.csproj",
+        "packagesPath": "C:\\Users\\parlak\\.nuget\\packages\\",
+        "outputPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\obj\\",
+        "projectStyle": "PackageReference",
+        "fallbackFolders": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+        ],
+        "configFilePaths": [
+          "C:\\Users\\parlak\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net9.0"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net9.0": {
+            "targetAlias": "net9.0",
+            "projectReferences": {
+              "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj": {
+                "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "9.0.300"
+      },
+      "frameworks": {
+        "net9.0": {
+          "targetAlias": "net9.0",
+          "dependencies": {
+            "MediatR": {
+              "target": "Package",
+              "version": "[14.1.0, )"
+            },
+            "Microsoft.Extensions.Hosting.Abstractions": {
+              "target": "Package",
+              "version": "[10.0.5, )"
+            },
+            "Microsoft.ML": {
+              "target": "Package",
+              "version": "[5.0.0, )"
+            },
+            "Microsoft.ML.FastTree": {
+              "target": "Package",
+              "version": "[5.0.0, )"
+            },
+            "Microsoft.ML.OnnxRuntime": {
+              "target": "Package",
+              "version": "[1.24.3, )"
+            },
+            "Polly": {
+              "target": "Package",
+              "version": "[8.5.2, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.312/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj",
+        "projectName": "ThatsMyQuant.Domain",
+        "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj",
+        "packagesPath": "C:\\Users\\parlak\\.nuget\\packages\\",
+        "outputPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\obj\\",
+        "projectStyle": "PackageReference",
+        "fallbackFolders": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+        ],
+        "configFilePaths": [
+          "C:\\Users\\parlak\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net9.0"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net9.0": {
+            "targetAlias": "net9.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "9.0.300"
+      },
+      "frameworks": {
+        "net9.0": {
+          "targetAlias": "net9.0",
+          "dependencies": {
+            "MediatR": {
+              "target": "Package",
+              "version": "[14.1.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.312/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\AI.DeepSeek\\ThatsMyQuant.AI.DeepSeek.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\AI.DeepSeek\\ThatsMyQuant.AI.DeepSeek.csproj",
+        "projectName": "ThatsMyQuant.AI.DeepSeek",
+        "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\AI.DeepSeek\\ThatsMyQuant.AI.DeepSeek.csproj",
+        "packagesPath": "C:\\Users\\parlak\\.nuget\\packages\\",
+        "outputPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\AI.DeepSeek\\obj\\",
+        "projectStyle": "PackageReference",
+        "fallbackFolders": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+        ],
+        "configFilePaths": [
+          "C:\\Users\\parlak\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net9.0"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net9.0": {
+            "targetAlias": "net9.0",
+            "projectReferences": {
+              "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj": {
+                "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "9.0.300"
+      },
+      "frameworks": {
+        "net9.0": {
+          "targetAlias": "net9.0",
+          "dependencies": {
+            "Microsoft.SemanticKernel": {
+              "target": "Package",
+              "version": "[1.73.0, )"
+            },
+            "Microsoft.SemanticKernel.Connectors.Google": {
+              "target": "Package",
+              "version": "[1.73.0-alpha, )"
+            },
+            "Microsoft.SemanticKernel.Connectors.OpenAI": {
+              "target": "Package",
+              "version": "[1.73.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.312/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\Data.Persistence\\ThatsMyQuant.Infrastructure.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\Data.Persistence\\ThatsMyQuant.Infrastructure.csproj",
+        "projectName": "ThatsMyQuant.Infrastructure",
+        "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\Data.Persistence\\ThatsMyQuant.Infrastructure.csproj",
+        "packagesPath": "C:\\Users\\parlak\\.nuget\\packages\\",
+        "outputPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\Data.Persistence\\obj\\",
+        "projectStyle": "PackageReference",
+        "fallbackFolders": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+        ],
+        "configFilePaths": [
+          "C:\\Users\\parlak\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net9.0"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net9.0": {
+            "targetAlias": "net9.0",
+            "projectReferences": {
+              "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\ThatsMyQuant.Application.csproj": {
+                "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\ThatsMyQuant.Application.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "9.0.300"
+      },
+      "frameworks": {
+        "net9.0": {
+          "targetAlias": "net9.0",
+          "dependencies": {
+            "Microsoft.EntityFrameworkCore.Design": {
+              "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[9.0.3, )"
+            },
+            "Microsoft.EntityFrameworkCore.Sqlite": {
+              "target": "Package",
+              "version": "[9.0.3, )"
+            },
+            "Microsoft.ML.OnnxRuntime": {
+              "target": "Package",
+              "version": "[1.24.3, )"
+            },
+            "Serilog": {
+              "target": "Package",
+              "version": "[4.3.1, )"
+            },
+            "Serilog.Sinks.Console": {
+              "target": "Package",
+              "version": "[6.1.1, )"
+            },
+            "Skender.Stock.Indicators": {
+              "target": "Package",
+              "version": "[2.7.1, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.312/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\04_UI\\ThatsMyQuant.Dashboard\\ThatsMyQuant.Dashboard.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\04_UI\\ThatsMyQuant.Dashboard\\ThatsMyQuant.Dashboard.csproj",
+        "projectName": "ThatsMyQuant.Dashboard",
+        "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\04_UI\\ThatsMyQuant.Dashboard\\ThatsMyQuant.Dashboard.csproj",
+        "packagesPath": "C:\\Users\\parlak\\.nuget\\packages\\",
+        "outputPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\04_UI\\ThatsMyQuant.Dashboard\\obj\\",
+        "projectStyle": "PackageReference",
+        "fallbackFolders": [
+          "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
+        ],
+        "configFilePaths": [
+          "C:\\Users\\parlak\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
+          "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
+        ],
+        "originalTargetFrameworks": [
+          "net9.0-windows"
+        ],
+        "sources": {
+          "C:\\Program Files (x86)\\Microsoft SDKs\\NuGetPackages\\": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net9.0-windows7.0": {
+            "targetAlias": "net9.0-windows",
+            "projectReferences": {
+              "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\ThatsMyQuant.Application.csproj": {
+                "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Application\\ThatsMyQuant.Application.csproj"
+              },
+              "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj": {
+                "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\02_Core\\Domain\\ThatsMyQuant.Domain.csproj"
+              },
+              "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\AI.DeepSeek\\ThatsMyQuant.AI.DeepSeek.csproj": {
+                "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\AI.DeepSeek\\ThatsMyQuant.AI.DeepSeek.csproj"
+              },
+              "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\Data.Persistence\\ThatsMyQuant.Infrastructure.csproj": {
+                "projectPath": "c:\\Users\\parlak\\Downloads\\ThatsMyQuant\\03_Infrastructure\\Data.Persistence\\ThatsMyQuant.Infrastructure.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "9.0.300"
+      },
+      "frameworks": {
+        "net9.0-windows7.0": {
+          "targetAlias": "net9.0-windows",
+          "dependencies": {
+            "CommunityToolkit.Mvvm": {
+              "target": "Package",
+              "version": "[8.4.1, )"
+            },
+            "Google.Protobuf": {
+              "target": "Package",
+              "version": "[3.34.0, )"
+            },
+            "Grpc.Net.Client": {
+              "target": "Package",
+              "version": "[2.76.0, )"
+            },
+            "Grpc.Tools": {
+              "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[2.78.0, )"
+            },
+            "MediatR": {
+              "target": "Package",
+              "version": "[14.1.0, )"
+            },
+            "Microsoft.EntityFrameworkCore.Proxies": {
+              "target": "Package",
+              "version": "[9.0.3, )"
+            },
+            "Microsoft.EntityFrameworkCore.Sqlite": {
+              "target": "Package",
+              "version": "[9.0.3, )"
+            },
+            "Microsoft.Extensions.DependencyInjection": {
+              "target": "Package",
+              "version": "[10.0.5, )"
+            },
+            "Microsoft.Extensions.Http": {
+              "target": "Package",
+              "version": "[10.0.5, )"
+            },
+            "Microsoft.Extensions.Logging": {
+              "target": "Package",
+              "version": "[10.0.5, )"
+            },
+            "Microsoft.Extensions.Logging.Console": {
+              "target": "Package",
+              "version": "[10.0.5, )"
+            },
+            "Microsoft.SemanticKernel.Connectors.Google": {
+              "target": "Package",
+              "version": "[1.73.0-alpha, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            },
+            "Microsoft.WindowsDesktop.App.WPF": {
+              "privateAssets": "none"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.312/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

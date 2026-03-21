@@ -1,0 +1,59 @@
+<Application x:Class="ThatsMyQuant.Dashboard.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:ThatsMyQuant.Dashboard"
+             xmlns:converters="clr-namespace:ThatsMyQuant.Dashboard.Converters">
+    <Application.Resources>
+        <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
+        
+        <!-- Institutional Quantum Palette -->
+        <SolidColorBrush x:Key="AppBg" Color="#0D0E12" />
+        <SolidColorBrush x:Key="SurfaceBg" Color="#161B22" />
+        <SolidColorBrush x:Key="BgCard" Color="#1A1C24" />
+        <SolidColorBrush x:Key="BorderColor" Color="#2D333B" />
+        <SolidColorBrush x:Key="Accent" Color="#00BFFF" /> <!-- Deep Blue Accent -->
+        <SolidColorBrush x:Key="BuyColor" Color="#00FFBB" /> <!-- Neon Emerald -->
+        <SolidColorBrush x:Key="SellColor" Color="#FF3366" /> <!-- Electric Raspberry -->
+        <SolidColorBrush x:Key="TextMain" Color="#E6EDF3" />
+        <SolidColorBrush x:Key="TextMuted" Color="#7D8590" />
+        <SolidColorBrush x:Key="TextSoft" Color="#AFB8C1" />
+
+        <!-- Institutional Typography -->
+        <FontFamily x:Key="PrimaryFont">Inter, Segoe UI Variable Display, Segoe UI, sans-serif</FontFamily>
+        <FontFamily x:Key="MonoFont">Roboto Mono, Consolas, Courier New, monospace</FontFamily>
+
+        <!-- Professional Card Style -->
+        <Style x:Key="TerminalCardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource BgCard}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="12" />
+            <Setter Property="Margin" Value="4" />
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect BlurRadius="12" ShadowDepth="2" Color="Black" Opacity="0.15" />
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Glassmorphism Simulation -->
+        <Style x:Key="GlassStyle" TargetType="Border">
+            <Setter Property="Background" Value="#1AFFFFFF" /> <!-- 10% Opacity White -->
+            <Setter Property="BorderBrush" Value="#2AFFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="12" />
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <BlurEffect Radius="2" />
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Keep backward compatibility for existing styles -->
+        <Style x:Key="CardStyle" TargetType="Border" BasedOn="{StaticResource TerminalCardStyle}" />
+        <Style x:Key="CompactCardStyle" TargetType="Border" BasedOn="{StaticResource TerminalCardStyle}">
+            <Setter Property="Padding" Value="8" />
+        </Style>
+    </Application.Resources>
+</Application>

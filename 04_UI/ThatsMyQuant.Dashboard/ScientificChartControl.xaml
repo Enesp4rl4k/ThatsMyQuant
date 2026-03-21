@@ -1,0 +1,445 @@
+<UserControl x:Class="ThatsMyQuant.Dashboard.Controls.ScientificChartControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+             mc:Ignorable="d"
+             d:DesignHeight="540"
+             d:DesignWidth="1040">
+    <Grid Background="{StaticResource AppBg}"
+          SizeChanged="RootGrid_SizeChanged">
+        <Border Background="#0B0E13"
+                BorderBrush="{StaticResource BorderColor}"
+                BorderThickness="1"
+                CornerRadius="8">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="44" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="34" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="52" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="82" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Row="0"
+                        Grid.Column="0"
+                        Grid.ColumnSpan="3"
+                        Background="#0F131B"
+                        BorderBrush="{StaticResource BorderColor}"
+                        BorderThickness="0,0,0,1">
+                    <Grid Margin="12,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <TextBlock Text="{Binding ChartHeaderTitle}"
+                                       Foreground="{StaticResource TextMain}"
+                                       FontSize="16"
+                                       FontWeight="Black"
+                                       Margin="0,0,14,0" />
+                            <TextBlock Text="{Binding ChartHeaderOhlc}"
+                                       Foreground="{Binding ChartHeaderChangeColor}"
+                                       FontFamily="{StaticResource MonoFont}"
+                                       FontSize="11"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <Border Background="#121826"
+                                    BorderBrush="{StaticResource BorderColor}"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    Padding="8,4"
+                                    Margin="0,0,8,0">
+                                <TextBlock Text="{Binding SelectedTimeframe}"
+                                           Foreground="{StaticResource TextMain}"
+                                           FontFamily="{StaticResource MonoFont}"
+                                           FontSize="10"
+                                           FontWeight="Bold" />
+                            </Border>
+                            <Border Background="#121826"
+                                    BorderBrush="{StaticResource BorderColor}"
+                                    BorderThickness="1"
+                                    CornerRadius="4"
+                                    Padding="8,4">
+                                <TextBlock Text="{Binding SelectedMarket}"
+                                           Foreground="{StaticResource TextSoft}"
+                                           FontSize="10"
+                                           FontWeight="Bold" />
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="1"
+                        Grid.Column="0"
+                        Background="#0F131B"
+                        BorderBrush="{StaticResource BorderColor}"
+                        BorderThickness="0,0,1,0">
+                    <StackPanel Margin="0,10,0,10"
+                                VerticalAlignment="Stretch">
+                        <Button Content="+"
+                                Width="34"
+                                Height="34"
+                                Margin="9,0,9,10"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextSoft}"
+                                BorderBrush="{StaticResource BorderColor}"
+                                BorderThickness="1"
+                                FontSize="18"
+                                FontWeight="Light" />
+                        <Button Content="⌖"
+                                Width="34"
+                                Height="34"
+                                Margin="9,0,9,10"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextSoft}"
+                                BorderThickness="0"
+                                FontSize="15" />
+                        <Button Content="╱"
+                                Width="34"
+                                Height="34"
+                                Margin="9,0,9,10"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextSoft}"
+                                BorderThickness="0"
+                                FontSize="17" />
+                        <Button Content="T"
+                                Width="34"
+                                Height="34"
+                                Margin="9,0,9,10"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextSoft}"
+                                BorderThickness="0"
+                                FontSize="16"
+                                FontWeight="SemiBold" />
+                        <Button Content="⊙"
+                                Width="34"
+                                Height="34"
+                                Margin="9,0,9,10"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextSoft}"
+                                BorderThickness="0"
+                                FontSize="16" />
+                        <Button Content="⌗"
+                                Width="34"
+                                Height="34"
+                                Margin="9,0,9,0"
+                                Background="Transparent"
+                                Foreground="{StaticResource TextSoft}"
+                                BorderThickness="0"
+                                FontSize="16" />
+                    </StackPanel>
+                </Border>
+
+                <Grid Grid.Row="1"
+                      Grid.Column="1"
+                      Background="#0B0E13">
+                    <Grid x:Name="FallbackChartLayer">
+                        <ItemsControl ItemsSource="{Binding PriceScaleLabels}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Canvas.Left="{Binding X}"
+                                            Canvas.Top="{Binding Y}"
+                                            Background="#151A22"
+                                            CornerRadius="2"
+                                            Padding="4,1">
+                                        <TextBlock Text="{Binding Text}"
+                                                   Foreground="{StaticResource TextSoft}"
+                                                   FontFamily="{StaticResource MonoFont}"
+                                                   FontSize="10" />
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <ItemsControl ItemsSource="{Binding TimeScaleLabels}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <Canvas />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Canvas.Left="{Binding X}"
+                                            Canvas.Top="{Binding Y}"
+                                            Background="#10151D"
+                                            CornerRadius="2"
+                                            Padding="4,1">
+                                        <TextBlock Text="{Binding Text}"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   FontFamily="{StaticResource MonoFont}"
+                                                   FontSize="9" />
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Canvas x:Name="MainDrawingCanvas"
+                                Width="{Binding ChartCanvasWidth}"
+                                Height="{Binding ChartCanvasHeight}"
+                                Margin="14,12,8,8"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top">
+                            <ItemsControl ItemsSource="{Binding HorizontalGridLines}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Line X1="{Binding X1}"
+                                              Y1="{Binding Y1}"
+                                              X2="{Binding X2}"
+                                              Y2="{Binding Y2}"
+                                              Stroke="#171D26"
+                                              StrokeThickness="0.7" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <ItemsControl ItemsSource="{Binding VerticalGridLines}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Line X1="{Binding X1}"
+                                              Y1="{Binding Y1}"
+                                              X2="{Binding X2}"
+                                              Y2="{Binding Y2}"
+                                              Stroke="#171D26"
+                                              StrokeThickness="0.7" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <ItemsControl ItemsSource="{Binding ReasoningOverlays}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Canvas>
+                                            <Border Canvas.Left="{Binding X}"
+                                                    Canvas.Top="{Binding Y}"
+                                                    Width="{Binding Width}"
+                                                    Height="{Binding Height}"
+                                                    Background="{Binding Fill}"
+                                                    BorderBrush="{Binding Stroke}"
+                                                    BorderThickness="0.8"
+                                                    CornerRadius="3"
+                                                    Opacity="0.16" />
+                                            <Border Canvas.Left="{Binding X}"
+                                                    Canvas.Top="{Binding Y}"
+                                                    Background="#162233"
+                                                    BorderBrush="{Binding Stroke}"
+                                                    BorderThickness="1,0,0,0"
+                                                    Padding="6,2"
+                                                    Margin="5,5,0,0">
+                                                <TextBlock Text="{Binding Title}"
+                                                           Foreground="{Binding TextColor}"
+                                                           FontSize="9"
+                                                           FontWeight="Black" />
+                                            </Border>
+                                        </Canvas>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <Polyline Points="{Binding ChartPoints}"
+                                      Stroke="{StaticResource Accent}"
+                                      StrokeThickness="0.6"
+                                      Opacity="0.35" />
+
+                            <ItemsControl ItemsSource="{Binding ChartCandles}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Canvas>
+                                            <Line X1="{Binding WickX}"
+                                                  Y1="{Binding WickY1}"
+                                                  X2="{Binding WickX}"
+                                                  Y2="{Binding WickY2}"
+                                                  Stroke="{Binding Color}"
+                                                  StrokeThickness="1" />
+                                            <Rectangle Canvas.Left="{Binding X}"
+                                                       Canvas.Top="{Binding BodyY}"
+                                                       Width="{Binding Width}"
+                                                       Height="{Binding BodyHeight}"
+                                                       Fill="{Binding Color}" />
+                                        </Canvas>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <Line X1="0"
+                                  Y1="{Binding CurrentPriceMarkerY}"
+                                  X2="{Binding ChartCanvasWidth}"
+                                  Y2="{Binding CurrentPriceMarkerY}"
+                                  Stroke="{StaticResource BuyColor}"
+                                  StrokeThickness="0.7"
+                                  StrokeDashArray="2,2"
+                                  Opacity="0.45" />
+
+                            <Canvas x:Name="ChartCanvas"
+                                    Width="{Binding ChartCanvasWidth}"
+                                    Height="{Binding ChartCanvasHeight}"
+                                    Background="Transparent"
+                                    MouseWheel="ChartCanvas_MouseWheel"
+                                    MouseLeftButtonDown="ChartCanvas_MouseLeftButtonDown"
+                                    MouseLeftButtonUp="ChartCanvas_MouseLeftButtonUp"
+                                    MouseMove="ChartCanvas_MouseMove"
+                                    MouseLeave="ChartCanvas_MouseLeave"
+                                    MouseRightButtonUp="ChartCanvas_MouseRightButtonUp">
+                                <Canvas.RenderTransform>
+                                    <TransformGroup>
+                                        <ScaleTransform x:Name="ChartScaleTransform"
+                                                        ScaleX="1"
+                                                        ScaleY="1" />
+                                        <TranslateTransform x:Name="ChartTranslateTransform"
+                                                            X="0"
+                                                            Y="0" />
+                                    </TransformGroup>
+                                </Canvas.RenderTransform>
+                            </Canvas>
+
+                            <Canvas x:Name="ChartOverlay"
+                                    Width="{Binding ChartCanvasWidth}"
+                                    Height="{Binding ChartCanvasHeight}"
+                                    IsHitTestVisible="False">
+                                <Line x:Name="CrosshairVertical"
+                                      Stroke="{StaticResource Accent}"
+                                      StrokeThickness="0.7"
+                                      StrokeDashArray="4,4"
+                                      Visibility="Collapsed" />
+                                <Line x:Name="CrosshairHorizontal"
+                                      Stroke="{StaticResource Accent}"
+                                      StrokeThickness="0.7"
+                                      StrokeDashArray="4,4"
+                                      Visibility="Collapsed" />
+                            </Canvas>
+                        </Canvas>
+                    </Grid>
+
+                    <wv2:WebView2 x:Name="TradingViewBrowser"
+                                  Margin="0"
+                                  DefaultBackgroundColor="#0B0E13"
+                                  HorizontalAlignment="Stretch"
+                                  VerticalAlignment="Stretch"
+                                  Visibility="Collapsed" />
+
+                    <Border HorizontalAlignment="Left"
+                            VerticalAlignment="Top"
+                            Margin="14,10,0,0"
+                            Background="#171D26"
+                            CornerRadius="3"
+                            Padding="6,2"
+                            IsHitTestVisible="False">
+                        <TextBlock Text="{Binding CurrentDate}"
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontFamily="{StaticResource MonoFont}"
+                                   FontSize="9"
+                                   FontWeight="Bold" />
+                    </Border>
+                </Grid>
+
+                <Border Grid.Row="1"
+                        Grid.Column="2"
+                        Background="#0F131B"
+                        BorderBrush="{StaticResource BorderColor}"
+                        BorderThickness="1,0,0,0">
+                    <Grid>
+                        <Border Background="{StaticResource BuyColor}"
+                                CornerRadius="3"
+                                Padding="7,3"
+                                HorizontalAlignment="Center"
+                                VerticalAlignment="Top"
+                                Margin="0,14,0,0">
+                            <TextBlock Text="{Binding CurrentPriceMarker}"
+                                       Foreground="Black"
+                                       FontFamily="{StaticResource MonoFont}"
+                                       FontSize="10"
+                                       FontWeight="Black" />
+                        </Border>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="2"
+                        Grid.Column="0"
+                        Grid.ColumnSpan="3"
+                        Background="#0F131B"
+                        BorderBrush="{StaticResource BorderColor}"
+                        BorderThickness="1,0,0,0">
+                    <Grid Margin="12,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="TRADINGVIEW LAYER"
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontFamily="{StaticResource MonoFont}"
+                                   FontSize="10"
+                                   FontWeight="Black"
+                                   VerticalAlignment="Center" />
+                        <ItemsControl Grid.Column="1"
+                                      ItemsSource="{Binding TimeframeConfluences}"
+                                      Margin="16,0,0,0"
+                                      VerticalAlignment="Center">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <UniformGrid Columns="5" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <StackPanel Orientation="Horizontal"
+                                                HorizontalAlignment="Center">
+                                        <TextBlock Text="{Binding Name}"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   FontSize="9"
+                                                   FontWeight="Black"
+                                                   Margin="0,0,6,0" />
+                                        <TextBlock Text="{Binding Status}"
+                                                   Foreground="{Binding Color}"
+                                                   FontSize="9"
+                                                   FontWeight="Bold" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Grid.Column="2"
+                                   Text="Live chart host"
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="9"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

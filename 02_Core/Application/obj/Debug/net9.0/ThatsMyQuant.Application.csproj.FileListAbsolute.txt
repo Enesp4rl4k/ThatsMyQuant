@@ -1,0 +1,15 @@
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\bin\Debug\net9.0\ThatsMyQuant.Application.deps.json
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\bin\Debug\net9.0\ThatsMyQuant.Application.dll
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\bin\Debug\net9.0\ThatsMyQuant.Application.pdb
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\bin\Debug\net9.0\ThatsMyQuant.Domain.dll
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\bin\Debug\net9.0\ThatsMyQuant.Domain.pdb
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQuant.Application.csproj.AssemblyReference.cache
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQuant.Application.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQuant.Application.AssemblyInfoInputs.cache
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQuant.Application.AssemblyInfo.cs
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQuant.Application.csproj.CoreCompileInputs.cache
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQ.62268914.Up2Date
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQuant.Application.dll
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\refint\ThatsMyQuant.Application.dll
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ThatsMyQuant.Application.pdb
+C:\Users\parlak\Downloads\ThatsMyQuant\02_Core\Application\obj\Debug\net9.0\ref\ThatsMyQuant.Application.dll

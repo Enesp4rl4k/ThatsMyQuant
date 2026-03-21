@@ -1,0 +1,107 @@
+using MediatR;
+using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Application.Commands;
+using ThatsMyQuant.Application.Resilience;
+using ThatsMyQuant.Application.Strategy;
+using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Domain.Interfaces;
+
+namespace ThatsMyQuant.Application.Handlers;
+
+public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
+{
+    private readonly ILogger<ExecuteTradeHandler> _logger;
+    private readonly IExchangeService _exchangeService;
+    private readonly ITradeRepository _tradeRepository;
+    private readonly HftExecutionService _hftExecutionService;
+
+    public ExecuteTradeHandler(
+        ILogger<ExecuteTradeHandler> logger, 
+        IExchangeService exchangeService,
+        ITradeRepository tradeRepository,
+        HftExecutionService hftExecutionService)
+    {
+        _logger = logger;
+        _exchangeService = exchangeService;
+        _tradeRepository = tradeRepository;
+        _hftExecutionService = hftExecutionService;
+    }
+
+    public async Task<Trade> Handle(ExecuteTradeCommand request, CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Executing Trade for Signal: {Id}", request.Signal.Id);
+
+        // Persistent idempotency guard: never execute the same signal twice.
+        var existingTrade = await _tradeRepository.GetBySignalIdAsync(request.Signal.Id);
+        if (existingTrade != null)
+        {
+            _logger.LogWarning(
+                "Duplicate execution request blocked for Signal {SignalId}. Returning Trade {TradeId}.",
+                request.Signal.Id,
+                existingTrade.Id);
+            return existingTrade;
+        }
+
+        // Execute with Polly full pipeline (Retry + Circuit Breaker)
+        var pipeline = ResiliencePolicies.CreateFullPipeline(_logger);
+
+        Trade trade;
+        try
+        {
+            trade = IsHftSignal(request.Signal)
+                ? await pipeline.ExecuteAsync(async ct =>
+                    await _hftExecutionService.ExecuteAsync(request.Signal, ct), cancellationToken)
+                : await pipeline.ExecuteAsync(async ct =>
+                    await _exchangeService.ExecuteOrderAsync(request.Signal), cancellationToken);
+
+            trade.Side = request.Signal.Side;
+            trade.StrategyTag = request.Signal.StrategyTag;
+            trade.RegimeTag = request.Signal.RegimeTag;
+            if (trade.Status == default)
+            {
+                trade.Status = TradeStatus.Executed;
+            }
+            if (trade.EntrySlippagePercent == 0m)
+            {
+                trade.EntrySlippagePercent = request.Signal.Price > 0
+                    ? Math.Abs((trade.EntryPrice - request.Signal.Price) / request.Signal.Price) * 100m
+                    : 0m;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Trade execution FAILED for Signal {Id} after retries + circuit breaker.",
+                request.Signal.Id);
+
+            // Persist the failed trade for audit
+            trade = new Trade
+            {
+                SignalId = request.Signal.Id,
+                Symbol = request.Signal.Symbol,
+                Side = request.Signal.Side,
+                EntryPrice = request.Signal.Price,
+                Quantity = 0,
+                Status = TradeStatus.Failed,
+                StrategyTag = request.Signal.StrategyTag,
+                RegimeTag = request.Signal.RegimeTag,
+                EntrySlippagePercent = 0m,
+                EntryTime = DateTime.UtcNow
+            };
+        }
+
+        // Persist trade result
+        await _tradeRepository.AddAsync(trade);
+
+        _logger.LogInformation("Trade {Status}: {TradeId} @ {Price}",
+            trade.Status, trade.Id, trade.EntryPrice);
+
+        return trade;
+    }
+
+    private static bool IsHftSignal(Signal signal)
+        => signal.Source.Contains("HFT", StringComparison.OrdinalIgnoreCase) ||
+           (signal.Metadata.TryGetValue("ExecutionMode", out var mode) &&
+            mode.Contains("HFT", StringComparison.OrdinalIgnoreCase)) ||
+           string.Equals(signal.StrategyTag, "HftMicroEdge", StringComparison.OrdinalIgnoreCase);
+}

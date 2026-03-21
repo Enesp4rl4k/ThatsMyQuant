@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-ThatsMyQuant.Bot-12d68bab-ca0b-42ef-93b7-183b5a166988</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MediatR" Version="14.1.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.14" />
+    <PackageReference Include="Microsoft.SemanticKernel" Version="1.73.0" />
+    <PackageReference Include="Microsoft.SemanticKernel.Connectors.Google" Version="1.73.0-alpha" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\03_Infrastructure\Data.Persistence\ThatsMyQuant.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\03_Infrastructure\AI.DeepSeek\ThatsMyQuant.AI.DeepSeek.csproj" />
+    <ProjectReference Include="..\..\02_Core\Application\ThatsMyQuant.Application.csproj" />
+  </ItemGroup>
+</Project>

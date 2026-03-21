@@ -1,0 +1,54 @@
+<Window x:Class="ThatsMyQuant.Dashboard.LoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Secure Login | Thats My Quant" Height="500" Width="400"
+        Background="{StaticResource AppBg}" Foreground="{StaticResource TextMain}" WindowStyle="None"
+        WindowStartupLocation="CenterScreen" AllowsTransparency="True"
+        FontFamily="{StaticResource PrimaryFont}" MouseLeftButtonDown="Window_MouseLeftButtonDown">
+
+    <Window.Resources>
+        <Viewbox x:Key="LogoIcon" x:Shared="False">
+            <Canvas Width="24" Height="24">
+                <Path Fill="{StaticResource Accent}" Data="M12 2L2 22h20L12 2zm0 4.2L18.2 19H5.8L12 6.2z"/>
+            </Canvas>
+        </Viewbox>
+    </Window.Resources>
+
+    <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8">
+        <Grid Margin="30">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/> <!-- Logo -->
+                <RowDefinition Height="Auto"/> <!-- Title -->
+                <RowDefinition Height="*"/>    <!-- Form -->
+            </Grid.RowDefinitions>
+
+            <!-- Close Button -->
+            <Button Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" 
+                    Background="Transparent" Foreground="{StaticResource TextMuted}" BorderThickness="0" 
+                    Click="Close_Click" FontWeight="Bold" Margin="0,-15,-15,0" />
+
+            <Border Grid.Row="0" Width="48" Height="48" CornerRadius="4" Background="{StaticResource AppBg}" BorderBrush="{StaticResource Accent}" BorderThickness="1" Margin="0,20,0,10">
+                <TextBlock Text="Q" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="26" FontWeight="Black" Foreground="{StaticResource Accent}" />
+            </Border>
+
+            <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,0,0,30">
+                <TextBlock Text="QUANTUM TERMINAL" Foreground="{StaticResource TextMain}" FontSize="20" FontWeight="Black" HorizontalAlignment="Center"/>
+                <TextBlock Text="SECURE INSTITUTIONAL ACCESS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+            </StackPanel>
+
+            <StackPanel Grid.Row="2">
+                <TextBlock Text="OPERATOR IDENTIFIER" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6"/>
+                <TextBox x:Name="EmailBox" Height="42" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="12,0" VerticalContentAlignment="Center" Margin="0,0,0,20" Text="admin@thatsmyquant.com" FontFamily="{StaticResource MonoFont}" FontSize="11"/>
+                
+                <TextBlock Text="ACCESS TOKEN" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6"/>
+                <PasswordBox x:Name="PasswordBox" Height="42" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="12,0" VerticalContentAlignment="Center" Margin="0,0,0,30" Password="admin" FontFamily="{StaticResource MonoFont}" FontSize="11"/>
+
+                <TextBlock x:Name="ErrorText" Foreground="{StaticResource SellColor}" FontSize="10" FontWeight="Bold" Margin="0,-20,0,10" Visibility="Collapsed" HorizontalAlignment="Center"/>
+
+                <Button Content="INITIALIZE SESSION" Click="Login_Click" Height="48" Background="{StaticResource Accent}" Foreground="White" FontSize="12" FontWeight="Black" BorderThickness="0"/>
+                
+                <TextBlock Text="RESET CREDENTIALS" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,24,0,0" Cursor="Hand"/>
+            </StackPanel>
+        </Grid>
+    </Border>
+</Window>
