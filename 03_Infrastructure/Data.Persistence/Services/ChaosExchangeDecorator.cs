@@ -12,7 +12,6 @@ public class ChaosExchangeDecorator : IExchangeService
 {
     private readonly IExchangeService _inner;
     private readonly ILogger<ChaosExchangeDecorator> _logger;
-    private readonly Random _rng = new();
     
     // Configurable failure rate (e.g. 0.05 = 5% failure probability)
     public double FailureProbability { get; set; } = 0.10; 
@@ -41,15 +40,15 @@ public class ChaosExchangeDecorator : IExchangeService
     private async Task SimulateChaosAsync(string methodName)
     {
         // 1. Simulate Network Latency (Jitter)
-        if (_rng.NextDouble() < 0.3) // 30% chance of high latency
+        if (Random.Shared.NextDouble() < 0.3) // 30% chance of high latency
         {
-            int delay = _rng.Next(100, MaxLatencyMs);
+            int delay = Random.Shared.Next(100, MaxLatencyMs);
             _logger.LogWarning("[CHAOS] Injecting {Delay}ms latency into {Method}", delay, methodName);
             await Task.Delay(delay);
         }
 
         // 2. Simulate Hard API Failure
-        if (_rng.NextDouble() < FailureProbability)
+        if (Random.Shared.NextDouble() < FailureProbability)
         {
             _logger.LogError("[CHAOS] INJECTING ARTIFICIAL FAILURE in {Method}!", methodName);
             throw new Exception($"[CHAOS_ERROR] Simulated exchange Timeout/Disconnect in {methodName}");

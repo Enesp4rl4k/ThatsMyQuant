@@ -23,7 +23,8 @@ public class PortfolioStateCache : IPortfolioStateCache
     
     // Hardware limitation parameter limiting unbounded historical growth
     private const int MaxHistory = 500;
-    private int _isInitialized = 0;
+    private readonly SemaphoreSlim _initLock = new(1, 1);
+    private bool _isInitialized = false;
 
     public PortfolioStateCache(IServiceProvider serviceProvider, ILogger<PortfolioStateCache> logger)
     {
@@ -33,10 +34,13 @@ public class PortfolioStateCache : IPortfolioStateCache
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        if (Interlocked.Exchange(ref _isInitialized, 1) == 1) return;
+        if (_isInitialized) return;
 
+        await _initLock.WaitAsync(cancellationToken);
         try
         {
+            if (_isInitialized) return;
+
             // Dynamically resolve repository to avoid Circular DI dependency loops
             using var scope = _serviceProvider.CreateScope();
             var tradeRepo = scope.ServiceProvider.GetRequiredService<ITradeRepository>();
@@ -53,11 +57,16 @@ public class PortfolioStateCache : IPortfolioStateCache
                     EnqueueHistorical(trade);
                 }
             }
+            _isInitialized = true;
             _logger.LogInformation("PortfolioStateCache mounted with {Active} active and {History} historical trades pinned to local CPU registers.", _activeTrades.Count, _historicalTrades.Count);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to initialize O(1) MemoryPortfolioManager state.");
+        }
+        finally
+        {
+            _initLock.Release();
         }
     }
 

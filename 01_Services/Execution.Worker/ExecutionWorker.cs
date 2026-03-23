@@ -68,7 +68,7 @@ public class ExecutionWorker : BackgroundService
         }
     }
 
-    private void ApplyExecutionResult(Signal signal, dynamic? tradeResult)
+    private void ApplyExecutionResult(Signal signal, Trade? tradeResult)
     {
         if (tradeResult != null && tradeResult.Status == TradeStatus.Executed)
         {
@@ -79,7 +79,7 @@ public class ExecutionWorker : BackgroundService
         {
             signal.Status = TradeStatus.Failed;
             signal.Reasoning += $" | Execution returned non-success: {tradeResult?.Status}";
-            _logger.LogWarning("Queued signal {SignalId} failed execution result: {Status}", signal.Id, (object?)tradeResult?.Status);
+            _logger.LogWarning("Queued signal {SignalId} failed execution result: {Status}", signal.Id, tradeResult?.Status);
         }
     }
 

@@ -8,8 +8,6 @@ namespace ThatsMyQuant.Application.Strategy;
 /// </summary>
 public class MonteCarloSimulator
 {
-    private readonly Random _rng = new Random();
-
     /// <summary>
     /// Executes a parallelized Monte Carlo permutation generator across the trade logs. 
     /// Helps quants visualize the 95th and 99th percentile worst-case risk of ruin curves.
@@ -40,7 +38,7 @@ public class MonteCarloSimulator
                 for (int s = 0; s < stepsPerIteration; s++)
                 {
                     // Pick a random past trade result to shape the distribution matrix
-                    var randomPnl = (decimal)historicalPnlTrades[_rng.Next(historicalPnlTrades.Count)];
+                    var randomPnl = (decimal)historicalPnlTrades[Random.Shared.Next(historicalPnlTrades.Count)];
                     simEquity += randomPnl;
 
                     if (simEquity > peakSimEquity) peakSimEquity = simEquity;

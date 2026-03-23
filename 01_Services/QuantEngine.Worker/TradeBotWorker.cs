@@ -22,8 +22,6 @@ public class TradeBotWorker : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("QuantEngine Worker starting in CHAOS MODE...");
-
-        var random = new Random();
         int tickCounter = 0;
 
         while (!stoppingToken.IsCancellationRequested)
@@ -33,22 +31,22 @@ public class TradeBotWorker : BackgroundService
 
             using (var scope = _serviceProvider.CreateScope())
             {
-                var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-                var reco = scope.ServiceProvider.GetRequiredService<ReconciliationAgent>();
-
-                // 1. Periodic Reconciliation Audit (Every 12 ticks / ~60s)
-                if (tickCounter % 12 == 0)
-                {
-                    var audit = await reco.VerifyIntegrityAsync(0.5m); // Mocking 0.5 BTC local position
-                    if (!audit.InSync)
-                    {
-                        _logger.LogCritical("INTEGRITY BREACH: {Msg}", audit.Message);
-                        // In production: trigger Emergency Stop / Close all positions
-                    }
-                }
-
                 try 
                 {
+                    var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+                    var reco = scope.ServiceProvider.GetRequiredService<ReconciliationAgent>();
+
+                    // 1. Periodic Reconciliation Audit (Every 12 ticks / ~60s)
+                    if (tickCounter % 12 == 0)
+                    {
+                        var audit = await reco.VerifyIntegrityAsync(0.5m); // Mocking 0.5 BTC local position
+                        if (!audit.InSync)
+                        {
+                            _logger.LogCritical("INTEGRITY BREACH: {Msg}", audit.Message);
+                            // In production: trigger Emergency Stop / Close all positions
+                        }
+                    }
+
                     // 2. Process High-Frequency Signal
                     bool isPerfectSignal = false; // Normal operation
                     
@@ -57,8 +55,8 @@ public class TradeBotWorker : BackgroundService
                         Source = isPerfectSignal ? "Alpha.PerfectSetup" : "Internal.Simulation",
                         Symbol = "BTC-USDT",
                         Side = ThatsMyQuant.Domain.Enums.TradeSide.Buy,
-                        Price = 60000m + random.Next(-10, 10),
-                        Confidence = random.Next(40, 70), // High confidence for verification
+                        Price = 60000m + Random.Shared.Next(-10, 10),
+                        Confidence = Random.Shared.Next(40, 70), // High confidence for verification
                         Volume24h = 50_000_000m,
                         Timestamp = DateTime.UtcNow
                     };
@@ -70,7 +68,7 @@ public class TradeBotWorker : BackgroundService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "CHAOS RECOVERY: Execution loop caught an expected (or unexpected) error. " +
+                    _logger.LogWarning(ex, "CHAOS RECOVERY: Execution loop caught an error. " +
                                      "Dead-Man-Switch confirmed active.");
                     // The loop continues, proving we can survive network drops
                 }

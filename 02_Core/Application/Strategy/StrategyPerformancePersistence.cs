@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Linq;
 using ThatsMyQuant.Domain.Entities;
 
 namespace ThatsMyQuant.Application.Strategy;
@@ -64,6 +65,18 @@ public sealed class StrategyPerformanceState
     public List<StrategyBucketPerformanceSnapshot> PaperBuckets { get; set; } = new();
     public List<ExitPolicyPerformanceSnapshot> ExitPolicyBuckets { get; set; } = new();
     public DateTime RecordedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public StrategyPerformanceState Clone()
+    {
+        return new StrategyPerformanceState
+        {
+            BacktestBuckets = BacktestBuckets.Select(b => b.Clone()).ToList(),
+            LiveBuckets = LiveBuckets.Select(b => b.Clone()).ToList(),
+            PaperBuckets = PaperBuckets.Select(b => b.Clone()).ToList(),
+            ExitPolicyBuckets = ExitPolicyBuckets.Select(b => b.Clone()).ToList(),
+            RecordedAtUtc = RecordedAtUtc
+        };
+    }
 }
 
 public sealed class StrategyBucketPerformanceSnapshot
@@ -110,6 +123,11 @@ public sealed class StrategyBucketPerformanceSnapshot
     public bool PromotionReady { get; set; }
     public string PromotionStage { get; set; } = "Backtest";
     public DateTime RecordedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public StrategyBucketPerformanceSnapshot Clone()
+    {
+        return (StrategyBucketPerformanceSnapshot)this.MemberwiseClone();
+    }
 }
 
 public sealed class ExitPolicyPerformanceSnapshot
@@ -126,6 +144,11 @@ public sealed class ExitPolicyPerformanceSnapshot
     public decimal ExpectedValue { get; set; }
     public decimal TotalPnL { get; set; }
     public DateTime RecordedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public ExitPolicyPerformanceSnapshot Clone()
+    {
+        return (ExitPolicyPerformanceSnapshot)this.MemberwiseClone();
+    }
 }
 
 public readonly record struct PromotionGuardResult(

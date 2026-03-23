@@ -1,6 +1,7 @@
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
 using ThatsMyQuant.Domain.ValueObjects;
+using System.Threading;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -545,7 +546,7 @@ public sealed class StrategyPromotionService
     {
         lock (_sync)
         {
-            return _state;
+            return _state.Clone();
         }
     }
 
@@ -691,8 +692,13 @@ public sealed class StrategyPromotionService
 
     private async Task PersistAsync()
     {
-        _state.RecordedAtUtc = DateTime.UtcNow;
-        await _store.SaveAsync(_state);
+        StrategyPerformanceState snapshot;
+        lock (_sync)
+        {
+            _state.RecordedAtUtc = DateTime.UtcNow;
+            snapshot = _state.Clone();
+        }
+        await _store.SaveAsync(snapshot);
     }
 
     private void UpsertExitPolicySnapshots(IEnumerable<ExitPolicyPerformanceSnapshot> snapshots)

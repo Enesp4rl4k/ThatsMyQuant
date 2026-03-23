@@ -35,7 +35,7 @@ builder.Services.AddRateLimiter(options =>
 
 // --- Database ---
 builder.Services.AddDbContext<QuantDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db"));
+    options.UseSqlite(builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=quant.db"));
 
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
