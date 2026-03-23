@@ -40,5 +40,22 @@ public class Signal : INotification
     /// <summary>The rolling 24-hour volume for the asset. Critical for calculating ADV slip-protection.</summary>
     public decimal Volume24h { get; set; } = 1_000_000; // Default to $1M for safety
 
+    // Ultra-Low Latency Order Book Microstructure Data
+    public double? OrderFlowImbalance { get; set; }
+    public double? BestBid { get; set; }
+    public double? BestAsk { get; set; }
+    public double? WallAgeMs { get; set; }
+
+    public ExecutionActionType ExecutionAction { get; set; } = ExecutionActionType.None;
+
+    public PriceActionType PriceActionSignal { get; set; } = PriceActionType.None;
+
+    public SignalReasonFlags ReasonFlags { get; set; } = SignalReasonFlags.None;
+
+    public void AddReason(SignalReasonFlags flag)
+    {
+        ReasonFlags |= flag;
+    }
+
     public Dictionary<string, string> Metadata { get; set; } = new();
 }

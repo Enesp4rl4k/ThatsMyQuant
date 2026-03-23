@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using ThatsMyQuant.Application.Strategy;
+using ThatsMyQuant.Application.MachineLearning;
 
 namespace ThatsMyQuant.Application.Common;
 
@@ -22,6 +23,8 @@ public static class DependencyInjection
         services.AddSingleton<SentimentAgent>();
         services.AddSingleton<SwarmOrchestrator>();
         services.AddSingleton<NewsFeedSim>();
+        services.AddSingleton<InferenceAgent>();
+        services.AddSingleton<FeatureEngineeringAgent>();
         
         return services;
     }

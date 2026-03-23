@@ -26,7 +26,8 @@ public class RiskAgent
     public Task<(bool Approved, string Reason, decimal SafePositionSizePercent)> EvaluateAsync(
         TradeDecision candidate, 
         RiskParameters riskProfile, 
-        decimal symbol24hVolume)
+        decimal symbol24hVolume,
+        CancellationToken cancellationToken = default)
     {
         // 1. Kelly Criterion — f = (b*p − q) / b  (half-Kelly for safety)
         //    b = expected profit multiple on a win  (1.5x assumed)

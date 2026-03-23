@@ -8,11 +8,16 @@ public class StringToBoolConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        return value?.ToString() == parameter?.ToString();
+        return string.Equals(value?.ToString(), parameter?.ToString(), StringComparison.Ordinal);
     }
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        return value is true ? parameter?.ToString() : Binding.DoNothing;
+        if (value is true)
+        {
+            return parameter?.ToString() ?? string.Empty;
+        }
+
+        return Binding.DoNothing;
     }
 }

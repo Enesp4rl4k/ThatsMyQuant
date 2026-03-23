@@ -21,6 +21,9 @@ public class PairsTradingEngine
     private int _historyCount = 0;
     private readonly int _windowSize;
 
+    private double _runningSum = 0;
+    private double _runningSumSq = 0;
+
     private decimal _latestPriceA;
     private decimal _latestPriceB;
 
@@ -62,13 +65,30 @@ public class PairsTradingEngine
 
     private void EvaluateSpread()
     {
-        // Spread = log(PriceA) - log(PriceB) or simple ratio
-        double currentSpread = (double)(_latestPriceA / _latestPriceB);
+        // Use Log Spread: ln(PriceA) - ln(PriceB) for market-neutral statistical arbitrage
+        double currentSpread = Math.Log((double)_latestPriceA) - Math.Log((double)_latestPriceB);
+
+        double oldSpread = 0;
+        if (_historyCount == _windowSize)
+        {
+            oldSpread = _spreadHistory[_historyIndex];
+        }
 
         // Circular buffer insertion
         _spreadHistory[_historyIndex] = currentSpread;
         _historyIndex = (_historyIndex + 1) % _windowSize;
-        if (_historyCount < _windowSize) _historyCount++;
+
+        if (_historyCount < _windowSize)
+        {
+            _historyCount++;
+            _runningSum += currentSpread;
+            _runningSumSq += currentSpread * currentSpread;
+        }
+        else
+        {
+            _runningSum += currentSpread - oldSpread;
+            _runningSumSq += (currentSpread * currentSpread) - (oldSpread * oldSpread);
+        }
 
         // Need enough data
         if (_historyCount < _windowSize) return;
@@ -91,25 +111,13 @@ public class PairsTradingEngine
 
     private double CalculateZScore(double currentSpread)
     {
-        double sum = 0;
-        for (int i = 0; i < _windowSize; i++)
-        {
-            sum += _spreadHistory[i];
-        }
-        double mean = sum / _windowSize;
+        double mean = _runningSum / _windowSize;
 
-        double sumOfSquaresOfDifferences = 0;
-        for (int i = 0; i < _windowSize; i++)
-        {
-            double diff = _spreadHistory[i] - mean;
-            sumOfSquaresOfDifferences += diff * diff;
-        }
+        // Prevent precision loss anomalies yielding negative variance
+        double variance = (_runningSumSq - (_runningSum * _runningSum) / _windowSize) / _windowSize;
+        if (variance <= 0) return 0;
 
-        double variance = sumOfSquaresOfDifferences / _windowSize;
         double stdDev = Math.Sqrt(variance);
-
-        if (stdDev == 0) return 0;
-
         return (currentSpread - mean) / stdDev;
     }
 }

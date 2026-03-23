@@ -28,6 +28,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     private readonly EdgeScoreService _edgeScoreService;
     private readonly IHftSignalGenerationService _hftSignalGenerationService;
     private readonly ExitPolicyLearningService? _exitPolicyLearningService;
+    private readonly IPortfolioStateCache _portfolioStateCache;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
@@ -45,6 +46,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         StrategyPromotionService promotionService,
         EdgeScoreService? edgeScoreService,
         IConfiguration configuration,
+        IPortfolioStateCache portfolioStateCache,
         IHftSignalGenerationService? hftSignalGenerationService = null,
         ExitPolicyLearningService? exitPolicyLearningService = null)
     {
@@ -63,6 +65,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         _edgeScoreService = edgeScoreService ?? new EdgeScoreService();
         _hftSignalGenerationService = hftSignalGenerationService ?? new HftSignalGenerationService(technicalAnalysis);
         _exitPolicyLearningService = exitPolicyLearningService;
+        _portfolioStateCache = portfolioStateCache;
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
     }
@@ -99,7 +102,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
                 ? await _hftMarketDataService.GetCandlesAsync(request.Signal, market, ct)
                 : await _marketDataService.GetCandlesAsync(request.Signal.Symbol, 100, market), cancellationToken);
 
-        var recentTrades = await _tradeRepository.GetAllAsync(500);
+        // 🚀 HFT PIPELINE: Zero-allocation $O(1)$ lock-free Ram pointers natively replacing EF Core querying 
+        var recentTrades = _portfolioStateCache.GetRecentTrades();
         _exitPolicyLearningService?.RecordLiveState(recentTrades);
 
         // ═══════════════════════════════════════════════════════
@@ -278,6 +282,33 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             };
         }
 
+        var finalAllocatorBias = _promotionService.EvaluateFinalAllocatorBias(request.Signal, decision, recentTrades);
+        if (finalAllocatorBias.SizeMultiplier != 1.0m)
+        {
+            decision = decision with
+            {
+                PositionSizePercent = Math.Max(0.001m, decision.PositionSizePercent * finalAllocatorBias.SizeMultiplier)
+            };
+            request.Signal.Reasoning += $" | Final Allocator: {finalAllocatorBias.Reason}";
+        }
+        request.Signal.Metadata["FinalAllocatorBias"] = finalAllocatorBias.SizeMultiplier.ToString("F2");
+        request.Signal.Metadata["FinalAllocatorScope"] = finalAllocatorBias.Scope;
+        request.Signal.Metadata["VenueExecutionBias"] = finalAllocatorBias.VenueExecutionBias.ToString("F2");
+        request.Signal.Metadata["VenueExecutionScope"] = finalAllocatorBias.VenueExecutionScope;
+        request.Signal.Metadata["VenueImpactLabel"] = ResolveVenueImpactLabel(finalAllocatorBias.VenueExecutionBias);
+        var exactBucketPressure = ResolveExactBucketPressureLabel(request.Signal.Symbol, request.Signal.StrategyTag, request.Signal.RegimeTag, recentTrades);
+        request.Signal.Metadata["ExactBucketImpactLabel"] = exactBucketPressure.Impact;
+        request.Signal.Metadata["ExactBucketSummary"] = exactBucketPressure.Summary;
+        var concordance = ResolveConcordanceLabel(
+            exactBucketPressure.Impact,
+            exactBucketPressure.Summary,
+            finalAllocatorBias.VenueExecutionBias,
+            finalAllocatorBias.VenueExecutionScope,
+            request.Signal.Symbol,
+            request.Signal.StrategyTag,
+            request.Signal.RegimeTag);
+        request.Signal.Metadata["ConcordanceImpactLabel"] = concordance.Impact;
+        request.Signal.Metadata["ConcordanceSummary"] = concordance.Summary;
         _logger.LogInformation("✅ APPROVED: Confidence={Confidence}/100 | SL={SL:F2} | TP={TP:F2} | Size={Size:P1}",
             decision.Confidence, decision.StopLoss, decision.TakeProfit, decision.PositionSizePercent);
 
@@ -357,4 +388,152 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
            (signal.Metadata.TryGetValue("ExecutionMode", out var mode) &&
             mode.Contains("HFT", StringComparison.OrdinalIgnoreCase)) ||
            string.Equals(signal.StrategyTag, "HftMicroEdge", StringComparison.OrdinalIgnoreCase);
+
+    private static string ResolveVenueImpactLabel(decimal venueExecutionBias)
+    {
+        if (venueExecutionBias <= 0.93m)
+        {
+            return $"Venue hurt size hard ({venueExecutionBias:F2}x)";
+        }
+
+        if (venueExecutionBias <= 0.98m)
+        {
+            return $"Venue capped size ({venueExecutionBias:F2}x)";
+        }
+
+        if (venueExecutionBias >= 1.02m)
+        {
+            return $"Venue helped size ({venueExecutionBias:F2}x)";
+        }
+
+        return "Venue neutral";
+    }
+
+    private static (string Impact, string Summary) ResolveConcordanceLabel(
+        string exactBucketImpact,
+        string exactBucketSummary,
+        decimal venueExecutionBias,
+        string venueExecutionScope,
+        string symbol,
+        string strategyTag,
+        string regimeTag)
+    {
+        var venueLabel = ResolveVenueImpactLabel(venueExecutionBias);
+        var scopeText = string.IsNullOrWhiteSpace(venueExecutionScope) ? "default venue scope" : venueExecutionScope;
+        var venueSummary = $"{venueLabel}. Scope: {scopeText}. {symbol} {strategyTag}/{regimeTag}.";
+        var exactSupportsScaling = exactBucketImpact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase);
+        var exactNearPaper = exactBucketImpact.Contains("near Paper", StringComparison.OrdinalIgnoreCase);
+        var exactLiveProbe = exactBucketImpact.Contains("LiveProbe", StringComparison.OrdinalIgnoreCase);
+        var venueSupportsScaling = venueExecutionBias >= 1.02m;
+        var venueWeak = venueExecutionBias <= 0.98m;
+        var venueSeverelyWeak = venueExecutionBias <= 0.93m;
+
+        if (exactSupportsScaling && venueSupportsScaling)
+        {
+            return (
+                "Concordance supports scaling",
+                $"Exact bucket edge and venue execution are aligned for scaled deployment. {exactBucketSummary} {venueSummary}");
+        }
+
+        if ((exactNearPaper || exactLiveProbe) && venueSeverelyWeak)
+        {
+            return (
+                "Concordance is capping near Paper",
+                $"Exact bucket pressure and venue execution are both soft, so live size should stay heavily capped. {exactBucketSummary} {venueSummary}");
+        }
+
+        if (exactSupportsScaling && venueWeak)
+        {
+            return (
+                "Venue is capping real edge",
+                $"The exact bucket is proving edge, but venue execution is undermining that edge live. {exactBucketSummary} {venueSummary}");
+        }
+
+        if ((exactNearPaper || exactLiveProbe) && venueSupportsScaling)
+        {
+            return (
+                "Edge is unproven despite clean venue",
+                $"Venue execution is supportive, but the exact bucket is still not proving enough edge to scale. {exactBucketSummary} {venueSummary}");
+        }
+
+        if (exactLiveProbe && venueWeak)
+        {
+            return (
+                "Concordance is holding LiveProbe",
+                $"Both edge quality and venue execution are leaning defensive, so probe sizing is still the honest path. {exactBucketSummary} {venueSummary}");
+        }
+
+        return (
+            "Concordance is mixed",
+            $"Edge quality and venue execution are sending mixed signals, so keep deployment disciplined. {exactBucketSummary} {venueSummary}");
+    }
+
+    private static (string Impact, string Summary) ResolveExactBucketPressureLabel(
+        string symbol,
+        string strategyTag,
+        string regimeTag,
+        IReadOnlyList<Trade> trades)
+    {
+        var exactTrades = trades
+            .Where(trade => trade.Status == TradeStatus.Executed || trade.Status == TradeStatus.Failed)
+            .Where(trade => string.Equals(trade.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
+            .Where(trade => string.Equals(trade.StrategyTag, strategyTag, StringComparison.OrdinalIgnoreCase))
+            .Where(trade => string.Equals(trade.RegimeTag, regimeTag, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        if (exactTrades.Count == 0)
+        {
+            return ("Exact bucket pressure unconfirmed", "No exact bucket pressure signal has enough stored depth yet.");
+        }
+
+        var pnls = exactTrades
+            .Select(trade => trade.ExitTime.HasValue ? (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == TradeSide.Sell ? -1 : 1) : 0m)
+            .ToList();
+        var wins = pnls.Count(pnl => pnl > 0);
+        var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+        var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+        var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+        var expectedValue = pnls.Count == 0 ? 0m : pnls.Average();
+        var winRate = exactTrades.Count == 0 ? 0 : wins * 100.0 / exactTrades.Count;
+        var highEdgePnls = exactTrades
+            .Where(trade => string.Equals(trade.EdgeBand, "Full", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(trade.EdgeBand, "Reduced", StringComparison.OrdinalIgnoreCase) ||
+                            trade.EdgeScore >= 70m)
+            .Select(trade => trade.ExitTime.HasValue ? (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == TradeSide.Sell ? -1 : 1) : 0m)
+            .ToList();
+        var highEdgeWinRate = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Count(value => value > 0) * 100.0 / highEdgePnls.Count;
+        var highEdgeGrossProfit = highEdgePnls.Where(pnl => pnl > 0).Sum();
+        var highEdgeGrossLoss = Math.Abs(highEdgePnls.Where(pnl => pnl < 0).Sum());
+        var highEdgeProfitFactor = highEdgeGrossLoss > 0 ? (double)(highEdgeGrossProfit / highEdgeGrossLoss) : highEdgeGrossProfit > 0 ? 99 : 0;
+        var highEdgeExpectedValue = highEdgePnls.Count == 0 ? 0m : highEdgePnls.Average();
+
+        if (highEdgePnls.Count >= 3 &&
+            (highEdgeExpectedValue <= 0m || highEdgeProfitFactor < 1.05 || highEdgeWinRate < 46))
+        {
+            return ("Exact bucket is capping near Paper", $"High-edge exact outcomes are failing: PF {highEdgeProfitFactor:F2}, WR {highEdgeWinRate:F1}%, EV {highEdgeExpectedValue:F2}.");
+        }
+
+        if (expectedValue <= 0m || profitFactor < 0.95 || winRate < 42)
+        {
+            return ("Exact bucket is capping near Paper", $"Exact bucket is underperforming: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.");
+        }
+
+        if (profitFactor < 1.12 || winRate < 49 || expectedValue <= 0m)
+        {
+            return ("Exact bucket is holding LiveProbe", $"Exact bucket is still soft: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.");
+        }
+
+        if (highEdgePnls.Count >= 4 && highEdgeExpectedValue > 0m && highEdgeProfitFactor >= 1.35 && highEdgeWinRate >= 56)
+        {
+            return ("Exact bucket supports scaling", $"High-edge exact outcomes support scale: PF {highEdgeProfitFactor:F2}, WR {highEdgeWinRate:F1}%, EV {highEdgeExpectedValue:F2}.");
+        }
+
+        if (expectedValue > 0m && profitFactor >= 1.22 && winRate >= 52)
+        {
+            return ("Exact bucket supports scaling", $"Exact bucket is healthy: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.");
+        }
+
+        return ("Exact bucket is still proving itself", $"Exact bucket is still proving itself: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.");
+    }
 }
+

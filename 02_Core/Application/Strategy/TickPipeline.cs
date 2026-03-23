@@ -1,7 +1,10 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Application.Commands;
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Interfaces;
+using MediatR;
+using ThatsMyQuant.Application.MachineLearning;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -13,16 +16,24 @@ public class TickPipeline : IAsyncDisposable
 {
     private readonly IStreamingMarketDataService _streamingService;
     private readonly ILogger<TickPipeline> _logger;
+    private readonly IMediator _mediator;
+    private readonly FeatureEngineeringAgent _featureAgent;
     private readonly Channel<MarketTick> _tickChannel;
     private readonly Channel<OrderBookSnapshot> _orderBookChannel;
     private CancellationTokenSource? _cts;
     private Task? _tickWorker;
     private Task? _obWorker;
 
-    public TickPipeline(IStreamingMarketDataService streamingService, ILogger<TickPipeline> logger)
+    public TickPipeline(
+        IStreamingMarketDataService streamingService, 
+        ILogger<TickPipeline> logger, 
+        IMediator mediator,
+        FeatureEngineeringAgent featureAgent)
     {
         _streamingService = streamingService;
         _logger = logger;
+        _mediator = mediator;
+        _featureAgent = featureAgent;
 
         // Bounded channel to drop oldest ticks if execution falls behind, preventing OOM
         _tickChannel = Channel.CreateBounded<MarketTick>(new BoundedChannelOptions(10_000)
@@ -57,8 +68,8 @@ public class TickPipeline : IAsyncDisposable
         {
             await foreach (var tick in _tickChannel.Reader.ReadAllAsync(token))
             {
-                // TODO: Route tick to Quantitative Strategies (Math models)
-                // Struct is passed by value, zero heap allocation
+                // Push tick execution instantly into the O(1) Mathematical arrays strictly bypassing GC 
+                _featureAgent.ProcessTickNatively((double)tick.Price);
             }
         }
         catch (OperationCanceledException) { }
@@ -74,8 +85,39 @@ public class TickPipeline : IAsyncDisposable
         {
             await foreach (var ob in _orderBookChannel.Reader.ReadAllAsync(token))
             {
-                // TODO: Route OrderBook depth to Arbitrage / Order Flow Imbalance models
-                // Fast path processing without string manipulation or class instantiation
+                if (ob.Bids.Length == 0 || ob.Asks.Length == 0) continue;
+
+                var bestBid = ob.Bids[0].Price;
+                var bestAsk = ob.Asks[0].Price;
+
+                // Native High-Frequency Volume math (Sum top 5 levels)
+                decimal bidVol = 0;
+                for (int i = 0; i < Math.Min(5, ob.Bids.Length); i++) bidVol += ob.Bids[i].Quantity;
+
+                decimal askVol = 0;
+                for (int i = 0; i < Math.Min(5, ob.Asks.Length); i++) askVol += ob.Asks[i].Quantity;
+
+                decimal totalVol = bidVol + askVol;
+                double imbalance = totalVol > 0 ? (double)((bidVol - askVol) / totalVol) : 0;
+                
+                // Immediately update generic feature dimension safely without reallocation
+                _featureAgent.ApplyOrderFlowImbalance(imbalance);
+
+                // Native Signal Object mapping strictly pinned to UnixMs without invoking OS UtcNow
+                var signal = new Signal
+                {
+                    Source = "HFT-OrderFlow",
+                    Symbol = ob.Symbol,
+                    Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ob.TimestampMs).UtcDateTime,
+                    BestBid = (double)bestBid,
+                    BestAsk = (double)bestAsk,
+                    OrderFlowImbalance = imbalance,
+                    WallAgeMs = 150d, // Static spoofing age
+                    Price = (bestBid + bestAsk) / 2m
+                };
+
+                // Dispatch signal asynchronously into the MediatR swarm execution graphs
+                await _mediator.Send(new ProcessSignalCommand(signal), token);
             }
         }
         catch (OperationCanceledException) { }

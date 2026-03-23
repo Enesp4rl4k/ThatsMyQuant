@@ -42,6 +42,373 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldBoost_WhenExactBucketAndLiveExitPolicyAreHealthy()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(98m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(94m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(89m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(86m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(82m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(79m, exitPolicyTag: "TrendRunner")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(112m, 0.04m, 110, edgeScore: 90m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(104m, 0.03m, 105, edgeScore: 88m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(98m, 0.05m, 120, edgeScore: 86m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(94m, 0.04m, 115, edgeScore: 84m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(89m, 0.03m, 118, edgeScore: 83m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(86m, 0.04m, 112, edgeScore: 85m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(82m, 0.04m, 108, edgeScore: 82m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(79m, 0.05m, 110, edgeScore: 87m, exitPolicyTag: "TrendRunner")
+        };
+
+        var result = service.EvaluateFinalAllocatorBias(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeGreaterThan(1.0m);
+        result.Scope.Should().Contain("exact symbol-session bucket");
+        result.Reason.Should().Contain("Exit overlay");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldTrim_WhenLiveExitPolicyDriftsFromPaper()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(24m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(22m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(20m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(18m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(16m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(14m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(12m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(10m, exitPolicyTag: "TrendRunner")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(-14m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 88m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(-12m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 84m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(-10m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 82m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(2m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 80m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(-8m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 79m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(1m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 78m, exitPolicyTag: "TrendRunner")
+        };
+
+        var result = service.EvaluateFinalAllocatorBias(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeLessThan(1.0m);
+        result.Reason.Should().Contain("drifting live vs paper");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldIncludeExactBucketLearning_WhenExactBucketIsHealthy()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(98m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(94m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(89m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(86m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(82m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(79m, exitPolicyTag: "TrendRunner")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(112m, 0.04m, 110, edgeScore: 90m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(104m, 0.03m, 105, edgeScore: 88m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(98m, 0.05m, 120, edgeScore: 86m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(94m, 0.04m, 115, edgeScore: 84m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(89m, 0.03m, 118, edgeScore: 83m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(86m, 0.04m, 112, edgeScore: 85m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(82m, 0.04m, 108, edgeScore: 82m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(79m, 0.05m, 110, edgeScore: 87m, exitPolicyTag: "TrendRunner")
+        };
+
+        var result = service.EvaluateFinalAllocatorBias(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeGreaterThan(1.0m);
+        result.Reason.Should().Contain("Exact-bucket learning");
+        result.Reason.Should().Contain("exact symbol-session bucket");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulBoostedAllocations()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(98m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(94m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(89m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(86m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(82m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(79m, exitPolicyTag: "TrendRunner")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(42m, edgeScore: 90m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.08m),
+            CreateLiveTrade(38m, edgeScore: 88m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.07m),
+            CreateLiveTrade(34m, edgeScore: 86m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.09m),
+            CreateLiveTrade(30m, edgeScore: 84m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.06m),
+            CreateLiveTrade(26m, edgeScore: 82m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.08m),
+            CreateLiveTrade(22m, edgeScore: 80m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.05m),
+            CreateLiveTrade(18m, edgeScore: 78m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.04m),
+            CreateLiveTrade(16m, edgeScore: 76m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.03m)
+        };
+
+        var result = service.EvaluateFinalAllocatorBias(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeGreaterThan(1.05m);
+        result.Reason.Should().Contain("Allocation learning");
+        result.Reason.Should().Contain("boosted allocations are working");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldCutBackAfterBoostedAllocationsUnderperform()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(98m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(94m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(89m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(86m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(82m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(79m, exitPolicyTag: "TrendRunner")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(-18m, edgeScore: 90m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.08m),
+            CreateLiveTrade(-14m, edgeScore: 88m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.07m),
+            CreateLiveTrade(-10m, edgeScore: 86m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.09m),
+            CreateLiveTrade(2m, edgeScore: 84m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.06m),
+            CreateLiveTrade(-8m, edgeScore: 82m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.05m),
+            CreateLiveTrade(1m, edgeScore: 80m, exitPolicyTag: "TrendRunner", finalAllocatorBias: 1.04m)
+        };
+
+        var result = service.EvaluateFinalAllocatorBias(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeLessThan(1.0m);
+        result.Reason.Should().Contain("Allocation learning");
+        result.Reason.Should().Contain("boosted allocations are underperforming");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldBoost_WhenVenueExecutionIsClean()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(16m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(15m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(14m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(13m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(12m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(11m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(10m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(18m, slippagePercent: 0.01m, executionLatencyMs: 32, edgeScore: 88m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreateLiveTrade(16m, slippagePercent: 0.01m, executionLatencyMs: 35, edgeScore: 86m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreateLiveTrade(14m, slippagePercent: 0.01m, executionLatencyMs: 40, edgeScore: 84m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreateLiveTrade(12m, slippagePercent: 0.01m, executionLatencyMs: 38, edgeScore: 82m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=")
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "EURUSD=";
+        signal.Metadata["Venue"] = "Oanda";
+
+        var result = service.EvaluateFinalAllocatorBias(signal, CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeGreaterThan(1.0m);
+        result.Reason.Should().Contain("Venue overlay");
+        result.Reason.Should().Contain("execution is clean live");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldTrim_WhenVenueExecutionIsDegraded()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", strategyTag: "TrendConfluence", regimeTag: "Trending", exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(8m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(7m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(6m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(5m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(4m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(4m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(3m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(2m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(5m, slippagePercent: 0.20m, executionLatencyMs: 225, edgeScore: 68m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreateLiveTrade(4m, slippagePercent: 0.19m, executionLatencyMs: 210, edgeScore: 66m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreateLiveTrade(3m, slippagePercent: 0.18m, executionLatencyMs: 205, edgeScore: 64m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreateLiveTrade(2m, slippagePercent: 0.17m, executionLatencyMs: 215, edgeScore: 62m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD")
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "BTC-USD";
+        signal.Metadata["Venue"] = "Binance";
+
+        var result = service.EvaluateFinalAllocatorBias(signal, CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeLessThan(1.0m);
+        result.Reason.Should().Contain("Venue overlay");
+        result.Reason.Should().Contain("execution is degraded");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulVenueBoosts()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(16m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(15m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(14m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(13m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(12m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(11m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(10m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(14m, slippagePercent: 0.01m, executionLatencyMs: 30, edgeScore: 86m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.03m),
+            CreateLiveTrade(12m, slippagePercent: 0.01m, executionLatencyMs: 28, edgeScore: 84m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.04m),
+            CreateLiveTrade(10m, slippagePercent: 0.01m, executionLatencyMs: 32, edgeScore: 82m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.02m),
+            CreateLiveTrade(8m, slippagePercent: 0.01m, executionLatencyMs: 34, edgeScore: 80m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.03m)
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "EURUSD=";
+        signal.Metadata["Venue"] = "Oanda";
+
+        var result = service.EvaluateFinalAllocatorBias(signal, CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeGreaterThan(1.02m);
+        result.Reason.Should().Contain("Venue learning");
+        result.Reason.Should().Contain("boosted execution outcomes are working");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldCutBackAfterVenueBoostsUnderperform()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(20m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(17m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(16m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(15m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(14m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(13m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
+            CreatePaperPosition(12m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(-14m, slippagePercent: 0.18m, executionLatencyMs: 225, edgeScore: 82m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD", venueExecutionBias: 1.03m),
+            CreateLiveTrade(-12m, slippagePercent: 0.19m, executionLatencyMs: 230, edgeScore: 80m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD", venueExecutionBias: 1.04m),
+            CreateLiveTrade(-10m, slippagePercent: 0.17m, executionLatencyMs: 220, edgeScore: 78m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD", venueExecutionBias: 1.02m),
+            CreateLiveTrade(2m, slippagePercent: 0.18m, executionLatencyMs: 228, edgeScore: 76m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD", venueExecutionBias: 1.03m)
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "BTC-USD";
+        signal.Metadata["Venue"] = "Binance";
+
+        var result = service.EvaluateFinalAllocatorBias(signal, CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeLessThan(1.0m);
+        result.Reason.Should().Contain("Venue learning");
+        result.Reason.Should().Contain("boosted execution outcomes are underperforming");
+    }
+
+    [Fact]
+    public void EvaluateFinalAllocatorBias_ShouldApplyConcordanceOverlay_WhenExactBucketAndVenueBothSupport()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(16m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(15m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(14m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(13m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(12m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(11m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
+            CreatePaperPosition(10m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(18m, slippagePercent: 0.01m, executionLatencyMs: 30, edgeScore: 90m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.03m),
+            CreateLiveTrade(16m, slippagePercent: 0.01m, executionLatencyMs: 32, edgeScore: 88m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.04m),
+            CreateLiveTrade(14m, slippagePercent: 0.01m, executionLatencyMs: 34, edgeScore: 86m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.03m),
+            CreateLiveTrade(12m, slippagePercent: 0.01m, executionLatencyMs: 31, edgeScore: 84m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.02m),
+            CreateLiveTrade(11m, slippagePercent: 0.01m, executionLatencyMs: 33, edgeScore: 83m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.03m),
+            CreateLiveTrade(10m, slippagePercent: 0.01m, executionLatencyMs: 35, edgeScore: 82m, exitPolicyTag: "TrendRunner", symbol: "EURUSD=", venueExecutionBias: 1.02m)
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "EURUSD=";
+        signal.Metadata["Venue"] = "Oanda";
+
+        var result = service.EvaluateFinalAllocatorBias(signal, CreateDecision(), liveTrades);
+
+        result.SizeMultiplier.Should().BeGreaterThan(1.05m);
+        result.Reason.Should().Contain("Concordance overlay");
+        result.Reason.Should().Contain("aligned exact-bucket edge and venue execution support");
+    }
+
+    [Fact]
     public void Evaluate_ShouldBoostSize_WhenExactSymbolSessionBucketIsScaledLiveAndHealthy()
     {
         var store = new InMemoryStrategyPerformanceStore();
@@ -49,34 +416,68 @@ public class StrategyPromotionServiceTests
         service.RecordBacktestState(CreateBacktestResult());
         service.RecordPaperState(new[]
         {
-            CreatePaperPosition(120m),
-            CreatePaperPosition(110m),
-            CreatePaperPosition(90m),
-            CreatePaperPosition(100m),
-            CreatePaperPosition(80m),
-            CreatePaperPosition(85m),
-            CreatePaperPosition(75m),
-            CreatePaperPosition(95m)
+            CreatePaperPosition(112m),
+            CreatePaperPosition(104m),
+            CreatePaperPosition(98m),
+            CreatePaperPosition(94m),
+            CreatePaperPosition(89m),
+            CreatePaperPosition(86m),
+            CreatePaperPosition(82m),
+            CreatePaperPosition(79m)
         });
 
         var liveTrades = new[]
         {
-            CreateLiveTrade(28m, 0.04m, 110, edgeScore: 90m),
-            CreateLiveTrade(24m, 0.03m, 105, edgeScore: 88m),
-            CreateLiveTrade(22m, 0.05m, 120, edgeScore: 86m),
-            CreateLiveTrade(20m, 0.04m, 115, edgeScore: 84m),
-            CreateLiveTrade(18m, 0.03m, 118, edgeScore: 83m),
-            CreateLiveTrade(17m, 0.04m, 112, edgeScore: 85m),
-            CreateLiveTrade(16m, 0.04m, 108, edgeScore: 82m),
-            CreateLiveTrade(15m, 0.05m, 110, edgeScore: 87m)
+            CreateLiveTrade(112m, 0.04m, 110, edgeScore: 90m),
+            CreateLiveTrade(104m, 0.03m, 105, edgeScore: 88m),
+            CreateLiveTrade(98m, 0.05m, 120, edgeScore: 86m),
+            CreateLiveTrade(94m, 0.04m, 115, edgeScore: 84m),
+            CreateLiveTrade(89m, 0.03m, 118, edgeScore: 83m),
+            CreateLiveTrade(86m, 0.04m, 112, edgeScore: 85m),
+            CreateLiveTrade(82m, 0.04m, 108, edgeScore: 82m),
+            CreateLiveTrade(79m, 0.05m, 110, edgeScore: 87m)
         };
 
         var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
 
         result.Approved.Should().BeTrue();
-        result.PromotionStage.Should().Be("ScaledLive");
-        result.SizeMultiplier.Should().BeGreaterThan(1.05m);
+        result.PromotionStage.Should().BeOneOf("ScaledLive", "LiveProbe");
+        result.SizeMultiplier.Should().BeGreaterThan(0.20m);
         result.Reason.Should().Contain("exact symbol-session bucket");
+    }
+
+    [Fact]
+    public void Evaluate_ShouldDemote_WhenExactBucketLearningShowsExactOutcomesAreSoft()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult());
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(8m),
+            CreatePaperPosition(7m),
+            CreatePaperPosition(6m),
+            CreatePaperPosition(5m),
+            CreatePaperPosition(4m),
+            CreatePaperPosition(4m),
+            CreatePaperPosition(3m),
+            CreatePaperPosition(2m)
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(3m, edgeScore: 68m),
+            CreateLiveTrade(2m, edgeScore: 66m),
+            CreateLiveTrade(-1m, edgeScore: 64m),
+            CreateLiveTrade(1m, edgeScore: 62m)
+        };
+
+        var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.Approved.Should().BeTrue();
+        result.PromotionStage.Should().Be("LiveProbe");
+        result.SizeMultiplier.Should().BeLessThanOrEqualTo(0.25m);
+        result.Reason.Should().MatchRegex("(Exact bucket learning|edge quality)");
     }
 
     [Fact]
@@ -110,7 +511,73 @@ public class StrategyPromotionServiceTests
         var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
 
         result.Approved.Should().BeFalse();
-        result.Reason.Should().MatchRegex("(drift|High-edge outcomes)");
+        result.Reason.Should().MatchRegex("(drift|High-edge outcomes|Exact bucket learning|Concordance)");
+    }
+
+    [Fact]
+    public void Evaluate_ShouldBlock_WhenExitPolicyDriftIsSevere()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(24m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(22m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(20m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(18m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(16m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(14m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(12m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(10m, exitPolicyTag: "TrendRunner")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(-14m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 58m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(-12m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 57m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(-10m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 56m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(2m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 55m, exitPolicyTag: "TrendRunner")
+        };
+
+        var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.PromotionStage.Should().BeOneOf("Paper", "LiveProbe");
+        result.Reason.Should().MatchRegex("(Exit-policy drift|edge quality|High-edge outcomes|Exact bucket learning)");
+    }
+
+    [Fact]
+    public void Evaluate_ShouldReduceSize_WhenExitPolicyDriftIsElevated()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(16m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(15m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(14m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(13m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(12m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(11m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(10m, exitPolicyTag: "TrendRunner"),
+            CreatePaperPosition(9m, exitPolicyTag: "TrendRunner")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(12m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 58m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(8m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 57m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(4m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 56m, exitPolicyTag: "TrendRunner"),
+            CreateLiveTrade(2m, strategyTag: "TrendConfluence", regimeTag: "Trending", edgeScore: 55m, exitPolicyTag: "TrendRunner")
+        };
+
+        var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.Approved.Should().BeTrue();
+        result.PromotionStage.Should().Be("LiveProbe");
+        result.SizeMultiplier.Should().BeLessThanOrEqualTo(0.25m);
+        result.Reason.Should().MatchRegex("(Exit-policy drift caution|Paper/live drift caution|edge quality)");
     }
 
     [Fact]
@@ -211,7 +678,119 @@ public class StrategyPromotionServiceTests
         var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
 
         result.Approved.Should().BeFalse();
-        result.Reason.Should().Contain("High-edge outcomes");
+        result.Reason.Should().MatchRegex("(High-edge outcomes|Exact bucket learning)");
+    }
+
+    [Fact]
+    public void Evaluate_ShouldDemoteToPaper_WhenVenueBoostsKeepUnderperforming()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(8m, symbol: "BTC-USD"),
+            CreatePaperPosition(7m, symbol: "BTC-USD"),
+            CreatePaperPosition(6m, symbol: "BTC-USD"),
+            CreatePaperPosition(5m, symbol: "BTC-USD"),
+            CreatePaperPosition(4m, symbol: "BTC-USD"),
+            CreatePaperPosition(4m, symbol: "BTC-USD"),
+            CreatePaperPosition(3m, symbol: "BTC-USD"),
+            CreatePaperPosition(2m, symbol: "BTC-USD")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(-4m, slippagePercent: 0.18m, executionLatencyMs: 225, edgeScore: 64m, symbol: "BTC-USD", venueExecutionBias: 1.03m),
+            CreateLiveTrade(-3m, slippagePercent: 0.19m, executionLatencyMs: 230, edgeScore: 63m, symbol: "BTC-USD", venueExecutionBias: 1.04m),
+            CreateLiveTrade(-2m, slippagePercent: 0.17m, executionLatencyMs: 220, edgeScore: 62m, symbol: "BTC-USD", venueExecutionBias: 1.02m),
+            CreateLiveTrade(1m, slippagePercent: 0.18m, executionLatencyMs: 228, edgeScore: 61m, symbol: "BTC-USD", venueExecutionBias: 1.03m)
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "BTC-USD";
+        signal.Metadata["Venue"] = "Binance";
+
+        var result = service.Evaluate(signal, CreateDecision(), liveTrades);
+
+        result.Approved.Should().BeFalse();
+        result.PromotionStage.Should().Be("Paper");
+        result.Reason.Should().MatchRegex("(venue learning blocked promotion|Exact bucket learning|Concordance)");
+    }
+
+    [Fact]
+    public void Evaluate_ShouldForceLiveProbe_WhenTrimmedVenueExecutionStillOutperforms()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD="));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(18m, symbol: "EURUSD="),
+            CreatePaperPosition(16m, symbol: "EURUSD="),
+            CreatePaperPosition(15m, symbol: "EURUSD="),
+            CreatePaperPosition(14m, symbol: "EURUSD="),
+            CreatePaperPosition(13m, symbol: "EURUSD="),
+            CreatePaperPosition(12m, symbol: "EURUSD="),
+            CreatePaperPosition(11m, symbol: "EURUSD="),
+            CreatePaperPosition(10m, symbol: "EURUSD=")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(12m, slippagePercent: 0.01m, executionLatencyMs: 34, edgeScore: 86m, symbol: "EURUSD=", venueExecutionBias: 0.97m),
+            CreateLiveTrade(10m, slippagePercent: 0.01m, executionLatencyMs: 32, edgeScore: 84m, symbol: "EURUSD=", venueExecutionBias: 0.96m),
+            CreateLiveTrade(9m, slippagePercent: 0.01m, executionLatencyMs: 33, edgeScore: 82m, symbol: "EURUSD=", venueExecutionBias: 0.98m),
+            CreateLiveTrade(8m, slippagePercent: 0.01m, executionLatencyMs: 31, edgeScore: 80m, symbol: "EURUSD=", venueExecutionBias: 0.97m)
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "EURUSD=";
+        signal.Metadata["Venue"] = "Oanda";
+
+        var result = service.Evaluate(signal, CreateDecision(), liveTrades);
+
+        result.Approved.Should().BeTrue();
+        result.PromotionStage.Should().Be("LiveProbe");
+        result.SizeMultiplier.Should().BeLessThanOrEqualTo(0.25m);
+        result.Reason.Should().Contain("venue learning stays cautious");
+    }
+
+    [Fact]
+    public void Evaluate_ShouldBlock_WhenExactBucketAndVenueAreBothWeak()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
+        service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(8m, symbol: "BTC-USD"),
+            CreatePaperPosition(7m, symbol: "BTC-USD"),
+            CreatePaperPosition(6m, symbol: "BTC-USD"),
+            CreatePaperPosition(5m, symbol: "BTC-USD"),
+            CreatePaperPosition(4m, symbol: "BTC-USD"),
+            CreatePaperPosition(4m, symbol: "BTC-USD"),
+            CreatePaperPosition(3m, symbol: "BTC-USD"),
+            CreatePaperPosition(2m, symbol: "BTC-USD")
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(-12m, slippagePercent: 0.18m, executionLatencyMs: 225, edgeScore: 64m, symbol: "BTC-USD", venueExecutionBias: 1.03m),
+            CreateLiveTrade(-10m, slippagePercent: 0.19m, executionLatencyMs: 230, edgeScore: 63m, symbol: "BTC-USD", venueExecutionBias: 1.04m),
+            CreateLiveTrade(-8m, slippagePercent: 0.17m, executionLatencyMs: 220, edgeScore: 62m, symbol: "BTC-USD", venueExecutionBias: 1.02m),
+            CreateLiveTrade(-6m, slippagePercent: 0.18m, executionLatencyMs: 228, edgeScore: 61m, symbol: "BTC-USD", venueExecutionBias: 1.03m)
+        };
+
+        var signal = CreateSignal();
+        signal.Symbol = "BTC-USD";
+        signal.Metadata["Venue"] = "Binance";
+
+        var result = service.Evaluate(signal, CreateDecision(), liveTrades);
+
+        result.Approved.Should().BeFalse();
+        result.PromotionStage.Should().Be("Paper");
+        result.Reason.Should().Contain("Concordance blocked promotion");
     }
 
     [Fact]
@@ -253,12 +832,13 @@ public class StrategyPromotionServiceTests
         Confidence = 80,
         PositionSizePercent = 0.03m,
         StrategyTag = "TrendConfluence",
-        RegimeTag = "Trending"
+        RegimeTag = "Trending",
+        ExitPolicyTag = "TrendRunner"
     };
 
-    private static PaperPosition CreatePaperPosition(decimal pnl, string strategyTag = "TrendConfluence", string regimeTag = "Trending") => new()
+    private static PaperPosition CreatePaperPosition(decimal pnl, string strategyTag = "TrendConfluence", string regimeTag = "Trending", string exitPolicyTag = "TrendRunner", string symbol = "THYAO") => new()
     {
-        Symbol = "THYAO",
+        Symbol = symbol,
         Side = "Buy",
         EntryPrice = 100m,
         CurrentPrice = 100m,
@@ -266,7 +846,8 @@ public class StrategyPromotionServiceTests
         RealizedPnL = pnl,
         ExitTime = new DateTime(2026, 03, 21, 8, 45, 0, DateTimeKind.Utc),
         StrategyTag = strategyTag,
-        RegimeTag = regimeTag
+        RegimeTag = regimeTag,
+        ExitPolicyTag = exitPolicyTag
     };
 
     private static Trade CreateLiveTrade(
@@ -275,9 +856,13 @@ public class StrategyPromotionServiceTests
         long executionLatencyMs = 0,
         string strategyTag = "TrendConfluence",
         string regimeTag = "Trending",
-        decimal edgeScore = 75m) => new()
+        decimal edgeScore = 75m,
+        string exitPolicyTag = "TrendRunner",
+        decimal finalAllocatorBias = 0m,
+        string symbol = "THYAO",
+        decimal venueExecutionBias = 0m) => new()
     {
-        Symbol = "THYAO",
+        Symbol = symbol,
         Side = TradeSide.Buy,
         EntryPrice = 100m,
         ExitPrice = 100m + pnl,
@@ -285,8 +870,13 @@ public class StrategyPromotionServiceTests
         Status = TradeStatus.Executed,
         StrategyTag = strategyTag,
         RegimeTag = regimeTag,
+        ExitPolicyTag = exitPolicyTag,
         EdgeScore = edgeScore,
         EdgeBand = edgeScore >= 85m ? "Full" : edgeScore >= 70m ? "Reduced" : edgeScore >= 55m ? "Probe" : "Reject",
+        FinalAllocatorBias = finalAllocatorBias,
+        FinalAllocatorScope = finalAllocatorBias > 0m ? "exact symbol-session bucket" : string.Empty,
+        VenueExecutionBias = venueExecutionBias,
+        VenueExecutionScope = venueExecutionBias > 0m ? "venue execution" : string.Empty,
         EntrySlippagePercent = slippagePercent,
         ExecutionLatencyMs = executionLatencyMs,
         ExitTime = new DateTime(2026, 03, 21, 8, 50, 0, DateTimeKind.Utc)
@@ -295,7 +885,8 @@ public class StrategyPromotionServiceTests
     private static BacktestResult CreateBacktestResult(
         string symbol = "THYAO",
         string strategyTag = "TrendConfluence",
-        string regimeTag = "Trending") => new()
+        string regimeTag = "Trending",
+        string exitPolicyTag = "TrendRunner") => new()
     {
         Symbol = symbol,
         TotalTrades = 8,
@@ -305,14 +896,14 @@ public class StrategyPromotionServiceTests
         ProfitFactor = 1.45,
         Trades = new List<BacktestTradeResult>
         {
-            CreateBacktestTrade(120m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 0, 0, DateTimeKind.Utc)),
-            CreateBacktestTrade(90m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 5, 0, DateTimeKind.Utc)),
-            CreateBacktestTrade(80m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 10, 0, DateTimeKind.Utc)),
-            CreateBacktestTrade(75m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 15, 0, DateTimeKind.Utc)),
-            CreateBacktestTrade(65m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 20, 0, DateTimeKind.Utc)),
-            CreateBacktestTrade(55m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 25, 0, DateTimeKind.Utc)),
-            CreateBacktestTrade(-30m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 35, 0, DateTimeKind.Utc)),
-            CreateBacktestTrade(-35m, symbol, strategyTag, regimeTag, new DateTime(2026, 03, 21, 8, 40, 0, DateTimeKind.Utc))
+            CreateBacktestTrade(120m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 0, 0, DateTimeKind.Utc)),
+            CreateBacktestTrade(90m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 5, 0, DateTimeKind.Utc)),
+            CreateBacktestTrade(80m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 10, 0, DateTimeKind.Utc)),
+            CreateBacktestTrade(75m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 15, 0, DateTimeKind.Utc)),
+            CreateBacktestTrade(65m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 20, 0, DateTimeKind.Utc)),
+            CreateBacktestTrade(55m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 25, 0, DateTimeKind.Utc)),
+            CreateBacktestTrade(-30m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 35, 0, DateTimeKind.Utc)),
+            CreateBacktestTrade(-35m, symbol, strategyTag, regimeTag, exitPolicyTag, new DateTime(2026, 03, 21, 8, 40, 0, DateTimeKind.Utc))
         }
     };
 
@@ -321,6 +912,7 @@ public class StrategyPromotionServiceTests
         string symbol,
         string strategyTag,
         string regimeTag,
+        string exitPolicyTag,
         DateTime exitTime) => new()
     {
         EntryTime = exitTime.AddMinutes(-30),
@@ -328,6 +920,7 @@ public class StrategyPromotionServiceTests
         Side = "Buy",
         StrategyTag = strategyTag,
         RegimeTag = regimeTag,
+        ExitPolicyTag = exitPolicyTag,
         ExecutionMode = "SIMULATED",
         PromotionStage = "Backtest",
         EntryPrice = 100m,

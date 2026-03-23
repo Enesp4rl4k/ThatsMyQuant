@@ -17,6 +17,15 @@ public class Trade
     public string ExitPolicyTag { get; set; } = "TrendRunner";
     public decimal EdgeScore { get; set; }
     public string EdgeBand { get; set; } = string.Empty;
+    public string ExactBucketImpactLabel { get; set; } = string.Empty;
+    public string ExactBucketSummary { get; set; } = string.Empty;
+    public decimal FinalAllocatorBias { get; set; }
+    public string FinalAllocatorScope { get; set; } = string.Empty;
+    public decimal VenueExecutionBias { get; set; }
+    public string VenueExecutionScope { get; set; } = string.Empty;
+    public string VenueImpactLabel { get; set; } = string.Empty;
+    public string ConcordanceImpactLabel { get; set; } = string.Empty;
+    public string ConcordanceSummary { get; set; } = string.Empty;
     public string ExecutionMode { get; set; } = "REAL";
     public string PromotionStage { get; set; } = "Backtest";
     public decimal EntrySlippagePercent { get; set; }

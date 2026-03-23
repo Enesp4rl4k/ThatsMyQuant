@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
+using System.Collections.Concurrent;
 using ThatsMyQuant.Domain.Interfaces;
 using ThatsMyQuant.Domain.ValueObjects;
 
@@ -12,6 +13,8 @@ public sealed class HftSignalGenerationService : IHftSignalGenerationService
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly ILogger<HftSignalGenerationService> _logger;
     private readonly HftStrategyRouter _router = new();
+    private readonly ConcurrentDictionary<string, (DateTime LastCandleTime, IndicatorSnapshot Snapshot)> _indicatorStateCache = new();
+    private static readonly ConcurrentDictionary<string, string> _marketTypeCache = new();
 
     public HftSignalGenerationService(
         ITechnicalAnalysisService technicalAnalysis,
@@ -28,7 +31,19 @@ public sealed class HftSignalGenerationService : IHftSignalGenerationService
             return TradeDecision.Reject("HFT engine needs at least 35 candles for microstructure routing.");
         }
 
-        var indicators = await _technicalAnalysis.ComputeIndicatorsAsync(candles);
+        var lastCandle = candles.Last();
+        
+        // Intra-candle streaming optimization: Only compute full indicators if the candle timestamp rolled over
+        if (!_indicatorStateCache.TryGetValue(signal.Symbol, out var cachedState) || cachedState.LastCandleTime != lastCandle.Timestamp)
+        {
+            var newIndicators = await _technicalAnalysis.ComputeIndicatorsAsync(candles);
+            cachedState = (lastCandle.Timestamp, newIndicators);
+            _indicatorStateCache[signal.Symbol] = cachedState;
+        }
+
+        // Stream the live tick price into the frozen snapshot via non-destructive mutation
+        var indicators = cachedState.Snapshot with { CurrentPrice = signal.Price };
+
         if (indicators.RSI is null || indicators.MACDHistogram is null || indicators.ATR is null)
         {
             return TradeDecision.Reject("HFT engine missing indicator state.", indicators);
@@ -36,7 +51,6 @@ public sealed class HftSignalGenerationService : IHftSignalGenerationService
 
         var regime = MarketRegimeDetector.Detect(candles);
         var market = ResolveMarket(signal.Symbol);
-        var lastCandle = candles.Last();
         var sessionGate = EvaluateSessionGate(market, lastCandle.Timestamp);
         if (!sessionGate.AllowTrade)
         {
@@ -156,17 +170,26 @@ public sealed class HftSignalGenerationService : IHftSignalGenerationService
 
     private static string ResolveMarket(string symbol)
     {
+        if (_marketTypeCache.TryGetValue(symbol, out var market))
+        {
+            return market;
+        }
+
         if (symbol.Contains("-", StringComparison.OrdinalIgnoreCase))
         {
-            return "Crypto";
+            market = "Crypto";
         }
-
-        if (symbol.Contains("=", StringComparison.OrdinalIgnoreCase))
+        else if (symbol.Contains("=", StringComparison.OrdinalIgnoreCase))
         {
-            return "Forex";
+            market = "Forex";
+        }
+        else
+        {
+            market = "BIST";
         }
 
-        return "BIST";
+        _marketTypeCache[symbol] = market;
+        return market;
     }
 
     private static SessionGate EvaluateSessionGate(string market, DateTime timestamp)

@@ -8,8 +8,13 @@ namespace ThatsMyQuant.Infrastructure.Repositories;
 public class TradeRepository : ITradeRepository
 {
     private readonly QuantDbContext _db;
+    private readonly IPortfolioStateCache _cache;
 
-    public TradeRepository(QuantDbContext db) => _db = db;
+    public TradeRepository(QuantDbContext db, IPortfolioStateCache cache)
+    {
+        _db = db;
+        _cache = cache;
+    }
 
     public async Task<Trade?> GetByIdAsync(Guid id)
         => await _db.Trades.FindAsync(id);
@@ -27,11 +32,13 @@ public class TradeRepository : ITradeRepository
     {
         await _db.Trades.AddAsync(trade);
         await _db.SaveChangesAsync();
+        _cache.AddOrUpdateTrade(trade); // O(1) Ram pointer tracking
     }
 
     public async Task UpdateAsync(Trade trade)
     {
         _db.Trades.Update(trade);
         await _db.SaveChangesAsync();
+        _cache.AddOrUpdateTrade(trade); // O(1) Ram pointer tracking
     }
 }

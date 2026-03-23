@@ -60,6 +60,21 @@ public partial class App : System.Windows.Application
             Environment.GetEnvironmentVariable("TMQ_SIMULATION_MODE"),
             "true",
             StringComparison.OrdinalIgnoreCase);
+            
+        var replayMode = string.Equals(
+            Environment.GetEnvironmentVariable("TMQ_REPLAY_MODE"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+
+        // Setup global timing synchronization
+        if (replayMode)
+        {
+            services.AddSingleton<ISystemClock, MarketReplayClock>();
+        }
+        else
+        {
+            services.AddSingleton<ISystemClock, RealSystemClock>();
+        }
 
         // Core Microservice Logic
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
@@ -147,8 +162,13 @@ public partial class App : System.Windows.Application
         services.AddSingleton<SwarmOrchestrator>();
 
         // Phase 8: HFT & Quantitative Foundation
-        if (exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
-            exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase))
+        if (replayMode)
+        {
+            services.AddSingleton<IStreamingMarketDataService, MarketReplayService>();
+            services.AddSingleton<IExchangeService, ReplayBrokerService>();
+        }
+        else if (exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
+                 exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase))
         {
             services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
         }

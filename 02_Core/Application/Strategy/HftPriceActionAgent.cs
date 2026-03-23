@@ -1,78 +1,116 @@
 using Microsoft.Extensions.Logging;
 using MediatR;
 using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Domain.Enums;
+using System.Collections.Concurrent;
 
 namespace ThatsMyQuant.Application.Strategy;
 
 /// <summary>
-/// Optimized High-frequency Price Action agent using a zero-allocation circular buffer.
-/// Replaces LINQ and ConcurrentQueue with high-speed sliding window math.
+/// Optimized High-frequency Price Action agent.
+/// Built with ultra-HFT methodologies:
+/// - O(1) Welford's Sample Variance with Reciprocal Multiplication logic.
+/// - Orderbook Mid-Price execution anchor (bypasses lagging trade prints).
+/// - GC-free Array indexing (Modulo division destroyed).
+/// - Strongly-typed Execution States.
 /// </summary>
-public class HftPriceActionAgent : INotificationHandler<Signal>
+public partial class HftPriceActionAgent : INotificationHandler<Signal>
 {
     private readonly ILogger<HftPriceActionAgent> _logger;
-    private readonly decimal[] _buffer;
-    private int _head = 0;
-    private int _count = 0;
-    private decimal _sum = 0;
     private readonly int _windowSize;
-    private readonly object _lock = new();
+    private readonly ConcurrentDictionary<string, SymbolState> _states = new();
+
+    private sealed class SymbolState
+    {
+        public readonly double[] Buffer;
+        public int Head = 0;
+        public int Count = 0;
+
+        public double Mean = 0;
+        public double M2 = 0; // Sum of squared deviations from the mean
+
+        public readonly object SyncLock = new();
+
+        public SymbolState(int windowSize)
+        {
+            Buffer = new double[windowSize];
+        }
+    }
 
     public HftPriceActionAgent(ILogger<HftPriceActionAgent> logger, int windowSize = 50)
     {
         _logger = logger;
         _windowSize = windowSize;
-        _buffer = new decimal[windowSize];
     }
 
     public Task Handle(Signal notification, CancellationToken cancellationToken)
     {
-        decimal zScore = 0;
-        bool detected = false;
+        // 1. True L2 Microstructure anchoring: Ignore lagging ticks and use Orderbook Mid-Price
+        if (!notification.BestBid.HasValue || !notification.BestAsk.HasValue) 
+            return Task.CompletedTask;
 
-        lock (_lock)
+        double midPrice = (notification.BestBid.Value + notification.BestAsk.Value) * 0.5d;
+
+        double zScore = 0;
+        bool detected = false;
+        
+        var state = _states.GetOrAdd(notification.Symbol, static (_, size) => new SymbolState(size), _windowSize);
+
+        lock (state.SyncLock)
         {
-            // Update sliding window sum
-            if (_count == _windowSize)
+            double oldValue = 0;
+
+            if (state.Count == _windowSize)
             {
-                _sum -= _buffer[_head];
+                oldValue = state.Buffer[state.Head];
+
+                double oldMean = state.Mean;
+                state.Mean = (state.Mean * _windowSize - oldValue) / (_windowSize - 1);
+                state.M2 -= (oldValue - oldMean) * (oldValue - state.Mean);
+                
+                if (state.M2 < 0) state.M2 = 0;
             }
             else
             {
-                _count++;
+                state.Count++;
             }
 
-            _buffer[_head] = notification.Price;
-            _sum += notification.Price;
-            _head = (_head + 1) % _windowSize;
+            state.Buffer[state.Head] = midPrice;
 
-            if (_count < _windowSize) return Task.CompletedTask;
+            // 2. Micro-Optimization: Replaced expensive CPU integer modulo (%) with direct bounds check
+            if (++state.Head == _windowSize) state.Head = 0;
 
-            // Manual Mean/StdDev calculation (Single pass, zero-allocation)
-            decimal mean = _sum / _windowSize;
-            double sumSqDiff = 0;
-            
-            // Note: In ultra-HFT we would use Welford's to avoid this loop entirely, 
-            // but for a 50-item window this is extremely fast and avoids LINQ allocations.
-            for (int i = 0; i < _windowSize; i++)
-            {
-                double diff = (double)(_buffer[i] - mean);
-                sumSqDiff += diff * diff;
-            }
+            // 3. Micro-Optimization: Reciprocal multiplication vs division
+            double invCount = 1.0d / state.Count;
 
-            decimal stdDev = (decimal)Math.Sqrt(sumSqDiff / _windowSize);
-            zScore = stdDev == 0 ? 0 : (notification.Price - mean) / stdDev;
-            
-            if (Math.Abs(zScore) > 3.5m) detected = true;
+            double delta = midPrice - state.Mean;
+            state.Mean += delta * invCount;
+            double delta2 = midPrice - state.Mean;
+            state.M2 += delta * delta2;
+
+            if (state.Count < _windowSize) return Task.CompletedTask;
+
+            // 4. Statistical Rigor: Using Sample Variance (N-1) for real-world subsets
+            double sampleVariance = state.M2 / (state.Count - 1); 
+            double stdDev = Math.Sqrt(sampleVariance);
+
+            zScore = stdDev == 0 ? 0 : (midPrice - state.Mean) / stdDev;
+
+            if (Math.Abs(zScore) > 2.5d) 
+                detected = true;
         }
 
         if (detected)
         {
-            _logger.LogInformation($"[PA DETECTED] Liquidity Sweep on {notification.Symbol}. Z-Score: {zScore:F2}.");
-            notification.Metadata["PA_Signal"] = zScore > 0 ? "Exhaustion_High" : "Exhaustion_Low";
-            notification.Reasoning += $" | Price Action: {notification.Metadata["PA_Signal"]}";
+            notification.PriceActionSignal = zScore > 0 ? PriceActionType.ExhaustionHigh : PriceActionType.ExhaustionLow;
+            notification.AddReason(SignalReasonFlags.PriceActionExhaustion);
+
+            LogPriceActionSweep(_logger, notification.Symbol, zScore, notification.PriceActionSignal.ToString());
         }
 
         return Task.CompletedTask;
     }
+
+    [LoggerMessage(EventId = 3, Level = LogLevel.Information, Message = "[PA DETECTED] Liquidity Sweep on {Symbol}. Z-Score: {ZScore:F2}. State: {State}")]
+    private static partial void LogPriceActionSweep(ILogger logger, string symbol, double zScore, string state);
 }

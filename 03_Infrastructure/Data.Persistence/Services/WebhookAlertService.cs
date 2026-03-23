@@ -10,8 +10,7 @@ public class WebhookAlertService : IAlertingService
 {
     private readonly ILogger<WebhookAlertService> _logger;
     private readonly HttpClient _httpClient;
-    
-    // Config placeholders (Would come from AppSettings/Secrets)
+
     private const string WebhookUrl = "";
 
     public WebhookAlertService(ILogger<WebhookAlertService> logger, HttpClient httpClient)
@@ -20,7 +19,7 @@ public class WebhookAlertService : IAlertingService
         _httpClient = httpClient;
     }
 
-    public async Task SendTradeAlertAsync(string symbol, TradeDecision decision, IndicatorSnapshot snapshot)
+    public async Task SendTradeAlertAsync(string symbol, TradeDecision decision, IndicatorSnapshot snapshot, AlertAuditContext auditContext)
     {
         if (string.IsNullOrEmpty(WebhookUrl))
         {
@@ -38,7 +37,16 @@ public class WebhookAlertService : IAlertingService
                 Price = snapshot.CurrentPrice,
                 StopLoss = decision.StopLoss,
                 TakeProfit = decision.TakeProfit,
-                Reasoning = decision.Reasoning,
+                ExecutionMode = auditContext.ExecutionMode,
+                PromotionStage = auditContext.PromotionStage,
+                StageExplanation = auditContext.StageExplanation,
+                ExactBucketImpact = auditContext.ExactBucketImpact,
+                ExactBucketSummary = auditContext.ExactBucketSummary,
+                EdgeSummary = auditContext.EdgeSummary,
+                ExitSummary = auditContext.ExitSummary,
+                VenueImpact = auditContext.VenueImpact,
+                AllocatorImpact = auditContext.AllocatorImpact,
+                Reasoning = auditContext.Reasoning,
                 Time = DateTime.UtcNow
             };
 

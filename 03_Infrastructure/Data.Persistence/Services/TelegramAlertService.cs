@@ -10,8 +10,7 @@ public class TelegramAlertService : IAlertingService
 {
     private readonly ILogger<TelegramAlertService> _logger;
     private readonly HttpClient _httpClient;
-    
-    // Config placeholders (Would come from AppSettings/Secrets)
+
     private const string BotToken = "";
     private const string ChatId = "";
 
@@ -21,21 +20,36 @@ public class TelegramAlertService : IAlertingService
         _httpClient = httpClient;
     }
 
-    public async Task SendTradeAlertAsync(string symbol, TradeDecision decision, IndicatorSnapshot snapshot)
+    public async Task SendTradeAlertAsync(string symbol, TradeDecision decision, IndicatorSnapshot snapshot, AlertAuditContext auditContext)
     {
         if (string.IsNullOrEmpty(BotToken))
         {
-            _logger.LogInformation("📢 [MOCK ALERT] {Symbol} {Side} | Confidence: {Confidence}/100", symbol, decision.Side, decision.Confidence);
+            _logger.LogInformation(
+                "MOCK ALERT {Symbol} {Side} | {Edge} | {Exit} | {Stage} | {ExactBucket}",
+                symbol,
+                decision.Side,
+                auditContext.EdgeSummary,
+                auditContext.ExitSummary,
+                auditContext.PromotionStage,
+                auditContext.ExactBucketImpact);
             return;
         }
 
-        string message = $@"
-🚀 *Trade Signal: {symbol}*
-- *Action*: {decision.Side}
-- *Confidence*: {decision.Confidence}/100
-- *Price*: {snapshot.CurrentPrice:F2}
-- *SL*: {decision.StopLoss:F2} | *TP*: {decision.TakeProfit:F2}
-- *Reasoning*: _{decision.Reasoning}_
+        var message = $@"
+Trade Signal: {symbol}
+- Action: {decision.Side}
+- Confidence: {decision.Confidence}/100
+- Price: {snapshot.CurrentPrice:F2}
+- SL: {decision.StopLoss:F2} | TP: {decision.TakeProfit:F2}
+- Mode: {auditContext.ExecutionMode}
+- Stage: {auditContext.PromotionStage}
+- Exact bucket: {auditContext.ExactBucketImpact}
+- Exact bucket note: {auditContext.ExactBucketSummary}
+- Edge: {auditContext.EdgeSummary}
+- Exit: {auditContext.ExitSummary}
+- Allocator: {auditContext.AllocatorImpact}
+- Venue: {auditContext.VenueImpact}
+- Reasoning: {auditContext.Reasoning}
 ";
 
         try
@@ -43,8 +57,7 @@ public class TelegramAlertService : IAlertingService
             var payload = new
             {
                 chat_id = ChatId,
-                text = message,
-                parse_mode = "Markdown"
+                text = message
             };
 
             var json = JsonSerializer.Serialize(payload);
@@ -60,7 +73,7 @@ public class TelegramAlertService : IAlertingService
             }
             else
             {
-                _logger.LogInformation("✅ Telegram alert sent successfully for {Symbol}.", symbol);
+                _logger.LogInformation("Telegram alert sent successfully for {Symbol}.", symbol);
             }
         }
         catch (Exception ex)

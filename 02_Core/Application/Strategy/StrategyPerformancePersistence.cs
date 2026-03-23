@@ -82,6 +82,24 @@ public sealed class StrategyBucketPerformanceSnapshot
     public double HighEdgeProfitFactor { get; set; }
     public decimal HighEdgeExpectedValue { get; set; }
     public decimal HighEdgeTotalPnL { get; set; }
+    public decimal AverageFinalAllocatorBias { get; set; }
+    public int BoostedAllocatorTrades { get; set; }
+    public double BoostedAllocatorWinRate { get; set; }
+    public double BoostedAllocatorProfitFactor { get; set; }
+    public decimal BoostedAllocatorExpectedValue { get; set; }
+    public int TrimmedAllocatorTrades { get; set; }
+    public double TrimmedAllocatorWinRate { get; set; }
+    public double TrimmedAllocatorProfitFactor { get; set; }
+    public decimal TrimmedAllocatorExpectedValue { get; set; }
+    public decimal AverageVenueExecutionBias { get; set; }
+    public int BoostedVenueExecutionTrades { get; set; }
+    public double BoostedVenueExecutionWinRate { get; set; }
+    public double BoostedVenueExecutionProfitFactor { get; set; }
+    public decimal BoostedVenueExecutionExpectedValue { get; set; }
+    public int TrimmedVenueExecutionTrades { get; set; }
+    public double TrimmedVenueExecutionWinRate { get; set; }
+    public double TrimmedVenueExecutionProfitFactor { get; set; }
+    public decimal TrimmedVenueExecutionExpectedValue { get; set; }
     public decimal AverageEntrySlippagePercent { get; set; }
     public double AverageExecutionLatencyMs { get; set; }
     public bool BacktestPass { get; set; }
@@ -116,3 +134,10 @@ public readonly record struct PromotionGuardResult(
     bool PromotionReady,
     double DriftScore,
     string PromotionStage);
+
+public readonly record struct FinalAllocatorBiasResult(
+    decimal SizeMultiplier,
+    string Reason,
+    string Scope,
+    decimal VenueExecutionBias = 1.00m,
+    string VenueExecutionScope = "");

@@ -863,11 +863,19 @@
                                                                 <Run Text=" allocation | " />
                                                                 <Run Text="{Binding RecommendedCapital, StringFormat={}{0:N0}}" />
                                                             </TextBlock>
+                                                            <TextBlock Text="{Binding VenuePromotionImpact}" Foreground="{Binding VenuePromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                            <TextBlock Text="{Binding ExactBucketPromotionImpact}" Foreground="{Binding ExactBucketPromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                            <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                            <TextBlock Text="{Binding ExactBucketSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                            <TextBlock Text="{Binding VenueExecutionSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                            <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
                                                             <TextBlock Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,3,0,0">
                                                                 <Run Text="Stage: " />
                                                                 <Run Text="{Binding PromotionStage}" />
                                                                 <Run Text=" | Session: " />
                                                                 <Run Text="{Binding SessionTag}" />
+                                                                <Run Text=" | Venue " />
+                                                                <Run Text="{Binding AverageVenueExecutionBias, StringFormat={}{0:F2}x}" />
                                                             </TextBlock>
                                                         </StackPanel>
                                                         <Border Grid.Column="1" Background="{Binding StatusColor}" CornerRadius="4" Padding="8,3" VerticalAlignment="Top" Margin="10,0,0,0">
@@ -1045,16 +1053,58 @@
                                     <TextBlock Text="{Binding EdgeAnalyticsStatus}" Foreground="{StaticResource Accent}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Right" />
                                 </DockPanel>
 
-                                <Grid Grid.Row="1">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
+                                         <Grid Grid.Row="1">
+                                             <Grid.ColumnDefinitions>
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                                 <ColumnDefinition Width="*" />
+                                             </Grid.ColumnDefinitions>
 
                                     <Border Grid.Column="0" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
+                                        <StackPanel>
+                                            <TextBlock Text="STRATEGY LEADERBOARD" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                            <TextBlock Text="{Binding StrategyLeaderboardStatus}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
+                                            <ItemsControl ItemsSource="{Binding StrategyLeaderboard}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
+                                                            <StackPanel>
+                                                                <DockPanel>
+                                                                    <TextBlock Text="{Binding StrategyTag}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
+                                                                    <TextBlock Text="{Binding TotalPnL, StringFormat={}{0:N2}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
+                                                                </DockPanel>
+                                                                <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
+                                                                <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                <TextBlock Text="{Binding ExactBucketPromotionImpact}" Foreground="{Binding ExactBucketPromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                <TextBlock Text="{Binding ExactBucketSummary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                                <TextBlock Text="{Binding VenuePromotionImpact}" Foreground="{Binding VenuePromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                <TextBlock Text="{Binding VenueExecutionSummary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                                <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                                <TextBlock Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0">
+                                                                    <Run Text="WR " />
+                                                                    <Run Text="{Binding WinRate, StringFormat={}{0:F1}%}" />
+                                                                    <Run Text=" | PF " />
+                                                                    <Run Text="{Binding ProfitFactor, StringFormat={}{0:F2}}" />
+                                                                    <Run Text=" | Venue " />
+                                                                    <Run Text="{Binding AverageVenueExecutionBias, StringFormat={}{0:F2}x}" />
+                                                                </TextBlock>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Grid.Column="1" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
                                         <StackPanel>
                                             <TextBlock Text="WHICH SCORES MAKE MONEY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                                             <TextBlock Text="Observed score bands from journaled edge-score outcomes." Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
@@ -1079,7 +1129,7 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <Border Grid.Column="1" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
+                                    <Border Grid.Column="2" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
                                         <StackPanel>
                                             <TextBlock Text="WHICH CONDITIONS FAIL" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                                             <TextBlock Text="{Binding WorstEdgeFailureSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
@@ -1104,7 +1154,7 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <Border Grid.Column="2" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
+                                    <Border Grid.Column="3" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
                                         <StackPanel>
                                             <TextBlock Text="WHERE EDGE EXISTS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                                             <TextBlock Text="{Binding BestEdgeZoneSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
@@ -1130,7 +1180,7 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <Border Grid.Column="3" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
+                                    <Border Grid.Column="4" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
                                         <StackPanel>
                                             <TextBlock Text="WHICH EXITS ARE WINNING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                                             <TextBlock Text="{Binding ExitPolicyAnalyticsSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
@@ -1159,7 +1209,7 @@
                                         </StackPanel>
                                     </Border>
 
-                                    <Border Grid.Column="4" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12">
+                                    <Border Grid.Column="5" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
                                         <StackPanel>
                                             <TextBlock Text="WHICH EXITS ARE DRIFTING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                                             <TextBlock Text="{Binding ExitPolicyDriftSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
@@ -1186,9 +1236,100 @@
                                             </ItemsControl>
                                         </StackPanel>
                                     </Border>
-                                </Grid>
-                            </Grid>
-                        </Border>
+
+                                      <Border Grid.Column="6" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12">
+                                          <StackPanel>
+                                             <TextBlock Text="FINAL ALLOCATOR BIAS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                            <TextBlock Text="{Binding FinalAllocatorBiasSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
+                                            <ItemsControl ItemsSource="{Binding FinalAllocatorBiasRows}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
+                                                            <StackPanel>
+                                                                <DockPanel>
+                                                                    <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
+                                                                    <TextBlock Text="{Binding AverageBias, StringFormat=Bias {0:F2}x}" Foreground="{Binding BiasColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
+                                                                </DockPanel>
+                                                                <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
+                                                                <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                <TextBlock Text="{Binding AllocatorScope, StringFormat=Scope: {0}}" Foreground="{StaticResource AccentCyan}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                                <TextBlock Text="{Binding TotalPnL, StringFormat=PnL {0:N2}}" Foreground="{Binding PnlColor}" FontSize="8" Margin="0,4,0,0" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                              </ItemsControl>
+                                          </StackPanel>
+                                      </Border>
+
+                                      <Border Grid.Column="7" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="12,0,12,0">
+                                          <StackPanel>
+                                              <TextBlock Text="EXACT BUCKET PRESSURE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                              <TextBlock Text="{Binding ExactBucketPromotionPressureSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
+                                              <ItemsControl ItemsSource="{Binding ExactBucketPromotionPressureRows}">
+                                                  <ItemsControl.ItemTemplate>
+                                                      <DataTemplate>
+                                                          <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
+                                                              <StackPanel>
+                                                                  <DockPanel>
+                                                                      <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
+                                                                      <TextBlock Text="{Binding TotalPnL, StringFormat=PnL {0:N2}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
+                                                                  </DockPanel>
+                                                                  <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
+                                                                  <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                  <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                  <TextBlock Text="{Binding PromotionImpact}" Foreground="{Binding PromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                  <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                  <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                  <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                  <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                                  <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                              </StackPanel>
+                                                          </Border>
+                                                      </DataTemplate>
+                                                  </ItemsControl.ItemTemplate>
+                                              </ItemsControl>
+                                          </StackPanel>
+                                      </Border>
+
+                                      <Border Grid.Column="8" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,0">
+                                          <StackPanel>
+                                              <TextBlock Text="VENUE EXECUTION BIAS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                              <TextBlock Text="{Binding VenueExecutionBiasSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
+                                              <ItemsControl ItemsSource="{Binding VenueExecutionBiasRows}">
+                                                  <ItemsControl.ItemTemplate>
+                                                      <DataTemplate>
+                                                          <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
+                                                              <StackPanel>
+                                                                  <DockPanel>
+                                                                      <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
+                                                                      <TextBlock Text="{Binding AverageBias, StringFormat=Bias {0:F2}x}" Foreground="{Binding BiasColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
+                                                                  </DockPanel>
+                                                                  <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
+                                                                  <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                  <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                    <TextBlock Text="{Binding VenueExecutionScope, StringFormat=Venue scope: {0}}" Foreground="{StaticResource AccentCyan}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                    <TextBlock Text="{Binding PromotionImpact}" Foreground="{Binding PromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                    <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
+                                                                    <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                    <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                    <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                                    <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                                  <TextBlock Text="{Binding TotalPnL, StringFormat=PnL {0:N2}}" Foreground="{Binding PnlColor}" FontSize="8" Margin="0,4,0,0" />
+                                                              </StackPanel>
+                                                          </Border>
+                                                      </DataTemplate>
+                                                  </ItemsControl.ItemTemplate>
+                                              </ItemsControl>
+                                          </StackPanel>
+                                      </Border>
+                                  </Grid>
+                              </Grid>
+                          </Border>
 
                         <!-- 2. Historical Ledger -->
                         <Border Grid.Row="1" Style="{StaticResource TerminalCardStyle}" Padding="0">
@@ -1216,6 +1357,40 @@
                                         <DataGridTemplateColumn Header="SIDE" Width="80">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate><TextBlock Text="{Binding Side}" Foreground="{Binding SideColor}" FontSize="10" FontWeight="Black" /></DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTemplateColumn Header="VENUE" Width="170">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding VenueImpact}" Foreground="{Binding VenueImpactColor}" FontSize="9" FontWeight="Bold" />
+                                                        <TextBlock Text="{Binding StageExplanation}" Foreground="{StaticResource TextMuted}" FontSize="8" TextWrapping="Wrap" />
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTemplateColumn Header="ALLOCATOR" Width="180">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding AllocatorImpact}" Foreground="{Binding AllocatorImpactColor}" FontSize="9" FontWeight="Bold" />
+                                                        <TextBlock Text="{Binding PromotionStage, StringFormat=Stage {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTemplateColumn Header="EDGE" Width="120">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding EdgeSummary}" Foreground="{StaticResource AccentCyan}" FontSize="9" FontWeight="Bold" />
+                                                </DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTemplateColumn Header="EXIT" Width="140">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding ExitSummary}" Foreground="{StaticResource TextMain}" FontSize="9" FontWeight="Bold" />
+                                                </DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
                                         <DataGridTextColumn Header="PNL" Binding="{Binding PnL, StringFormat={}{0:N2}}" Width="100">
@@ -1386,7 +1561,19 @@
                                 </UniformGrid>
                                 
                                 <TextBlock Text="DIAGNOSTIC ALERTS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,8" />
-                                <Border Background="{StaticResource SurfaceBg}" Padding="16" CornerRadius="4">
+                                <Border Background="{StaticResource SurfaceBg}" Padding="16" CornerRadius="4" Margin="0,0,0,8">
+                                    <ItemsControl ItemsSource="{Binding OperatorAuditAlerts}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Margin="0,0,0,8">
+                                                    <TextBlock Text="{Binding Headline}" Foreground="{Binding AccentColor}" FontSize="10" FontWeight="Bold" />
+                                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSoft}" FontSize="9" TextWrapping="Wrap" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Border>
+                                <Border Background="{StaticResource SurfaceBg}" Padding="16" CornerRadius="4" Visibility="Collapsed">
                                     <StackPanel>
                                         <TextBlock Text="• API Latency stabilized at 42ms." Foreground="{StaticResource BuyColor}" FontSize="10" Margin="0,0,0,4" />
                                         <TextBlock Text="• WebSocket connection renewed successfully." Foreground="{StaticResource BuyColor}" FontSize="10" Margin="0,0,0,4" />

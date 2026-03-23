@@ -132,6 +132,111 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistVenueImpactLabel()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["VenueImpactLabel"] = "Venue capped size (0.96x)";
+        signal.Metadata["VenueExecutionScope"] = "Binance execution is softer than target";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.VenueImpactLabel.Should().Be("Venue capped size (0.96x)");
+        result.VenueExecutionScope.Should().Be("Binance execution is softer than target");
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.VenueImpactLabel == "Venue capped size (0.96x)" &&
+            trade.VenueExecutionScope == "Binance execution is softer than target"));
+    }
+
+    [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistExactBucketPressure()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["ExactBucketImpactLabel"] = "Exact bucket supports scaling";
+        signal.Metadata["ExactBucketSummary"] = "Exact bucket is healthy: PF 1.44, WR 58.0%, EV 2.35.";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.ExactBucketImpactLabel.Should().Be("Exact bucket supports scaling");
+        result.ExactBucketSummary.Should().Be("Exact bucket is healthy: PF 1.44, WR 58.0%, EV 2.35.");
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.ExactBucketImpactLabel == "Exact bucket supports scaling" &&
+            trade.ExactBucketSummary == "Exact bucket is healthy: PF 1.44, WR 58.0%, EV 2.35."));
+    }
+
+    [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistConcordanceSignal()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["ConcordanceImpactLabel"] = "Concordance supports scaling";
+        signal.Metadata["ConcordanceSummary"] = "Exact bucket edge and venue execution are aligned for scaled deployment.";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.ConcordanceImpactLabel.Should().Be("Concordance supports scaling");
+        result.ConcordanceSummary.Should().Be("Exact bucket edge and venue execution are aligned for scaled deployment.");
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.ConcordanceImpactLabel == "Concordance supports scaling" &&
+            trade.ConcordanceSummary == "Exact bucket edge and venue execution are aligned for scaled deployment."));
+    }
+
+    [Fact]
     public async Task Handle_SuccessfulExecution_ShouldPersistExitPolicyTag()
     {
         var signal = new Signal

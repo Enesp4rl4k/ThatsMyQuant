@@ -17,8 +17,10 @@ public class MicrosecondPredictionEngine : IDisposable
     private readonly InferenceSession? _session;
     private readonly string? _inputName;
 
-    // Feature array representing the orderbook: [BestBidPrice, BestBidQty, BestAskPrice, BestAskQty, Spread, ImbalanceRatio]
-    private readonly float[] _features = new float[6];
+    // Feature array representing the orderbook: [BestBidPrice, BestBidQty, BestAskPrice, BestAskQty, Spread, ImbalanceRatio, VOI, VPIN]
+    private readonly float[] _features = new float[8];
+    private DenseTensor<float>? _inputTensor;
+    private NamedOnnxValue[]? _inputs;
 
     public MicrosecondPredictionEngine(string modelPath, ILogger<MicrosecondPredictionEngine> logger)
     {
@@ -35,6 +37,9 @@ public class MicrosecondPredictionEngine : IDisposable
             var sessionOptions = new SessionOptions();
             _session = new InferenceSession(modelPath, sessionOptions);
             _inputName = _session.InputMetadata.Keys.FirstOrDefault() ?? "input";
+            
+            _inputTensor = new DenseTensor<float>(_features, new[] { 1, 8 });
+            _inputs = new NamedOnnxValue[] { NamedOnnxValue.CreateFromTensor(_inputName, _inputTensor) };
             
             _logger.LogInformation("ONNX ML Model loaded successfully from {Path}. Ready for inference.", modelPath);
         }
@@ -61,31 +66,45 @@ public class MicrosecondPredictionEngine : IDisposable
         
         float spread = bestAskPrice - bestBidPrice;
         
-        // Order Flow Imbalance: (BidQty - AskQty) / (BidQty + AskQty)
+        // Order Flow Imbalance (Top Level): (BidQty - AskQty) / (BidQty + AskQty)
         float totalDepth = bestBidQty + bestAskQty;
         float imbalance = totalDepth == 0 ? 0 : (bestBidQty - bestAskQty) / totalDepth;
 
-        // Map features to flat array
+        // Calculate Level 2 VOI (Volume Order Imbalance) and VPIN proxy
+        float voi = 0f;
+        float totalBidVol = 0f;
+        float totalAskVol = 0f;
+        
+        int levels = Math.Min(5, Math.Min(orderBook.Bids.Length, orderBook.Asks.Length));
+        for (int i = 0; i < levels; i++)
+        {
+            totalBidVol += (float)orderBook.Bids[i].Quantity;
+            totalAskVol += (float)orderBook.Asks[i].Quantity;
+        }
+        
+        float totalVolume = totalBidVol + totalAskVol;
+        voi = totalVolume == 0 ? 0 : (totalBidVol - totalAskVol) / totalVolume;
+        
+        // VPIN proxy (Volume-Synchronized Probability of Informed Trading)
+        // Simplified as the absolute volume imbalance representing toxicity
+        float vpinProxy = totalVolume == 0 ? 0 : Math.Abs(totalBidVol - totalAskVol) / totalVolume;
+
+        // Map features to flat array. The _inputTensor uses this memory directly.
         _features[0] = bestBidPrice;
         _features[1] = bestBidQty;
         _features[2] = bestAskPrice;
         _features[3] = bestAskQty;
         _features[4] = spread;
         _features[5] = imbalance;
+        _features[6] = voi;
+        _features[7] = vpinProxy;
 
-        // 2. Wrap features in a Tensor (Fixed array, zero-copy)
-        var inputTensor = new DenseTensor<float>(_features, new[] { 1, 6 });
-        
-        // Re-use list to avoid heap allocation per tick
-        var inputs = new NamedOnnxValue[] 
-        { 
-            NamedOnnxValue.CreateFromTensor(_inputName, inputTensor) 
-        };
+        if (_inputs == null) return 0f;
 
         // 3. Inference
         try
         {
-            using var results = _session.Run(inputs);
+            using var results = _session.Run(_inputs);
             var output = results.First().AsTensor<float>();
             
             // Assuming output shape [1, 1], returning float representation of direction

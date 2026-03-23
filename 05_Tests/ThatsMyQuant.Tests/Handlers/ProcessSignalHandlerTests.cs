@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
+using System.Globalization;
 using ThatsMyQuant.Application.Commands;
 using ThatsMyQuant.Application.Handlers;
 using ThatsMyQuant.Application.Strategy;
@@ -26,6 +27,7 @@ public class ProcessSignalHandlerTests : IDisposable
     private readonly ITradeRepository _tradeRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly IHftSignalGenerationService _hftSignalGenerationService;
+    private readonly IPortfolioStateCache _portfolioStateCache;
     private readonly RiskAgent _riskAgent;
     private readonly StrategyExpectancyService _expectancyService;
     private readonly SymbolExpectancyService _symbolExpectancyService;
@@ -49,6 +51,7 @@ public class ProcessSignalHandlerTests : IDisposable
         _tradeRepository = Substitute.For<ITradeRepository>();
         _technicalAnalysis = Substitute.For<ITechnicalAnalysisService>();
         _hftSignalGenerationService = Substitute.For<IHftSignalGenerationService>();
+        _portfolioStateCache = Substitute.For<IPortfolioStateCache>();
         _riskAgent = new RiskAgent(Substitute.For<ILogger<RiskAgent>>());
         _expectancyService = new StrategyExpectancyService();
         _symbolExpectancyService = new SymbolExpectancyService();
@@ -60,11 +63,11 @@ public class ProcessSignalHandlerTests : IDisposable
                 ["Execution:UseWorkerHandoff"] = "false"
             })
             .Build();
-        _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(Array.Empty<Trade>());
+        _portfolioStateCache.GetRecentTrades().Returns(Array.Empty<Trade>());
 
         _handler = new ProcessSignalHandler(
             _logger, _mediator, _aiService, _marketDataService,
-            _signalRepository, _tradeRepository, _technicalAnalysis, _hftMarketDataService, _riskAgent, _expectancyService, _symbolExpectancyService, _promotionService, _edgeScoreService, _configuration, _hftSignalGenerationService);
+            _signalRepository, _tradeRepository, _technicalAnalysis, _hftMarketDataService, _riskAgent, _expectancyService, _symbolExpectancyService, _promotionService, _edgeScoreService, _configuration, _portfolioStateCache, _hftSignalGenerationService);
     }
 
     public void Dispose()
@@ -230,7 +233,7 @@ public class ProcessSignalHandlerTests : IDisposable
                 RegimeTag = "Trending"
             });
 
-        _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        _portfolioStateCache.GetRecentTrades().Returns(new[]
         {
             CreateClosedTrade(-120m),
             CreateClosedTrade(-100m),
@@ -267,7 +270,7 @@ public class ProcessSignalHandlerTests : IDisposable
                 RegimeTag = "Trending"
             });
 
-        _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        _portfolioStateCache.GetRecentTrades().Returns(new[]
         {
             CreateClosedTradeForSymbol(signal.Symbol, -120m),
             CreateClosedTradeForSymbol(signal.Symbol, -90m),
@@ -338,7 +341,57 @@ public class ProcessSignalHandlerTests : IDisposable
             .AnalyzeAsync(Arg.Any<Signal>(), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>());
     }
 
-    private static Trade CreateClosedTrade(decimal pnl)
+    [Fact]
+    public async Task Handle_ShouldApplyFinalAllocatorBiasMetadata_ForExactBucket()
+    {
+        var signal = CreateTestSignal();
+        _marketDataService.GetCandlesAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>())
+            .Returns(CreateTestCandles());
+        _technicalAnalysis.AnalyzeAsync(Arg.Any<Signal>(), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>())
+            .Returns(new TradeDecision
+            {
+                ShouldTrade = true,
+                Side = TradeSide.Buy,
+                Confidence = 88,
+                Reasoning = "Exact bucket is healthy",
+                StopLoss = 280m,
+                TakeProfit = 298m,
+                PositionSizePercent = 0.04m,
+                StrategyTag = "TrendConfluence",
+                RegimeTag = "Trending",
+                ExitPolicyTag = "TrendRunner"
+            });
+        SeedPromotionReady();
+        _portfolioStateCache.GetRecentTrades().Returns(Enumerable.Range(0, 8)
+            .Select(index => CreateClosedTrade(
+                pnl: index < 6 ? 18m : -4m,
+                edgeScore: index < 6 ? 88m : 72m,
+                edgeBand: index < 6 ? "Full" : "Reduced"))
+            .ToArray());
+        _aiService.ShouldExecuteAsync(Arg.Any<Signal>()).Returns(true);
+        _mediator.Send(Arg.Any<ExecuteTradeCommand>(), Arg.Any<CancellationToken>())
+            .Returns(new Trade
+            {
+                Id = Guid.NewGuid(),
+                SignalId = signal.Id,
+                Symbol = signal.Symbol,
+                EntryPrice = signal.Price,
+                Quantity = 1,
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryTime = DateTime.UtcNow
+            });
+
+        var result = await _handler.Handle(new ProcessSignalCommand(signal), CancellationToken.None);
+
+        result.Should().BeTrue();
+        signal.Metadata.Should().ContainKey("FinalAllocatorBias");
+        decimal.Parse(signal.Metadata["FinalAllocatorBias"], CultureInfo.InvariantCulture).Should().BeGreaterThan(1.0m);
+        signal.Metadata["FinalAllocatorScope"].Should().Contain("exact symbol-session bucket");
+        signal.Reasoning.Should().Contain("Final Allocator:");
+    }
+
+    private static Trade CreateClosedTrade(decimal pnl, decimal edgeScore = 0m, string edgeBand = "Full")
     {
         var entry = 100m;
         return new Trade
@@ -353,14 +406,16 @@ public class ProcessSignalHandlerTests : IDisposable
             Status = TradeStatus.Executed,
             StrategyTag = "TrendConfluence",
             RegimeTag = "Trending",
+            EdgeScore = edgeScore,
+            EdgeBand = edgeBand,
             EntryTime = TestSessionUtc.AddHours(-1),
             ExitTime = TestSessionUtc.AddMinutes(15)
         };
     }
 
-    private static Trade CreateClosedTradeForSymbol(string symbol, decimal pnl)
+    private static Trade CreateClosedTradeForSymbol(string symbol, decimal pnl, decimal edgeScore = 0m, string edgeBand = "Full")
     {
-        var trade = CreateClosedTrade(pnl);
+        var trade = CreateClosedTrade(pnl, edgeScore, edgeBand);
         trade.Symbol = symbol;
         return trade;
     }

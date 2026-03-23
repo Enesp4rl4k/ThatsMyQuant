@@ -17,7 +17,7 @@ public class SentimentAgent
         _newsFeed = newsFeed;
     }
 
-    public async Task<(bool Approved, string Reason)> EvaluateAsync(string symbol)
+    public async Task<(bool Approved, string Reason)> EvaluateAsync(string symbol, CancellationToken cancellationToken = default)
     {
         // Fetch the current 'Global Headline' from the simulator
         string latestHeadline = _newsFeed.GetLatestHeadline();

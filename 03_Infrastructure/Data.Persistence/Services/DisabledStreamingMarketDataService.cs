@@ -5,8 +5,18 @@ namespace ThatsMyQuant.Infrastructure.Services;
 
 public class DisabledStreamingMarketDataService : IStreamingMarketDataService
 {
-    public event Action<MarketTick>? OnTickReceived;
-    public event Action<OrderBookSnapshot>? OnOrderBookUpdated;
+    // This disabled implementation never produces market events.
+    public event Action<MarketTick>? OnTickReceived
+    {
+        add { }
+        remove { }
+    }
+
+    public event Action<OrderBookSnapshot>? OnOrderBookUpdated
+    {
+        add { }
+        remove { }
+    }
 
     public Task ConnectAsync(string[] symbols, CancellationToken cancellationToken)
     {
