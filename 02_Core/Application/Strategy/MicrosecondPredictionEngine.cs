@@ -55,38 +55,46 @@ public class MicrosecondPredictionEngine : IDisposable
     /// </summary>
     public float PredictDirection(in OrderBookSnapshot orderBook)
     {
-        if (_session == null) return 0f;
-        if (orderBook.Bids.Length == 0 || orderBook.Asks.Length == 0) return 0f;
+        if (_session == null || orderBook.Bids.Length == 0 || orderBook.Asks.Length == 0) return 0f;
 
         // 1. Calculate features from the fast Level 2 Snapshot
+        CalculateFeatures(orderBook);
+
+        if (_inputs == null) return 0f;
+
+        // 2. Inference
+        try
+        {
+            using var results = _session.Run(_inputs);
+            var output = results.First().AsTensor<float>();
+            
+            // Assuming output shape [1, 1], returning float representation of direction
+            return output[0, 0];
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "ONNX Inference failed during live market tick.");
+            return 0f;
+        }
+    }
+
+    private void CalculateFeatures(in OrderBookSnapshot orderBook)
+    {
         float bestBidPrice = (float)orderBook.Bids[0].Price;
         float bestBidQty = (float)orderBook.Bids[0].Quantity;
         float bestAskPrice = (float)orderBook.Asks[0].Price;
         float bestAskQty = (float)orderBook.Asks[0].Quantity;
         
-        float spread = bestAskPrice - bestBidPrice;
-        
-        // Order Flow Imbalance (Top Level): (BidQty - AskQty) / (BidQty + AskQty)
         float totalDepth = bestBidQty + bestAskQty;
         float imbalance = totalDepth == 0 ? 0 : (bestBidQty - bestAskQty) / totalDepth;
 
         // Calculate Level 2 VOI (Volume Order Imbalance) and VPIN proxy
-        float voi = 0f;
-        float totalBidVol = 0f;
-        float totalAskVol = 0f;
-        
-        int levels = Math.Min(5, Math.Min(orderBook.Bids.Length, orderBook.Asks.Length));
-        for (int i = 0; i < levels; i++)
-        {
-            totalBidVol += (float)orderBook.Bids[i].Quantity;
-            totalAskVol += (float)orderBook.Asks[i].Quantity;
-        }
+        var (totalBidVol, totalAskVol) = CalculateDepthVolumes(orderBook, 5);
         
         float totalVolume = totalBidVol + totalAskVol;
-        voi = totalVolume == 0 ? 0 : (totalBidVol - totalAskVol) / totalVolume;
+        float voi = totalVolume == 0 ? 0 : (totalBidVol - totalAskVol) / totalVolume;
         
         // VPIN proxy (Volume-Synchronized Probability of Informed Trading)
-        // Simplified as the absolute volume imbalance representing toxicity
         float vpinProxy = totalVolume == 0 ? 0 : Math.Abs(totalBidVol - totalAskVol) / totalVolume;
 
         // Map features to flat array. The _inputTensor uses this memory directly.
@@ -94,30 +102,25 @@ public class MicrosecondPredictionEngine : IDisposable
         _features[1] = bestBidQty;
         _features[2] = bestAskPrice;
         _features[3] = bestAskQty;
-        _features[4] = spread;
+        _features[4] = bestAskPrice - bestBidPrice; // Spread
         _features[5] = imbalance;
         _features[6] = voi;
         _features[7] = vpinProxy;
+    }
 
-        if (_inputs == null) return 0f;
+    private static (float totalBidVol, float totalAskVol) CalculateDepthVolumes(in OrderBookSnapshot orderBook, int maxLevels)
+    {
+        float totalBidVol = 0f;
+        float totalAskVol = 0f;
+        
+        int levels = Math.Min(maxLevels, Math.Min(orderBook.Bids.Length, orderBook.Asks.Length));
+        for (int i = 0; i < levels; i++)
+        {
+            totalBidVol += (float)orderBook.Bids[i].Quantity;
+            totalAskVol += (float)orderBook.Asks[i].Quantity;
+        }
 
-        // 3. Inference
-        try
-        {
-            using var results = _session.Run(_inputs);
-            var output = results.First().AsTensor<float>();
-            
-            // Assuming output shape [1, 1], returning float representation of direction
-            float prediction = output[0, 0];
-            
-            // Example interpretation: > 0.5 is Bullish, < -0.5 is Bearish
-            return prediction;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "ONNX Inference failed during live market tick.");
-            return 0f;
-        }
+        return (totalBidVol, totalAskVol);
     }
 
     public void Dispose()

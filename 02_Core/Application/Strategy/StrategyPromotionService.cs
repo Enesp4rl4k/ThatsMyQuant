@@ -36,272 +36,343 @@ public sealed class StrategyPromotionService
             var backtestMatch = FindBestBucketMatch(_state.BacktestBuckets, signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag);
             var paperMatch = FindBestBucketMatch(_state.PaperBuckets, signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag);
             var liveMatch = FindBestBucketMatch(_state.LiveBuckets, signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag);
+            
             var backtestBucket = backtestMatch.Bucket;
             var paperBucket = paperMatch.Bucket;
             var liveBucket = liveMatch.Bucket;
             var executionProfile = _executionProfiles.ResolveForSymbol(signal.Symbol, signal.Metadata);
             var capitalBiasMultiplier = ComputeCapitalBiasMultiplier(backtestMatch, paperMatch, liveMatch);
             var capitalBiasLabel = BuildCapitalBiasLabel(backtestMatch, paperMatch, liveMatch, capitalBiasMultiplier);
-            var exitPolicyDrift = EvaluateExitPolicyDrift(signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag, decision.ExitPolicyTag);
+            
+            var res = CheckLadderGates(signal, decision, backtestBucket, paperBucket);
+            if (res != null) return res.Value;
+
+            res = CheckLiveSampleDepth(liveBucket, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
+
             var exactBucketSizingBias = ComputeExactBucketSizingBias(signal, decision, liveMatch);
-            var exactBucketPromotionBias = ComputeExactBucketPromotionBias(signal, decision, liveMatch);
             var venueExecutionBias = ComputeVenueExecutionBias(signal, liveMatch);
-
-            if (backtestBucket is null || !backtestBucket.BacktestPass)
-            {
-                return new PromotionGuardResult(
-                    false,
-                    0m,
-                    $"Backtest ladder gate is not passed yet for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}.",
-                    false,
-                    0,
-                    "Backtest");
-            }
-
-            if (paperBucket is null || !paperBucket.PaperPass)
-            {
-                return new PromotionGuardResult(
-                    false,
-                    0m,
-                    $"Paper ladder gate is not passed yet for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}.",
-                    false,
-                    0,
-                    "Paper");
-            }
-
-            if (liveBucket is null || liveBucket.Trades < 4)
-            {
-                return new PromotionGuardResult(
-                    true,
-                    ApplyCapitalBiasToStage(0.20m, "LiveProbe", capitalBiasMultiplier),
-                    $"Promotion guard: paper-ready bucket, but live sample is thin ({liveBucket?.Trades ?? 0} trades). Start smaller. {capitalBiasLabel}",
-                    true,
-                    0,
-                    "LiveProbe");
-            }
-
-            var concordancePromotionBias = ComputeExactVenueConcordancePromotionBias(
-                signal,
-                decision,
-                exactBucketSizingBias,
-                venueExecutionBias);
-            if (concordancePromotionBias.HasValue)
-            {
-                var concordanceBias = concordancePromotionBias.Value;
-                if (!concordanceBias.Approved)
-                {
-                    return new PromotionGuardResult(
-                        false,
-                        0m,
-                        $"{concordanceBias.Reason} {capitalBiasLabel}",
-                        false,
-                        0,
-                        "Paper");
-                }
-
-                if (concordanceBias.ForceLiveProbe)
-                {
-                    return new PromotionGuardResult(
-                        true,
-                        ApplyCapitalBiasToStage(Math.Min(0.20m, concordanceBias.StageMultiplier), "LiveProbe", capitalBiasMultiplier),
-                        $"{concordanceBias.Reason} {capitalBiasLabel}",
-                        false,
-                        0,
-                        "LiveProbe");
-                }
-            }
+            var concordancePromotionBias = ComputeExactVenueConcordancePromotionBias(signal, decision, exactBucketSizingBias, venueExecutionBias);
+            
+            res = CheckConcordanceBias(concordancePromotionBias, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
 
             var venuePromotionBias = ComputeVenuePromotionBias(signal, liveMatch);
-            if (venuePromotionBias.HasValue)
-            {
-                var venueBias = venuePromotionBias.Value;
-                if (!venueBias.Approved)
-                {
-                    return new PromotionGuardResult(
-                        false,
-                        0m,
-                        $"{venueBias.Reason} {capitalBiasLabel}",
-                        false,
-                        0,
-                        "Paper");
-                }
+            res = CheckVenuePromotionBias(venuePromotionBias, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
 
-                if (venueBias.ForceLiveProbe)
-                {
-                    return new PromotionGuardResult(
-                        true,
-                        ApplyCapitalBiasToStage(Math.Min(0.25m, venueBias.StageMultiplier), "LiveProbe", capitalBiasMultiplier),
-                        $"{venueBias.Reason} {capitalBiasLabel}",
-                        false,
-                        0,
-                        "LiveProbe");
-                }
-            }
+            res = CheckEdgeQuality(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
 
-            if (liveBucket.AverageEdgeScore > 0m)
-            {
-                if (liveBucket.AverageEdgeScore < 55m)
-                {
-                    return new PromotionGuardResult(
-                        false,
-                        0m,
-                        $"Live edge quality too weak for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Avg edge {liveBucket.AverageEdgeScore:F1}.",
-                        false,
-                        0,
-                        "Paper");
-                }
+            res = CheckHighEdgeOutcomes(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
 
-                if (liveBucket.AverageEdgeScore < 70m)
-                {
-                    return new PromotionGuardResult(
-                        true,
-                        ApplyCapitalBiasToStage(0.25m, "LiveProbe", capitalBiasMultiplier),
-                        $"Live edge quality is soft for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Avg edge {liveBucket.AverageEdgeScore:F1}. Reduce size. {capitalBiasLabel}",
-                        false,
-                        0,
-                        "LiveProbe");
-                }
-            }
+            res = CheckHftLatency(decision, liveBucket, executionProfile, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
 
-            if (liveBucket.HighEdgeTrades >= 3)
-            {
-                if (liveBucket.HighEdgeExpectedValue <= 0m || liveBucket.HighEdgeProfitFactor < 1.0 || liveBucket.HighEdgeWinRate < 45)
-                {
-                    return new PromotionGuardResult(
-                        false,
-                        0m,
-                        $"High-edge outcomes are failing for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Full/Reduced trades: {liveBucket.HighEdgeTrades}, EV={liveBucket.HighEdgeExpectedValue:F2}, PF={liveBucket.HighEdgeProfitFactor:F2}, WR={liveBucket.HighEdgeWinRate:F1}%.",
-                        false,
-                        0,
-                        "Paper");
-                }
+            var exactBucketPromotionBias = ComputeExactBucketPromotionBias(signal, decision, liveMatch);
+            res = CheckExactBucketPromotionBias(exactBucketPromotionBias, capitalBiasLabel);
+            if (res != null) return res.Value;
 
-                if (liveBucket.HighEdgeProfitFactor < 1.20 || liveBucket.HighEdgeWinRate < 52)
-                {
-                    return new PromotionGuardResult(
-                        true,
-                        ApplyCapitalBiasToStage(0.25m, "LiveProbe", capitalBiasMultiplier),
-                        $"High-edge outcomes are still soft for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Full/Reduced trades: {liveBucket.HighEdgeTrades}, EV={liveBucket.HighEdgeExpectedValue:F2}, PF={liveBucket.HighEdgeProfitFactor:F2}, WR={liveBucket.HighEdgeWinRate:F1}%. {capitalBiasLabel}",
-                        false,
-                        0,
-                        "LiveProbe");
-                }
-            }
-
-            if (string.Equals(decision.StrategyTag, "HftMicroEdge", StringComparison.OrdinalIgnoreCase))
-            {
-                if (liveBucket.AverageExecutionLatencyMs > executionProfile.PreferredMaxLatencyMs * 1.5)
-                {
-                    return new PromotionGuardResult(
-                        false,
-                        0m,
-                        $"HFT promotion blocked: average latency {liveBucket.AverageExecutionLatencyMs:F0}ms exceeds {executionProfile.Venue} budget {executionProfile.PreferredMaxLatencyMs}ms.",
-                        false,
-                        1.0,
-                        "Paper");
-                }
-
-                if (liveBucket.AverageExecutionLatencyMs > executionProfile.PreferredMaxLatencyMs)
-                {
-                    return new PromotionGuardResult(
-                        true,
-                        ApplyCapitalBiasToStage(0.15m, "LiveProbe", capitalBiasMultiplier),
-                        $"HFT latency caution: average latency {liveBucket.AverageExecutionLatencyMs:F0}ms is above {executionProfile.Venue} budget {executionProfile.PreferredMaxLatencyMs}ms. {capitalBiasLabel}",
-                        false,
-                        0.55,
-                    "LiveProbe");
-                }
-            }
-
-            if (exactBucketPromotionBias.HasValue)
-            {
-                var exactBias = exactBucketPromotionBias.Value;
-                if (!exactBias.Approved)
-                {
-                    return new PromotionGuardResult(
-                        false,
-                        0m,
-                        $"{exactBias.Reason} {capitalBiasLabel}",
-                        false,
-                        0,
-                        "Paper");
-                }
-
-                if (exactBias.ForceLiveProbe)
-                {
-                    return new PromotionGuardResult(
-                        true,
-                        ApplyCapitalBiasToStage(Math.Min(0.25m, exactBias.StageMultiplier), "LiveProbe", capitalBiasMultiplier),
-                        $"{exactBias.Reason} {capitalBiasLabel}",
-                        false,
-                        0,
-                        "LiveProbe");
-                }
-            }
-
-            if (exitPolicyDrift.HasValue)
-            {
-                var drift = exitPolicyDrift.Value;
-                if (drift.Score >= 0.70 && (drift.LiveExpectedValue <= 0m || drift.LiveProfitFactor < 0.95 || drift.LiveWinRate < 42))
-                {
-                    return new PromotionGuardResult(
-                        false,
-                        0m,
-                        $"Exit-policy drift too large for {decision.ExitPolicyTag} on {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag} in {sessionTag}. Drift={drift.Score:F2}, paper EV={drift.PaperExpectedValue:F2}, live EV={drift.LiveExpectedValue:F2}, paper PF={drift.PaperProfitFactor:F2}, live PF={drift.LiveProfitFactor:F2}.",
-                        false,
-                        drift.Score,
-                        "Paper");
-                }
-
-                if (drift.Score >= 0.45)
-                {
-                    return new PromotionGuardResult(
-                        true,
-                        ApplyCapitalBiasToStage(0.20m, "LiveProbe", capitalBiasMultiplier),
-                        $"Exit-policy drift caution for {decision.ExitPolicyTag} on {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag} in {sessionTag}. Drift={drift.Score:F2}, paper EV={drift.PaperExpectedValue:F2}, live EV={drift.LiveExpectedValue:F2}, paper PF={drift.PaperProfitFactor:F2}, live PF={drift.LiveProfitFactor:F2}. {capitalBiasLabel}",
-                        false,
-                        drift.Score,
-                        "LiveProbe");
-                }
-            }
+            var exitPolicyDrift = EvaluateExitPolicyDrift(signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag, decision.ExitPolicyTag);
+            res = CheckExitPolicyDrift(decision, sessionTag, exitPolicyDrift, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
 
             var driftScore = ComputeDriftScore(paperBucket, liveBucket);
+            res = CheckPaperLiveDrift(sessionTag, liveBucket, driftScore, capitalBiasMultiplier, capitalBiasLabel);
+            if (res != null) return res.Value;
 
-            if ((driftScore >= 0.75 && liveBucket.ExpectedValue <= 0) ||
-                (driftScore >= 0.60 && (liveBucket.ExpectedValue <= 0 || liveBucket.ProfitFactor < 0.75)))
+            return CreateFinalPromotionResult(liveBucket ?? new StrategyBucketPerformanceSnapshot(), concordancePromotionBias, capitalBiasMultiplier, capitalBiasLabel, driftScore);
+        }
+    }
+
+    private static PromotionGuardResult? CheckLadderGates(Signal signal, TradeDecision decision, StrategyBucketPerformanceSnapshot? backtestBucket, StrategyBucketPerformanceSnapshot? paperBucket)
+    {
+        if (backtestBucket is null || !backtestBucket.BacktestPass)
+        {
+            return new PromotionGuardResult(
+                false,
+                0m,
+                $"Backtest ladder gate is not passed yet for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}.",
+                false,
+                0,
+                "Backtest");
+        }
+
+        if (paperBucket is null || !paperBucket.PaperPass)
+        {
+            return new PromotionGuardResult(
+                false,
+                0m,
+                $"Paper ladder gate is not passed yet for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}.",
+                false,
+                0,
+                "Paper");
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckLiveSampleDepth(StrategyBucketPerformanceSnapshot? liveBucket, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (liveBucket is null || liveBucket.Trades < 4)
+        {
+            return new PromotionGuardResult(
+                true,
+                ApplyCapitalBiasToStage(0.20m, "LiveProbe", capitalBiasMultiplier),
+                $"Promotion guard: paper-ready bucket, but live sample is thin ({liveBucket?.Trades ?? 0} trades). Start smaller. {capitalBiasLabel}",
+                true,
+                0,
+                "LiveProbe");
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckConcordanceBias(FinalAllocatorBiasPromotionGuard? concordancePromotionBias, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (concordancePromotionBias.HasValue)
+        {
+            var concordanceBias = concordancePromotionBias.Value;
+            if (!concordanceBias.Approved)
             {
                 return new PromotionGuardResult(
                     false,
                     0m,
-                    $"Paper/live drift too large for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag} in {sessionTag}. Drift={driftScore:F2}.",
+                    $"{concordanceBias.Reason} {capitalBiasLabel}",
                     false,
-                    driftScore,
+                    0,
                     "Paper");
             }
 
-            if (driftScore >= 0.40 || liveBucket.ExpectedValue <= 0 || liveBucket.ProfitFactor < 1.0)
+            if (concordanceBias.ForceLiveProbe)
+            {
+                return new PromotionGuardResult(
+                    true,
+                    ApplyCapitalBiasToStage(Math.Min(0.20m, concordanceBias.StageMultiplier), "LiveProbe", capitalBiasMultiplier),
+                    $"{concordanceBias.Reason} {capitalBiasLabel}",
+                    false,
+                    0,
+                    "LiveProbe");
+            }
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckVenuePromotionBias(FinalAllocatorBiasPromotionGuard? venuePromotionBias, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (venuePromotionBias.HasValue)
+        {
+            var venueBias = venuePromotionBias.Value;
+            if (!venueBias.Approved)
+            {
+                return new PromotionGuardResult(
+                    false,
+                    0m,
+                    $"{venueBias.Reason} {capitalBiasLabel}",
+                    false,
+                    0,
+                    "Paper");
+            }
+
+            if (venueBias.ForceLiveProbe)
+            {
+                return new PromotionGuardResult(
+                    true,
+                    ApplyCapitalBiasToStage(Math.Min(0.25m, venueBias.StageMultiplier), "LiveProbe", capitalBiasMultiplier),
+                    $"{venueBias.Reason} {capitalBiasLabel}",
+                    false,
+                    0,
+                    "LiveProbe");
+            }
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckEdgeQuality(Signal signal, TradeDecision decision, StrategyBucketPerformanceSnapshot liveBucket, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (liveBucket.AverageEdgeScore > 0m)
+        {
+            if (liveBucket.AverageEdgeScore < 55m)
+            {
+                return new PromotionGuardResult(
+                    false,
+                    0m,
+                    $"Live edge quality too weak for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Avg edge {liveBucket.AverageEdgeScore:F1}.",
+                    false,
+                    0,
+                    "Paper");
+            }
+
+            if (liveBucket.AverageEdgeScore < 70m)
             {
                 return new PromotionGuardResult(
                     true,
                     ApplyCapitalBiasToStage(0.25m, "LiveProbe", capitalBiasMultiplier),
-                    $"Paper/live drift caution: drift={driftScore:F2}, live EV={liveBucket.ExpectedValue:F2}, PF={liveBucket.ProfitFactor:F2}, slip={liveBucket.AverageEntrySlippagePercent:F3}%, latency={liveBucket.AverageExecutionLatencyMs:F0}ms. {capitalBiasLabel}",
+                    $"Live edge quality is soft for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Avg edge {liveBucket.AverageEdgeScore:F1}. Reduce size. {capitalBiasLabel}",
                     false,
-                    driftScore,
+                    0,
                     "LiveProbe");
             }
+        }
 
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckHighEdgeOutcomes(Signal signal, TradeDecision decision, StrategyBucketPerformanceSnapshot liveBucket, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (liveBucket.HighEdgeTrades >= 3)
+        {
+            if (liveBucket.HighEdgeExpectedValue <= 0m || liveBucket.HighEdgeProfitFactor < 1.0 || liveBucket.HighEdgeWinRate < 45)
+            {
+                return new PromotionGuardResult(
+                    false,
+                    0m,
+                    $"High-edge outcomes are failing for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Full/Reduced trades: {liveBucket.HighEdgeTrades}, EV={liveBucket.HighEdgeExpectedValue:F2}, PF={liveBucket.HighEdgeProfitFactor:F2}, WR={liveBucket.HighEdgeWinRate:F1}%.",
+                    false,
+                    0,
+                    "Paper");
+            }
+
+            if (liveBucket.HighEdgeProfitFactor < 1.20 || liveBucket.HighEdgeWinRate < 52)
+            {
+                return new PromotionGuardResult(
+                    true,
+                    ApplyCapitalBiasToStage(0.25m, "LiveProbe", capitalBiasMultiplier),
+                    $"High-edge outcomes are still soft for {signal.Symbol} {decision.StrategyTag}/{decision.RegimeTag}. Full/Reduced trades: {liveBucket.HighEdgeTrades}, EV={liveBucket.HighEdgeExpectedValue:F2}, PF={liveBucket.HighEdgeProfitFactor:F2}, WR={liveBucket.HighEdgeWinRate:F1}%. {capitalBiasLabel}",
+                    false,
+                    0,
+                    "LiveProbe");
+            }
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckHftLatency(TradeDecision decision, StrategyBucketPerformanceSnapshot liveBucket, MarketExecutionProfile executionProfile, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (string.Equals(decision.StrategyTag, "HftMicroEdge", StringComparison.OrdinalIgnoreCase))
+        {
+            if (liveBucket.AverageExecutionLatencyMs > executionProfile.PreferredMaxLatencyMs * 1.5)
+            {
+                return new PromotionGuardResult(
+                    false,
+                    0m,
+                    $"HFT promotion blocked: average latency {liveBucket.AverageExecutionLatencyMs:F0}ms exceeds {executionProfile.Venue} budget {executionProfile.PreferredMaxLatencyMs}ms.",
+                    false,
+                    1.0,
+                    "Paper");
+            }
+
+            if (liveBucket.AverageExecutionLatencyMs > executionProfile.PreferredMaxLatencyMs)
+            {
+                return new PromotionGuardResult(
+                    true,
+                    ApplyCapitalBiasToStage(0.15m, "LiveProbe", capitalBiasMultiplier),
+                    $"HFT latency caution: average latency {liveBucket.AverageExecutionLatencyMs:F0}ms is above {executionProfile.Venue} budget {executionProfile.PreferredMaxLatencyMs}ms. {capitalBiasLabel}",
+                    false,
+                    0.55,
+                    "LiveProbe");
+            }
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckExactBucketPromotionBias(FinalAllocatorBiasPromotionGuard? exactBucketPromotionBias, string capitalBiasLabel)
+    {
+        if (exactBucketPromotionBias.HasValue)
+        {
+            var exactBias = exactBucketPromotionBias.Value;
+            if (!exactBias.Approved)
+            {
+                return new PromotionGuardResult(
+                    false,
+                    0m,
+                    $"{exactBias.Reason} {capitalBiasLabel}",
+                    false,
+                    0,
+                    "Paper");
+            }
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckExitPolicyDrift(TradeDecision decision, string sessionTag, ExitPolicyDriftSnapshot? exitPolicyDrift, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (exitPolicyDrift.HasValue)
+        {
+            var drift = exitPolicyDrift.Value;
+            if (drift.Score >= 0.70 && (drift.LiveExpectedValue <= 0m || drift.LiveProfitFactor < 0.95 || drift.LiveWinRate < 42))
+            {
+                return new PromotionGuardResult(
+                    false,
+                    0m,
+                    $"Exit-policy drift too large for {decision.ExitPolicyTag} on {sessionTag}. Drift={drift.Score:F2}, paper EV={drift.PaperExpectedValue:F2}, live EV={drift.LiveExpectedValue:F2}, paper PF={drift.PaperProfitFactor:F2}, live PF={drift.LiveProfitFactor:F2}.",
+                    false,
+                    drift.Score,
+                    "Paper");
+            }
+
+            if (drift.Score >= 0.45)
+            {
+                return new PromotionGuardResult(
+                    true,
+                    ApplyCapitalBiasToStage(0.20m, "LiveProbe", capitalBiasMultiplier),
+                    $"Exit-policy drift caution for {decision.ExitPolicyTag} on {sessionTag}. Drift={drift.Score:F2}, paper EV={drift.PaperExpectedValue:F2}, live EV={drift.LiveExpectedValue:F2}, paper PF={drift.PaperProfitFactor:F2}, live PF={drift.LiveProfitFactor:F2}. {capitalBiasLabel}",
+                    false,
+                    drift.Score,
+                    "LiveProbe");
+            }
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckPaperLiveDrift(string sessionTag, StrategyBucketPerformanceSnapshot liveBucket, double driftScore, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if ((driftScore >= 0.75 && liveBucket.ExpectedValue <= 0) ||
+            (driftScore >= 0.60 && (liveBucket.ExpectedValue <= 0 || liveBucket.ProfitFactor < 0.75)))
+        {
+            return new PromotionGuardResult(
+                false,
+                0m,
+                $"Paper/live drift too large for {sessionTag}. Drift={driftScore:F2}.",
+                false,
+                driftScore,
+                "Paper");
+        }
+
+        if (driftScore >= 0.40 || liveBucket.ExpectedValue <= 0 || liveBucket.ProfitFactor < 1.0)
+        {
             return new PromotionGuardResult(
                 true,
-                ApplyCapitalBiasToStage(
-                    (liveBucket.ScaledLiveEligible && liveBucket.AverageEdgeScore >= 85m && liveBucket.HighEdgeProfitFactor >= 1.35 ? 1.10m : 1.00m)
-                    * (concordancePromotionBias?.StageMultiplier ?? 1.00m),
-                    "ScaledLive",
-                    capitalBiasMultiplier),
-                $"Promotion guard confirmed. Drift={driftScore:F2}, live EV={liveBucket.ExpectedValue:F2}, PF={liveBucket.ProfitFactor:F2}, slip={liveBucket.AverageEntrySlippagePercent:F3}%, latency={liveBucket.AverageExecutionLatencyMs:F0}ms.{BuildConcordanceSuffix(concordancePromotionBias)} {capitalBiasLabel}",
-                true,
+                ApplyCapitalBiasToStage(0.25m, "LiveProbe", capitalBiasMultiplier),
+                $"Paper/live drift caution: drift={driftScore:F2}, live EV={liveBucket.ExpectedValue:F2}, PF={liveBucket.ProfitFactor:F2}, slip={liveBucket.AverageEntrySlippagePercent:F3}%, latency={liveBucket.AverageExecutionLatencyMs:F0}ms. {capitalBiasLabel}",
+                false,
                 driftScore,
-                "ScaledLive");
+                "LiveProbe");
         }
+
+        return null;
+    }
+
+    private static PromotionGuardResult CreateFinalPromotionResult(StrategyBucketPerformanceSnapshot liveBucket, FinalAllocatorBiasPromotionGuard? concordancePromotionBias, decimal capitalBiasMultiplier, string capitalBiasLabel, double driftScore)
+    {
+        return new PromotionGuardResult(
+            true,
+            ApplyCapitalBiasToStage(
+                (liveBucket.ScaledLiveEligible && liveBucket.AverageEdgeScore >= 85m && liveBucket.HighEdgeProfitFactor >= 1.35 ? 1.10m : 1.00m)
+                * (concordancePromotionBias?.StageMultiplier ?? 1.00m),
+                "ScaledLive",
+                capitalBiasMultiplier),
+            $"Promotion guard confirmed. Drift={driftScore:F2}, live EV={liveBucket.ExpectedValue:F2}, PF={liveBucket.ProfitFactor:F2}, slip={liveBucket.AverageEntrySlippagePercent:F3}%, latency={liveBucket.AverageExecutionLatencyMs:F0}ms.{BuildConcordanceSuffix(concordancePromotionBias)} {capitalBiasLabel}",
+            true,
+            driftScore,
+            "ScaledLive");
     }
 
     public FinalAllocatorBiasResult EvaluateFinalAllocatorBias(Signal signal, TradeDecision decision, IReadOnlyList<Trade> liveTrades)
@@ -561,96 +632,10 @@ public sealed class StrategyPromotionService
                 trade.RegimeTag,
                 SessionTag = ResolveSessionBucket(trade.ExitTime!.Value)
             })
-            .Select(group =>
-            {
-                var pnlValues = group.Select(GetLivePnl).ToList();
-                var highEdgePnls = group
-                    .Where(trade => IsHighEdgeBand(trade.EdgeBand, trade.EdgeScore))
-                    .Select(GetLivePnl)
-                    .ToList();
-                var boostedAllocatorPnls = group
-                    .Where(trade => trade.FinalAllocatorBias > 1.01m)
-                    .Select(GetLivePnl)
-                    .ToList();
-                var trimmedAllocatorPnls = group
-                    .Where(trade => trade.FinalAllocatorBias > 0m && trade.FinalAllocatorBias < 0.99m)
-                    .Select(GetLivePnl)
-                    .ToList();
-                var boostedVenuePnls = group
-                    .Where(trade => trade.VenueExecutionBias > 1.01m)
-                    .Select(GetLivePnl)
-                    .ToList();
-                var trimmedVenuePnls = group
-                    .Where(trade => trade.VenueExecutionBias > 0m && trade.VenueExecutionBias < 0.99m)
-                    .Select(GetLivePnl)
-                    .ToList();
-                var backtestBucket = FindBestBucketMatch(_state.BacktestBuckets, group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag).Bucket;
-                var paperBucket = FindBestBucketMatch(_state.PaperBuckets, group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag).Bucket;
-                var backtestPass = backtestBucket?.BacktestPass == true;
-                var paperPass = paperBucket?.PaperPass == true;
-                var liveProbePass = pnlValues.Count >= 4 &&
-                                    backtestPass &&
-                                    paperPass &&
-                                    ComputeProfitFactor(pnlValues) >= 1.0 &&
-                                    pnlValues.Average() >= 0 &&
-                                    (highEdgePnls.Count < 3 || (ComputeProfitFactor(highEdgePnls) >= 1.0 && highEdgePnls.Average() >= 0));
-                var scaledLiveEligible = pnlValues.Count >= 8 &&
-                                         backtestPass &&
-                                         paperPass &&
-                                         ComputeProfitFactor(pnlValues) >= 1.20 &&
-                                         pnlValues.Average() > 0 &&
-                                         pnlValues.Count(value => value > 0) * 1.0 / pnlValues.Count >= 0.45 &&
-                                         (!group.Any(trade => trade.EdgeScore > 0m) || group.Where(trade => trade.EdgeScore > 0m).Average(trade => trade.EdgeScore) >= 70m) &&
-                                         (highEdgePnls.Count < 3 || (ComputeProfitFactor(highEdgePnls) >= 1.10 && highEdgePnls.Average() > 0 && highEdgePnls.Count(value => value > 0) * 1.0 / highEdgePnls.Count >= 0.45));
-
-                return new StrategyBucketPerformanceSnapshot
-                {
-                    Symbol = group.Key.Symbol,
-                    StrategyTag = group.Key.StrategyTag,
-                    RegimeTag = group.Key.RegimeTag,
-                    SessionTag = group.Key.SessionTag,
-                    Trades = pnlValues.Count,
-                    WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(value => value > 0) * 100.0 / pnlValues.Count,
-                    ProfitFactor = ComputeProfitFactor(pnlValues),
-                    ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
-                    TotalPnL = pnlValues.Sum(),
-                    AverageEdgeScore = group.Any(trade => trade.EdgeScore > 0m) ? group.Where(trade => trade.EdgeScore > 0m).Average(trade => trade.EdgeScore) : 0m,
-                    HighEdgeTrades = highEdgePnls.Count,
-                    HighEdgeWinRate = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Count(value => value > 0) * 100.0 / highEdgePnls.Count,
-                    HighEdgeProfitFactor = ComputeProfitFactor(highEdgePnls),
-                    HighEdgeExpectedValue = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Average(),
-                    HighEdgeTotalPnL = highEdgePnls.Sum(),
-                    AverageFinalAllocatorBias = group.Any(trade => trade.FinalAllocatorBias > 0m) ? group.Where(trade => trade.FinalAllocatorBias > 0m).Average(trade => trade.FinalAllocatorBias) : 0m,
-                    BoostedAllocatorTrades = boostedAllocatorPnls.Count,
-                    BoostedAllocatorWinRate = boostedAllocatorPnls.Count == 0 ? 0 : boostedAllocatorPnls.Count(value => value > 0) * 100.0 / boostedAllocatorPnls.Count,
-                    BoostedAllocatorProfitFactor = ComputeProfitFactor(boostedAllocatorPnls),
-                    BoostedAllocatorExpectedValue = boostedAllocatorPnls.Count == 0 ? 0 : boostedAllocatorPnls.Average(),
-                    TrimmedAllocatorTrades = trimmedAllocatorPnls.Count,
-                    TrimmedAllocatorWinRate = trimmedAllocatorPnls.Count == 0 ? 0 : trimmedAllocatorPnls.Count(value => value > 0) * 100.0 / trimmedAllocatorPnls.Count,
-                    TrimmedAllocatorProfitFactor = ComputeProfitFactor(trimmedAllocatorPnls),
-                    TrimmedAllocatorExpectedValue = trimmedAllocatorPnls.Count == 0 ? 0 : trimmedAllocatorPnls.Average(),
-                    AverageVenueExecutionBias = group.Any(trade => trade.VenueExecutionBias > 0m) ? group.Where(trade => trade.VenueExecutionBias > 0m).Average(trade => trade.VenueExecutionBias) : 0m,
-                    BoostedVenueExecutionTrades = boostedVenuePnls.Count,
-                    BoostedVenueExecutionWinRate = boostedVenuePnls.Count == 0 ? 0 : boostedVenuePnls.Count(value => value > 0) * 100.0 / boostedVenuePnls.Count,
-                    BoostedVenueExecutionProfitFactor = ComputeProfitFactor(boostedVenuePnls),
-                    BoostedVenueExecutionExpectedValue = boostedVenuePnls.Count == 0 ? 0 : boostedVenuePnls.Average(),
-                    TrimmedVenueExecutionTrades = trimmedVenuePnls.Count,
-                    TrimmedVenueExecutionWinRate = trimmedVenuePnls.Count == 0 ? 0 : trimmedVenuePnls.Count(value => value > 0) * 100.0 / trimmedVenuePnls.Count,
-                    TrimmedVenueExecutionProfitFactor = ComputeProfitFactor(trimmedVenuePnls),
-                    TrimmedVenueExecutionExpectedValue = trimmedVenuePnls.Count == 0 ? 0 : trimmedVenuePnls.Average(),
-                    AverageEntrySlippagePercent = group.Any() ? group.Average(trade => trade.EntrySlippagePercent) : 0m,
-                    AverageExecutionLatencyMs = group.Any() ? group.Average(trade => (double)trade.ExecutionLatencyMs) : 0,
-                    BacktestPass = backtestPass,
-                    PaperPass = paperPass,
-                    LiveProbePass = liveProbePass,
-                    ScaledLiveEligible = scaledLiveEligible,
-                    PromotionReady = scaledLiveEligible,
-                    PromotionStage = DetermineLivePromotionStage(pnlValues.Count, scaledLiveEligible, liveProbePass),
-                    RecordedAtUtc = DateTime.UtcNow
-                };
-            })
+            .Select(group => CreateBucketSnapshot(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, group.ToList()))
             .OrderByDescending(snapshot => snapshot.RecordedAtUtc)
             .ToList();
+
         UpsertExitPolicySnapshots(
             liveTrades
                 .Where(trade => trade.IsClosed)
@@ -660,24 +645,113 @@ public sealed class StrategyPromotionService
                     trade.StrategyTag,
                     trade.RegimeTag,
                     SessionTag = ResolveSessionBucket(trade.ExitTime!.Value),
-                    ExitPolicyTag = string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "TrendRunner" : trade.ExitPolicyTag,
-                    ExecutionMode = string.IsNullOrWhiteSpace(trade.ExecutionMode) ? "REAL" : trade.ExecutionMode
+                    ExitPolicyTag = string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "TrendRunner" : trade.ExitPolicyTag.Trim(),
+                    ExecutionMode = string.IsNullOrWhiteSpace(trade.ExecutionMode) ? "REAL" : trade.ExecutionMode.Trim()
                 })
-                .Select(group => new ExitPolicyPerformanceSnapshot
-                {
-                    Symbol = group.Key.Symbol,
-                    StrategyTag = group.Key.StrategyTag,
-                    RegimeTag = group.Key.RegimeTag,
-                    SessionTag = group.Key.SessionTag,
-                    ExitPolicyTag = group.Key.ExitPolicyTag,
-                    ExecutionMode = group.Key.ExecutionMode,
-                    Trades = group.Count(),
-                    WinRate = group.Count() == 0 ? 0 : group.Count(item => GetLivePnl(item) > 0) * 100.0 / group.Count(),
-                    ProfitFactor = ComputeProfitFactor(group.Select(GetLivePnl)),
-                    ExpectedValue = group.Any() ? group.Average(GetLivePnl) : 0m,
-                    TotalPnL = group.Sum(GetLivePnl),
-                    RecordedAtUtc = DateTime.UtcNow
-                }));
+                .Select(group => CreateExitPolicySnapshot(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, group.Key.ExitPolicyTag, group.Key.ExecutionMode, group.ToList()))
+                .ToList());
+    }
+
+    private StrategyBucketPerformanceSnapshot CreateBucketSnapshot(string symbol, string strategyTag, string regimeTag, string sessionTag, List<Trade> trades)
+    {
+        var pnlValues = trades.Select(GetLivePnl).ToList();
+        var highEdgePnls = trades
+            .Where(trade => IsHighEdgeBand(trade.EdgeBand, trade.EdgeScore))
+            .Select(GetLivePnl)
+            .ToList();
+        
+        var boostedAllocatorPnls = trades.Where(t => t.FinalAllocatorBias > 1.01m).Select(GetLivePnl).ToList();
+        var trimmedAllocatorPnls = trades.Where(t => t.FinalAllocatorBias > 0m && t.FinalAllocatorBias < 0.99m).Select(GetLivePnl).ToList();
+        
+        var boostedVenuePnls = trades.Where(t => t.VenueExecutionBias > 1.01m).Select(GetLivePnl).ToList();
+        var trimmedVenuePnls = trades.Where(t => t.VenueExecutionBias > 0m && t.VenueExecutionBias < 0.99m).Select(GetLivePnl).ToList();
+
+        var backtestBucket = FindBestBucketMatch(_state.BacktestBuckets, symbol, strategyTag, regimeTag, sessionTag).Bucket;
+        var paperBucket = FindBestBucketMatch(_state.PaperBuckets, symbol, strategyTag, regimeTag, sessionTag).Bucket;
+        
+        var backtestPass = backtestBucket?.BacktestPass == true;
+        var paperPass = paperBucket?.PaperPass == true;
+        
+        var liveProbePass = pnlValues.Count >= 4 &&
+                            backtestPass &&
+                            paperPass &&
+                            ComputeProfitFactor(pnlValues) >= 1.0 &&
+                            pnlValues.Average() >= 0 &&
+                            (highEdgePnls.Count < 3 || (ComputeProfitFactor(highEdgePnls) >= 1.0 && highEdgePnls.Average() >= 0));
+                            
+        var scaledLiveEligible = pnlValues.Count >= 8 &&
+                                 backtestPass &&
+                                 paperPass &&
+                                 ComputeProfitFactor(pnlValues) >= 1.20 &&
+                                 pnlValues.Average() > 0 &&
+                                 pnlValues.Count(v => v > 0) * 1.0 / pnlValues.Count >= 0.45 &&
+                                 (!trades.Any(t => t.EdgeScore > 0m) || trades.Where(t => t.EdgeScore > 0m).Average(t => t.EdgeScore) >= 70m) &&
+                                 (highEdgePnls.Count < 3 || (ComputeProfitFactor(highEdgePnls) >= 1.10 && highEdgePnls.Average() > 0 && highEdgePnls.Count(v => v > 0) * 1.0 / highEdgePnls.Count >= 0.45));
+
+        return new StrategyBucketPerformanceSnapshot
+        {
+            Symbol = symbol,
+            StrategyTag = strategyTag,
+            RegimeTag = regimeTag,
+            SessionTag = sessionTag,
+            Trades = pnlValues.Count,
+            WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(v => v > 0) * 100.0 / pnlValues.Count,
+            ProfitFactor = ComputeProfitFactor(pnlValues),
+            ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
+            TotalPnL = pnlValues.Sum(),
+            AverageEdgeScore = trades.Any(t => t.EdgeScore > 0m) ? trades.Where(t => t.EdgeScore > 0m).Average(t => t.EdgeScore) : 0m,
+            HighEdgeTrades = highEdgePnls.Count,
+            HighEdgeWinRate = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Count(v => v > 0) * 100.0 / highEdgePnls.Count,
+            HighEdgeProfitFactor = ComputeProfitFactor(highEdgePnls),
+            HighEdgeExpectedValue = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Average(),
+            HighEdgeTotalPnL = highEdgePnls.Sum(),
+            AverageFinalAllocatorBias = trades.Any(t => t.FinalAllocatorBias > 0m) ? trades.Where(t => t.FinalAllocatorBias > 0m).Average(t => t.FinalAllocatorBias) : 0m,
+            BoostedAllocatorTrades = boostedAllocatorPnls.Count,
+            BoostedAllocatorWinRate = boostedAllocatorPnls.Count == 0 ? 0 : boostedAllocatorPnls.Count(v => v > 0) * 100.0 / boostedAllocatorPnls.Count,
+            BoostedAllocatorProfitFactor = ComputeProfitFactor(boostedAllocatorPnls),
+            BoostedAllocatorExpectedValue = boostedAllocatorPnls.Count == 0 ? 0 : boostedAllocatorPnls.Average(),
+            TrimmedAllocatorTrades = trimmedAllocatorPnls.Count,
+            TrimmedAllocatorWinRate = trimmedAllocatorPnls.Count == 0 ? 0 : trimmedAllocatorPnls.Count(v => v > 0) * 100.0 / trimmedAllocatorPnls.Count,
+            TrimmedAllocatorProfitFactor = ComputeProfitFactor(trimmedAllocatorPnls),
+            TrimmedAllocatorExpectedValue = trimmedAllocatorPnls.Count == 0 ? 0 : trimmedAllocatorPnls.Average(),
+            AverageVenueExecutionBias = trades.Any(t => t.VenueExecutionBias > 0m) ? trades.Where(t => t.VenueExecutionBias > 0m).Average(t => t.VenueExecutionBias) : 0m,
+            BoostedVenueExecutionTrades = boostedVenuePnls.Count,
+            BoostedVenueExecutionWinRate = boostedVenuePnls.Count == 0 ? 0 : boostedVenuePnls.Count(v => v > 0) * 100.0 / boostedVenuePnls.Count,
+            BoostedVenueExecutionProfitFactor = ComputeProfitFactor(boostedVenuePnls),
+            BoostedVenueExecutionExpectedValue = boostedVenuePnls.Count == 0 ? 0 : boostedVenuePnls.Average(),
+            TrimmedVenueExecutionTrades = trimmedVenuePnls.Count,
+            TrimmedVenueExecutionWinRate = trimmedVenuePnls.Count == 0 ? 0 : trimmedVenuePnls.Count(v => v > 0) * 100.0 / trimmedVenuePnls.Count,
+            TrimmedVenueExecutionProfitFactor = ComputeProfitFactor(trimmedVenuePnls),
+            TrimmedVenueExecutionExpectedValue = trimmedVenuePnls.Count == 0 ? 0 : trimmedVenuePnls.Average(),
+            AverageEntrySlippagePercent = trades.Any() ? trades.Average(t => t.EntrySlippagePercent) : 0m,
+            AverageExecutionLatencyMs = trades.Any() ? trades.Average(t => (double)t.ExecutionLatencyMs) : 0,
+            BacktestPass = backtestPass,
+            PaperPass = paperPass,
+            LiveProbePass = liveProbePass,
+            ScaledLiveEligible = scaledLiveEligible,
+            PromotionReady = scaledLiveEligible,
+            PromotionStage = DetermineLivePromotionStage(pnlValues.Count, scaledLiveEligible, liveProbePass),
+            RecordedAtUtc = DateTime.UtcNow
+        };
+    }
+
+    private ExitPolicyPerformanceSnapshot CreateExitPolicySnapshot(string symbol, string strategyTag, string regimeTag, string sessionTag, string policy, string mode, List<Trade> trades)
+    {
+        return new ExitPolicyPerformanceSnapshot
+        {
+            Symbol = symbol,
+            StrategyTag = strategyTag,
+            RegimeTag = regimeTag,
+            SessionTag = sessionTag,
+            ExitPolicyTag = policy,
+            ExecutionMode = mode,
+            Trades = trades.Count,
+            WinRate = trades.Count == 0 ? 0 : trades.Count(t => GetLivePnl(t) > 0) * 100.0 / trades.Count,
+            ProfitFactor = ComputeProfitFactor(trades.Select(GetLivePnl)),
+            ExpectedValue = trades.Any() ? trades.Average(GetLivePnl) : 0m,
+            TotalPnL = trades.Sum(GetLivePnl),
+            RecordedAtUtc = DateTime.UtcNow
+        };
     }
 
     public async Task RecordLiveState(IEnumerable<Trade> closedTrades)

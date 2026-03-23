@@ -24,8 +24,6 @@ public class FeatureEngineeringAgent
     private readonly TickRingBuffer _movingAverageBuffer;
     private readonly object _syncLock = new();
 
-    private double _lastProcessedPrice;
-
     public FeatureEngineeringAgent()
     {
         CurrentTensor = new float[5];
@@ -41,8 +39,6 @@ public class FeatureEngineeringAgent
     /// </summary>
     public void ProcessTickNatively(double price)
     {
-        _lastProcessedPrice = price;
-
         double rsi = _rsi14.UpdateAndGetRSI(price);
         _emaFast.UpdateEma(price);
         _movingAverageBuffer.Add(price);

@@ -50,8 +50,8 @@ public class ProcessSignalHandlerTests : IDisposable
         _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(Array.Empty<Trade>());
 
         _handler = new ProcessSignalHandler(
-            _logger, _mediator, _aiService, _marketDataService,
-            _signalRepository, _tradeRepository, _technicalAnalysis, _riskAgent, _configuration);
+            _logger, _mediator, _marketDataService,
+            _signalRepository, _technicalAnalysis, _configuration);
     }
 
     public void Dispose()

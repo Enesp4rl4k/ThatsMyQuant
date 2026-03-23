@@ -15,7 +15,7 @@ using System;
 
 namespace ThatsMyQuant.Dashboard.ViewModels;
 
-public partial class MainViewModel : ObservableObject
+public partial class MainViewModel : ObservableObject, IDisposable
 {
     [ObservableProperty] private double _chartCanvasWidth = 800;
     [ObservableProperty] private double _chartCanvasHeight = 400;
@@ -672,6 +672,8 @@ public partial class MainViewModel : ObservableObject
     {
         if (_isTrading) return;
         _isTrading = true;
+        _cts?.Cancel();
+        _cts?.Dispose();
         _cts = new CancellationTokenSource();
         Status = IsPaperMode ? "🟠 PAPER MODE" : "🟢 TRADING";
         StatusColor = IsPaperMode ? OrangeBrush : GreenBrush;
@@ -693,6 +695,8 @@ public partial class MainViewModel : ObservableObject
     private void EmergencyStop()
     {
         _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = null;
         _isTrading = false;
         Status = "🔴 STOPPED";
         StatusColor = new SolidColorBrush(Color.FromRgb(0xDA, 0x36, 0x33));
@@ -768,6 +772,13 @@ public partial class MainViewModel : ObservableObject
         AddSystemLog($"AI: Tuned FVG Sensitivity to {FvgSensitivity:F0}%.");
         AddSystemLog($"AI: Threshold synchronized at {AiConfidenceThreshold:F0}%.");
         AddSystemLog("AI: Calibration successful. Model ready for next signal.");
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     private void AddSystemLog(string message)

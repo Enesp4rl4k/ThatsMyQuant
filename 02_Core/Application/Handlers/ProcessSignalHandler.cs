@@ -15,33 +15,24 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
 {
     private readonly ILogger<ProcessSignalHandler> _logger;
     private readonly IMediator _mediator;
-    private readonly IAiReasoningService _aiService;
-    private readonly IMarketDataService _marketDataService;
     private readonly ISignalRepository _signalRepository;
-    private readonly ITradeRepository _tradeRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
-    private readonly RiskAgent _riskAgent;
+    private readonly IMarketDataService _marketDataService;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
         ILogger<ProcessSignalHandler> logger, 
         IMediator mediator, 
-        IAiReasoningService aiService,
         IMarketDataService marketDataService,
         ISignalRepository signalRepository,
-        ITradeRepository tradeRepository,
         ITechnicalAnalysisService technicalAnalysis,
-        RiskAgent riskAgent,
         IConfiguration configuration)
     {
         _logger = logger;
         _mediator = mediator;
-        _aiService = aiService;
         _marketDataService = marketDataService;
         _signalRepository = signalRepository;
-        _tradeRepository = tradeRepository;
         _technicalAnalysis = technicalAnalysis;
-        _riskAgent = riskAgent;
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
     }

@@ -41,12 +41,9 @@ public class PaperTradingService
     /// </summary>
     public async Task<string> ProcessSymbolAsync(string symbol)
     {
-        // Detect market type from symbol
-        string market = symbol.Contains("-") ? "Crypto" : 
-                       (symbol.Contains("=") ? "Forex" : "BIST");
+        string market = ResolveMarketType(symbol);
         var executionProfile = _executionProfiles.ResolveForSymbol(symbol);
 
-        // Market scheduling check
         var session = MarketHoursScheduler.GetCurrentSession(market);
         if (!session.CanTrade)
         {
@@ -57,99 +54,20 @@ public class PaperTradingService
         var candles = await _marketData.GetCandlesAsync(symbol, 100, market);
         var currentPrice = candles.Last().Close;
 
+        var position = Portfolio.OpenPositions.FirstOrDefault(p => p.Symbol == symbol);
+        if (position != null)
+        {
+            return await HandleOpenPosition(position, candles, executionProfile);
+        }
+
         if (!IsPreferredTradeWindow(market, candles.Last().Timestamp))
         {
             return $"Session filter: {market} is outside preferred trade window for new entries.";
         }
 
-        // Update open positions
-        var position = Portfolio.OpenPositions.FirstOrDefault(p => p.Symbol == symbol);
-        if (position != null)
-        {
-            position.BarsHeld++;
-            position.CurrentPrice = currentPrice;
-            ApplyBreakevenProtection(position, candles.Last());
-            var previousCandle = candles.Count > 1 ? candles[^2] : candles.Last();
+        var constraintMessage = CheckTradingConstraints();
+        if (constraintMessage != null) return constraintMessage;
 
-            // Check trailing stop
-            double atr = candles.Count > 14
-                ? (double)(candles.TakeLast(15).Max(c => c.High) - candles.TakeLast(15).Min(c => c.Low)) / 14
-                : (double)currentPrice * 0.02;
-
-            bool trailingHit = TrailingStopService.UpdateTrailingStop(
-                position, candles.Last().High, candles.Last().Low, atr);
-
-            // Check exit conditions
-            string? exitReason = null;
-            if (trailingHit) exitReason = "TrailingSL";
-            else if (position.Side == "Buy" && currentPrice <= position.StopLoss) exitReason = "StopLoss";
-            else if (position.Side == "Buy" && currentPrice >= position.TakeProfit) exitReason = "TakeProfit";
-            else if (position.Side == "Sell" && currentPrice >= position.StopLoss) exitReason = "StopLoss";
-            else if (position.Side == "Sell" && currentPrice <= position.TakeProfit) exitReason = "TakeProfit";
-            else
-            {
-                exitReason = TryGetStrategyPolicyExit(position, candles.Last(), previousCandle);
-                if (exitReason == null && position.MaxHoldingBars > 0 && position.BarsHeld >= position.MaxHoldingBars)
-                {
-                    exitReason = $"TimeStop({position.ExitPolicyTag})";
-                }
-            }
-
-            if (exitReason != null)
-            {
-                var adjustedExit = _executionProfiles.ApplyExecutionPrice(
-                    currentPrice,
-                    position.Side == "Buy",
-                    false,
-                    symbol,
-                    null,
-                    executionProfile.SlippagePercent,
-                    executionProfile.SpreadPercent,
-                    candles.Last());
-                position.ExitTime = DateTime.UtcNow;
-                position.ExitReason = exitReason;
-                position.RealizedPnL = _executionProfiles.CalculateNetPnl(
-                    position.EntryPrice,
-                    adjustedExit,
-                    position.Quantity,
-                    position.Side,
-                    symbol,
-                    null,
-                    executionProfile.CommissionPercentPerSide);
-                Portfolio.Cash += adjustedExit * position.Quantity + position.RealizedPnL;
-                Portfolio.DailyPnL += position.RealizedPnL;
-                Portfolio.ClosedPositions.Add(position);
-                Portfolio.OpenPositions.Remove(position);
-                Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
-                await (_promotionService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
-                await (_exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
-
-
-                _logger.LogInformation("📄 PAPER {Exit}: {Symbol} PnL=₺{PnL:N2} ({Reason})",
-                    exitReason, symbol, position.RealizedPnL, exitReason);
-                return $"CLOSED {symbol} via {exitReason} — PnL: ₺{position.RealizedPnL:N2}";
-            }
-
-            return $"{symbol} position open — UnrealizedPnL: ₺{position.UnrealizedPnL:N2}";
-        }
-
-        // Check daily loss limit
-        if (Portfolio.DailyPnL < -(Portfolio.InitialBalance * 0.02m)) // 2% daily loss limit
-        {
-            return $"⚠️ Daily loss limit hit (₺{Portfolio.DailyPnL:N2}). No new trades today.";
-        }
-
-        var consecutiveLosses = Portfolio.ClosedPositions
-            .OrderByDescending(position => position.ExitTime)
-            .Take(4)
-            .TakeWhile(position => position.RealizedPnL < 0)
-            .Count();
-        if (consecutiveLosses >= 3)
-        {
-            return $"Cooldown active after {consecutiveLosses} consecutive paper losses. Wait for a cleaner window.";
-        }
-
-        // Correlation check
         var openSymbols = Portfolio.OpenPositions.Select(p => p.Symbol).ToList();
         var corrCheck = CorrelationService.CheckCorrelation(symbol, openSymbols);
         if (corrCheck.ExceedsSectorLimit)
@@ -158,20 +76,131 @@ public class PaperTradingService
             return corrCheck.Recommendation;
         }
 
-        // Run analysis
+        return await OpenNewPosition(symbol, market, currentPrice, candles, executionProfile);
+    }
+
+    private string ResolveMarketType(string symbol)
+    {
+        return symbol.Contains("-") ? "Crypto" : 
+               (symbol.Contains("=") ? "Forex" : "BIST");
+    }
+
+    private async Task<string> HandleOpenPosition(PaperPosition position, IReadOnlyList<Candle> candles, MarketExecutionProfile executionProfile)
+    {
+        var currentPrice = candles.Last().Close;
+        position.BarsHeld++;
+        position.CurrentPrice = currentPrice;
+        ApplyBreakevenProtection(position, candles.Last());
+        
+        var previousCandle = candles.Count > 1 ? candles[^2] : candles.Last();
+        double atr = CalculateAtrProxy(candles, currentPrice);
+
+        bool trailingHit = TrailingStopService.UpdateTrailingStop(position, candles.Last().High, candles.Last().Low, atr);
+        string? exitReason = DetermineExitReason(position, candles.Last(), previousCandle, trailingHit);
+
+        if (exitReason != null)
+        {
+            return await ClosePosition(position, candles.Last(), executionProfile, exitReason);
+        }
+
+        return $"{position.Symbol} position open — UnrealizedPnL: ₺{position.UnrealizedPnL:N2}";
+    }
+
+    private double CalculateAtrProxy(IReadOnlyList<Candle> candles, decimal currentPrice)
+    {
+        return candles.Count > 14
+            ? (double)(candles.TakeLast(15).Max(c => c.High) - candles.TakeLast(15).Min(c => c.Low)) / 14
+            : (double)currentPrice * 0.02;
+    }
+
+    private string? DetermineExitReason(PaperPosition position, Candle currentCandle, Candle previousCandle, bool trailingHit)
+    {
+        if (trailingHit) return "TrailingSL";
+        if (position.Side == "Buy" && currentCandle.Close <= position.StopLoss) return "StopLoss";
+        if (position.Side == "Buy" && currentCandle.Close >= position.TakeProfit) return "TakeProfit";
+        if (position.Side == "Sell" && currentCandle.Close >= position.StopLoss) return "StopLoss";
+        if (position.Side == "Sell" && currentCandle.Close <= position.TakeProfit) return "TakeProfit";
+
+        var strategyExit = TryGetStrategyPolicyExit(position, currentCandle, previousCandle);
+        if (strategyExit != null) return strategyExit;
+
+        if (position.MaxHoldingBars > 0 && position.BarsHeld >= position.MaxHoldingBars)
+        {
+            return $"TimeStop({position.ExitPolicyTag})";
+        }
+
+        return null;
+    }
+
+    private async Task<string> ClosePosition(PaperPosition position, Candle lastCandle, MarketExecutionProfile executionProfile, string exitReason)
+    {
+        var adjustedExit = _executionProfiles.ApplyExecutionPrice(
+            lastCandle.Close,
+            position.Side == "Buy",
+            false,
+            position.Symbol,
+            null,
+            executionProfile.SlippagePercent,
+            executionProfile.SpreadPercent,
+            lastCandle);
+
+        position.ExitTime = DateTime.UtcNow;
+        position.ExitReason = exitReason;
+        position.RealizedPnL = _executionProfiles.CalculateNetPnl(
+            position.EntryPrice,
+            adjustedExit,
+            position.Quantity,
+            position.Side,
+            position.Symbol,
+            null,
+            executionProfile.CommissionPercentPerSide);
+
+        Portfolio.Cash += adjustedExit * position.Quantity + position.RealizedPnL;
+        Portfolio.DailyPnL += position.RealizedPnL;
+        Portfolio.ClosedPositions.Add(position);
+        Portfolio.OpenPositions.Remove(position);
+        Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
+
+        await (_promotionService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
+        await (_exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
+
+        _logger.LogInformation("📄 PAPER {Exit}: {Symbol} PnL=₺{PnL:N2} ({Reason})",
+            exitReason, position.Symbol, position.RealizedPnL, exitReason);
+
+        return $"CLOSED {position.Symbol} via {exitReason} — PnL: ₺{position.RealizedPnL:N2}";
+    }
+
+    private string? CheckTradingConstraints()
+    {
+        if (Portfolio.DailyPnL < -(Portfolio.InitialBalance * 0.02m))
+        {
+            return $"⚠️ Daily loss limit hit (₺{Portfolio.DailyPnL:N2}). No new trades today.";
+        }
+
+        var consecutiveLosses = Portfolio.ClosedPositions
+            .OrderByDescending(p => p.ExitTime)
+            .Take(4)
+            .TakeWhile(p => p.RealizedPnL < 0)
+            .Count();
+
+        if (consecutiveLosses >= 3)
+        {
+            return $"Cooldown active after {consecutiveLosses} consecutive paper losses. Wait for a cleaner window.";
+        }
+
+        return null;
+    }
+
+    private async Task<string> OpenNewPosition(string symbol, string market, decimal currentPrice, IReadOnlyList<Candle> candles, MarketExecutionProfile executionProfile)
+    {
         var signal = new Signal { Symbol = symbol, Price = currentPrice };
         var risk = RiskParameters.Default;
-        var decision = await _analysis.AnalyzeAsync(signal, candles, risk);
+        var decision = await _analysis.AnalyzeAsync(signal, candles.ToList(), risk);
 
         if (!decision.ShouldTrade)
             return $"SKIP {symbol}: {decision.Reasoning}";
 
-        // Open paper position
-        decimal adaptiveSize = AdaptiveSizingService.Apply(
-            decision.PositionSizePercent,
-            decision.Confidence,
-            market,
-            DateTime.UtcNow);
+        decimal adaptiveSize = AdaptiveSizingService.Apply(decision.PositionSizePercent, decision.Confidence, market, DateTime.UtcNow);
         decimal positionValue = Portfolio.Cash * adaptiveSize;
         decimal quantity = currentPrice > 0 ? Math.Floor(positionValue / currentPrice) : 0;
 
