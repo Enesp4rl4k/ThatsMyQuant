@@ -16,8 +16,10 @@ namespace ThatsMyQuant.Application.MachineLearning;
 /// </summary>
 public class FeatureEngineeringAgent
 {
+    // SonarQube Fix: Kullanılmayan _lastProcessedPrice alanı tamamen kaldırıldı.
+
     // The exact structural native pointer continuously updated entirely outside GC.
-    public readonly float[] CurrentTensor;
+    public float[] CurrentTensor { get; } // Readonly array reference
 
     private readonly OnlineMathHelper _rsi14;
     private readonly OnlineMathHelper _emaFast;

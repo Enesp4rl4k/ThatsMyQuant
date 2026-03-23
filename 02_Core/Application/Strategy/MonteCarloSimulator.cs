@@ -1,76 +1,80 @@
 using ThatsMyQuant.Domain.Enums;
+using System.Collections.Concurrent;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-/// <summary>
-/// A high-performance probabilistic stress tester. Generates thousands of randomized permutation streams 
-/// (bootstrapping with replacement) over historical trade returns to discover true Maximum Drawdowns.
-/// </summary>
 public class MonteCarloSimulator
 {
-    /// <summary>
-    /// Executes a parallelized Monte Carlo permutation generator across the trade logs. 
-    /// Helps quants visualize the 95th and 99th percentile worst-case risk of ruin curves.
-    /// </summary>
     public async Task<MonteCarloResult> RunSimulationsAsync(
         List<double> historicalPnlTrades, 
         decimal startingCapital, 
         int iterations = 10000, 
         int stepsPerIteration = 252)
     {
+        // Guard Clause
         if (historicalPnlTrades == null || historicalPnlTrades.Count == 0)
         {
             throw new ArgumentException("Requires at least one valid trade to simulate permutations.");
         }
 
-        var results = new List<decimal>();
-        var drawdowns = new List<decimal>();
-        
-        // Use high-performance parallel execution for tens of thousands of grid bounds
+        // SonarQube Fix: Thread-safe koleksiyonlar veya yerel toplama (aggregation)
+        // results ve drawdowns listelerini önceden boyutlandırıyoruz (Pre-allocation)
+        var finalEquities = new decimal[iterations];
+        var maxDrawdowns = new decimal[iterations];
+
         await Task.Run(() =>
         {
-            Parallel.For(0, iterations, _ =>
+            // SonarQube Fix: lock yerine dizi indeksleme kullanmak lock contention'ı sıfırlar.
+            Parallel.For(0, iterations, i =>
             {
                 decimal simEquity = startingCapital;
                 decimal peakSimEquity = startingCapital;
-                decimal maxDrawdown = 0;
+                decimal maxDD = 0;
 
+                // Random.Shared thread-safe'dir, güvenle kullanılabilir.
                 for (int s = 0; s < stepsPerIteration; s++)
                 {
-                    // Pick a random past trade result to shape the distribution matrix
-                    var randomPnl = (decimal)historicalPnlTrades[Random.Shared.Next(historicalPnlTrades.Count)];
+                    int randomIndex = Random.Shared.Next(historicalPnlTrades.Count);
+                    decimal randomPnl = (decimal)historicalPnlTrades[randomIndex];
+                    
                     simEquity += randomPnl;
 
-                    if (simEquity > peakSimEquity) peakSimEquity = simEquity;
-                    decimal dd = peakSimEquity - simEquity;
-                    if (dd > maxDrawdown) maxDrawdown = dd;
+                    if (simEquity > peakSimEquity) 
+                        peakSimEquity = simEquity;
+                    
+                    decimal currentDD = peakSimEquity - simEquity;
+                    if (currentDD > maxDD) 
+                        maxDD = currentDD;
 
-                    if (simEquity <= 0) break; // Risk of absolute ruin triggered
+                    if (simEquity <= 0) 
+                    {
+                        simEquity = 0; // İflas (Ruin)
+                        break;
+                    }
                 }
 
-                lock (results)
-                {
-                    results.Add(simEquity);
-                    drawdowns.Add(maxDrawdown);
-                }
+                // Her thread kendi dizinindeki elemana yazar, kilitlenmeye (lock) gerek kalmaz!
+                finalEquities[i] = simEquity;
+                maxDrawdowns[i] = maxDD;
             });
         });
 
-        results.Sort();
-        drawdowns.Sort();
+        // Array.Sort, List.Sort'tan daha hızlıdır.
+        Array.Sort(finalEquities);
+        Array.Sort(maxDrawdowns);
 
         return new MonteCarloResult
         {
-            MedianFinalEquity = results[results.Count / 2],
-            FifthPercentileEquity = results[(int)(results.Count * 0.05)], // 95% certainty boundary
-            NinetyNinthPercentileDrawdown = drawdowns[(int)(drawdowns.Count * 0.99)] // 99% certainty maximum DD
+            MedianFinalEquity = finalEquities[iterations / 2],
+            FifthPercentileEquity = finalEquities[(int)(iterations * 0.05)],
+            NinetyNinthPercentileDrawdown = maxDrawdowns[(int)(iterations * 0.99)]
         };
     }
 }
 
-public class MonteCarloResult
+public record MonteCarloResult
 {
-    public decimal MedianFinalEquity { get; set; }
-    public decimal FifthPercentileEquity { get; set; }
-    public decimal NinetyNinthPercentileDrawdown { get; set; }
+    public decimal MedianFinalEquity { get; init; }
+    public decimal FifthPercentileEquity { get; init; }
+    public decimal NinetyNinthPercentileDrawdown { get; init; }
 }

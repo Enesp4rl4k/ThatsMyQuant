@@ -8,11 +8,7 @@ using ThatsMyQuant.Application.MachineLearning;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-/// <summary>
-/// A zero-allocation pipeline for high-frequency tick processing.
-/// Eliminates GC overhead by using bounded Channels and passing structs by value.
-/// </summary>
-public class TickPipeline : IAsyncDisposable
+public sealed class TickPipeline : IAsyncDisposable
 {
     private readonly IStreamingMarketDataService _streamingService;
     private readonly ILogger<TickPipeline> _logger;
@@ -23,6 +19,7 @@ public class TickPipeline : IAsyncDisposable
     private CancellationTokenSource? _cts;
     private Task? _tickWorker;
     private Task? _obWorker;
+    private bool _disposed;
 
     public TickPipeline(
         IStreamingMarketDataService streamingService, 
@@ -35,30 +32,39 @@ public class TickPipeline : IAsyncDisposable
         _mediator = mediator;
         _featureAgent = featureAgent;
 
-        // Bounded channel to drop oldest ticks if execution falls behind, preventing OOM
-        _tickChannel = Channel.CreateBounded<MarketTick>(new BoundedChannelOptions(10_000)
+        // Bounded channel options optimized for single-reader/writer
+        var tickOptions = new BoundedChannelOptions(10_000)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleWriter = true,
             SingleReader = true
-        });
+        };
 
-        _orderBookChannel = Channel.CreateBounded<OrderBookSnapshot>(new BoundedChannelOptions(100)
+        var obOptions = new BoundedChannelOptions(100)
         {
             FullMode = BoundedChannelFullMode.DropOldest,
             SingleWriter = true,
             SingleReader = true
-        });
+        };
 
+        _tickChannel = Channel.CreateBounded<MarketTick>(tickOptions);
+        _orderBookChannel = Channel.CreateBounded<OrderBookSnapshot>(obOptions);
+
+        // Event handler'ları zayıf referans veya düzgün unsubscribe mantığıyla bağlamak gerekebilir
         _streamingService.OnTickReceived += tick => _tickChannel.Writer.TryWrite(tick);
         _streamingService.OnOrderBookUpdated += ob => _orderBookChannel.Writer.TryWrite(ob);
     }
 
     public void Start(CancellationToken cancellationToken)
     {
+        if (_cts != null) return; // Zaten çalışıyorsa ikinciyi başlatma
+
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _tickWorker = Task.Factory.StartNew(() => ProcessTicksAsync(_cts.Token), TaskCreationOptions.LongRunning);
-        _obWorker = Task.Factory.StartNew(() => ProcessOrderBooksAsync(_cts.Token), TaskCreationOptions.LongRunning);
+        
+        // SonarQube Fix: Task.Run tercih edilir veya StartNew kullanılacaksa scheduler belirtilmelidir.
+        _tickWorker = Task.Run(() => ProcessTicksAsync(_cts.Token), _cts.Token);
+        _obWorker = Task.Run(() => ProcessOrderBooksAsync(_cts.Token), _cts.Token);
+        
         _logger.LogInformation("Zero-allocation Tick Pipeline started.");
     }
 
@@ -66,13 +72,12 @@ public class TickPipeline : IAsyncDisposable
     {
         try
         {
-            await foreach (var tick in _tickChannel.Reader.ReadAllAsync(token))
+            await foreach (var tick in _tickChannel.Reader.ReadAllAsync(token).ConfigureAwait(false))
             {
-                // Push tick execution instantly into the O(1) Mathematical arrays strictly bypassing GC 
                 _featureAgent.ProcessTickNatively((double)tick.Price);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { /* Normal shutdown */ }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Fatal error in tick pipeline worker.");
@@ -83,60 +88,71 @@ public class TickPipeline : IAsyncDisposable
     {
         try
         {
-            await foreach (var ob in _orderBookChannel.Reader.ReadAllAsync(token))
+            await foreach (var ob in _orderBookChannel.Reader.ReadAllAsync(token).ConfigureAwait(false))
             {
                 if (ob.Bids.Length == 0 || ob.Asks.Length == 0) continue;
 
-                var bestBid = ob.Bids[0].Price;
-                var bestAsk = ob.Asks[0].Price;
-
-                // Native High-Frequency Volume math (Sum top 5 levels)
-                decimal bidVol = 0;
-                for (int i = 0; i < Math.Min(5, ob.Bids.Length); i++) bidVol += ob.Bids[i].Quantity;
-
-                decimal askVol = 0;
-                for (int i = 0; i < Math.Min(5, ob.Asks.Length); i++) askVol += ob.Asks[i].Quantity;
+                // Pre-calculating volumes for better readability & structured math
+                var (bidVol, askVol) = SumTopLevelVolumes(ob, 5);
 
                 decimal totalVol = bidVol + askVol;
                 double imbalance = totalVol > 0 ? (double)((bidVol - askVol) / totalVol) : 0;
                 
-                // Immediately update generic feature dimension safely without reallocation
                 _featureAgent.ApplyOrderFlowImbalance(imbalance);
 
-                // Native Signal Object mapping strictly pinned to UnixMs without invoking OS UtcNow
                 var signal = new Signal
                 {
                     Source = "HFT-OrderFlow",
                     Symbol = ob.Symbol,
                     Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ob.TimestampMs).UtcDateTime,
-                    BestBid = (double)bestBid,
-                    BestAsk = (double)bestAsk,
+                    BestBid = (double)ob.Bids[0].Price,
+                    BestAsk = (double)ob.Asks[0].Price,
                     OrderFlowImbalance = imbalance,
-                    WallAgeMs = 150d, // Static spoofing age
-                    Price = (bestBid + bestAsk) / 2m
+                    WallAgeMs = 150d,
+                    Price = (ob.Bids[0].Price + ob.Asks[0].Price) * 0.5m
                 };
 
-                // Dispatch signal asynchronously into the MediatR swarm execution graphs
-                await _mediator.Send(new ProcessSignalCommand(signal), token);
+                await _mediator.Send(new ProcessSignalCommand(signal), token).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { /* Normal shutdown */ }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Fatal error in orderbook pipeline worker.");
         }
     }
 
+    private static (decimal bidVol, decimal askVol) SumTopLevelVolumes(OrderBookSnapshot ob, int levels)
+    {
+        decimal bVol = 0;
+        decimal aVol = 0;
+        int count = Math.Min(levels, Math.Min(ob.Bids.Length, ob.Asks.Length));
+        
+        for (int i = 0; i < count; i++)
+        {
+            bVol += ob.Bids[i].Quantity;
+            aVol += ob.Asks[i].Quantity;
+        }
+        return (bVol, aVol);
+    }
+
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
+        _disposed = true;
+
         if (_cts != null)
         {
             _cts.Cancel();
-            _tickChannel.Writer.Complete();
-            _orderBookChannel.Writer.Complete();
-            if (_tickWorker != null) await _tickWorker;
-            if (_obWorker != null) await _obWorker;
+            _tickChannel.Writer.TryComplete();
+            _orderBookChannel.Writer.TryComplete();
+
+            // All workers should be awaited to ensure no background leaks
+            await Task.WhenAll(_tickWorker ?? Task.CompletedTask, _obWorker ?? Task.CompletedTask).ConfigureAwait(false);
+            
             _cts.Dispose();
         }
+        
+        _logger.LogInformation("Tick Pipeline disposed cleanly.");
     }
 }

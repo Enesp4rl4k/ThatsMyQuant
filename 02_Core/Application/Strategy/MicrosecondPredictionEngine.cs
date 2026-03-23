@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -6,21 +5,11 @@ using ThatsMyQuant.Domain.Entities;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-/// <summary>
-/// A high-performance inference wrapper for ONNX Machine Learning models.
-/// It evaluates the realtime L2 Order Book depth to predict price direction 
-/// in sub-millisecond tolerances (typically < 0.5ms).
-/// </summary>
 public class MicrosecondPredictionEngine : IDisposable
 {
     private readonly ILogger<MicrosecondPredictionEngine> _logger;
     private readonly InferenceSession? _session;
-    private readonly string? _inputName;
-
-    // Feature array representing the orderbook: [BestBidPrice, BestBidQty, BestAskPrice, BestAskQty, Spread, ImbalanceRatio, VOI, VPIN]
-    private readonly float[] _features = new float[8];
-    private DenseTensor<float>? _inputTensor;
-    private NamedOnnxValue[]? _inputs;
+    private readonly string _inputName;
 
     public MicrosecondPredictionEngine(string modelPath, ILogger<MicrosecondPredictionEngine> logger)
     {
@@ -30,7 +19,8 @@ public class MicrosecondPredictionEngine : IDisposable
         {
             if (string.IsNullOrEmpty(modelPath) || !System.IO.File.Exists(modelPath))
             {
-                _logger.LogWarning("ONNX model file not found at {Path}. Prediction engine will be disabled.", modelPath);
+                _logger.LogWarning("ONNX model file not found at {Path}. Prediction engine disabled.", modelPath);
+                _inputName = "input";
                 return;
             }
 
@@ -38,47 +28,47 @@ public class MicrosecondPredictionEngine : IDisposable
             _session = new InferenceSession(modelPath, sessionOptions);
             _inputName = _session.InputMetadata.Keys.FirstOrDefault() ?? "input";
             
-            _inputTensor = new DenseTensor<float>(_features, new[] { 1, 8 });
-            _inputs = new NamedOnnxValue[] { NamedOnnxValue.CreateFromTensor(_inputName, _inputTensor) };
-            
-            _logger.LogInformation("ONNX ML Model loaded successfully from {Path}. Ready for inference.", modelPath);
+            _logger.LogInformation("ONNX ML Model loaded from {Path}.", modelPath);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to initialize ONNX session. Prediction engine disabled.");
+            _logger.LogError(ex, "Failed to initialize ONNX session.");
+            _inputName = "input";
         }
     }
 
-    /// <summary>
-    /// Evaluates the OrderBookSnapshot and returns an AI prediction confidence [-1.0 to 1.0].
-    /// Passing by 'in' for zero-allocation performance.
-    /// </summary>
     public float PredictDirection(in OrderBookSnapshot orderBook)
     {
+        // SonarQube Fix: Oturum yoksa veya veri boşsa erken çıkış
         if (_session == null || orderBook.Bids.Length == 0 || orderBook.Asks.Length == 0) return 0f;
 
-        // 1. Calculate features from the fast Level 2 Snapshot
-        CalculateFeatures(orderBook);
+        // SonarQube Fix (Thread Safety): 
+        // Her çağrı için yerel bir array kullanıyoruz ki thread'ler birbirinin verisini bozmasın.
+        // Stack-allocated (stackalloc) kullanarak performansı koruyabiliriz ama DenseTensor 
+        // managed array beklediği için en güvenlisi yerel array'dir.
+        float[] features = new float[8];
+        
+        CalculateFeatures(orderBook, features);
 
-        if (_inputs == null) return 0f;
-
-        // 2. Inference
         try
         {
-            using var results = _session.Run(_inputs);
+            // Inference için gerekli nesneleri yerel (local) oluşturuyoruz
+            var inputTensor = new DenseTensor<float>(features, new[] { 1, 8 });
+            var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(_inputName, inputTensor) };
+
+            using var results = _session.Run(inputs);
             var output = results.First().AsTensor<float>();
             
-            // Assuming output shape [1, 1], returning float representation of direction
             return output[0, 0];
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "ONNX Inference failed during live market tick.");
+            _logger.LogError(ex, "ONNX Inference failed.");
             return 0f;
         }
     }
 
-    private void CalculateFeatures(in OrderBookSnapshot orderBook)
+    private static void CalculateFeatures(in OrderBookSnapshot orderBook, float[] features)
     {
         float bestBidPrice = (float)orderBook.Bids[0].Price;
         float bestBidQty = (float)orderBook.Bids[0].Quantity;
@@ -86,26 +76,22 @@ public class MicrosecondPredictionEngine : IDisposable
         float bestAskQty = (float)orderBook.Asks[0].Quantity;
         
         float totalDepth = bestBidQty + bestAskQty;
-        float imbalance = totalDepth == 0 ? 0 : (bestBidQty - bestAskQty) / totalDepth;
+        float imbalance = totalDepth < 1e-9 ? 0 : (bestBidQty - bestAskQty) / totalDepth;
 
-        // Calculate Level 2 VOI (Volume Order Imbalance) and VPIN proxy
         var (totalBidVol, totalAskVol) = CalculateDepthVolumes(orderBook, 5);
         
         float totalVolume = totalBidVol + totalAskVol;
-        float voi = totalVolume == 0 ? 0 : (totalBidVol - totalAskVol) / totalVolume;
-        
-        // VPIN proxy (Volume-Synchronized Probability of Informed Trading)
-        float vpinProxy = totalVolume == 0 ? 0 : Math.Abs(totalBidVol - totalAskVol) / totalVolume;
+        float voi = totalVolume < 1e-9 ? 0 : (totalBidVol - totalAskVol) / totalVolume;
+        float vpinProxy = totalVolume < 1e-9 ? 0 : Math.Abs(totalBidVol - totalAskVol) / totalVolume;
 
-        // Map features to flat array. The _inputTensor uses this memory directly.
-        _features[0] = bestBidPrice;
-        _features[1] = bestBidQty;
-        _features[2] = bestAskPrice;
-        _features[3] = bestAskQty;
-        _features[4] = bestAskPrice - bestBidPrice; // Spread
-        _features[5] = imbalance;
-        _features[6] = voi;
-        _features[7] = vpinProxy;
+        features[0] = bestBidPrice;
+        features[1] = bestBidQty;
+        features[2] = bestAskPrice;
+        features[3] = bestAskQty;
+        features[4] = bestAskPrice - bestBidPrice;
+        features[5] = imbalance;
+        features[6] = voi;
+        features[7] = vpinProxy;
     }
 
     private static (float totalBidVol, float totalAskVol) CalculateDepthVolumes(in OrderBookSnapshot orderBook, int maxLevels)
@@ -126,5 +112,6 @@ public class MicrosecondPredictionEngine : IDisposable
     public void Dispose()
     {
         _session?.Dispose();
+        GC.SuppressFinalize(this); // SonarQube standard: Dispose implement ediliyorsa bu eklenmeli.
     }
 }

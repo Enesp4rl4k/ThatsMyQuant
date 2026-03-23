@@ -6,14 +6,6 @@ using System.Collections.Concurrent;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-/// <summary>
-/// Optimized High-frequency Price Action agent.
-/// Built with ultra-HFT methodologies:
-/// - O(1) Welford's Sample Variance with Reciprocal Multiplication logic.
-/// - Orderbook Mid-Price execution anchor (bypasses lagging trade prints).
-/// - GC-free Array indexing (Modulo division destroyed).
-/// - Strongly-typed Execution States.
-/// </summary>
 public partial class HftPriceActionAgent : INotificationHandler<Signal>
 {
     private readonly ILogger<HftPriceActionAgent> _logger;
@@ -25,16 +17,11 @@ public partial class HftPriceActionAgent : INotificationHandler<Signal>
         public readonly double[] Buffer;
         public int Head = 0;
         public int Count = 0;
-
         public double Mean = 0;
-        public double M2 = 0; // Sum of squared deviations from the mean
-
+        public double M2 = 0; 
         public readonly object SyncLock = new();
 
-        public SymbolState(int windowSize)
-        {
-            Buffer = new double[windowSize];
-        }
+        public SymbolState(int windowSize) => Buffer = new double[windowSize];
     }
 
     public HftPriceActionAgent(ILogger<HftPriceActionAgent> logger, int windowSize = 50)
@@ -45,70 +32,79 @@ public partial class HftPriceActionAgent : INotificationHandler<Signal>
 
     public Task Handle(Signal notification, CancellationToken cancellationToken)
     {
-        // 1. True L2 Microstructure anchoring: Ignore lagging ticks and use Orderbook Mid-Price
-        if (!notification.BestBid.HasValue || !notification.BestAsk.HasValue) 
+        // 1. Data Anchoring (Anchoring to Mid-Price)
+        if (!TryCalculateMidPrice(notification, out double midPrice))
             return Task.CompletedTask;
 
-        double midPrice = (notification.BestBid.Value + notification.BestAsk.Value) * 0.5d;
-
-        double zScore = 0;
-        bool detected = false;
-        
         var state = _states.GetOrAdd(notification.Symbol, static (_, size) => new SymbolState(size), _windowSize);
+        
+        double zScore = 0;
+        bool isExhausted = false;
 
+        // 2. Atomic Statistical Update
         lock (state.SyncLock)
         {
-            double oldValue = 0;
-
-            if (state.Count == _windowSize)
-            {
-                oldValue = state.Buffer[state.Head];
-
-                double oldMean = state.Mean;
-                state.Mean = (state.Mean * _windowSize - oldValue) / (_windowSize - 1);
-                state.M2 -= (oldValue - oldMean) * (oldValue - state.Mean);
-                
-                if (state.M2 < 0) state.M2 = 0;
-            }
-            else
-            {
-                state.Count++;
-            }
-
-            state.Buffer[state.Head] = midPrice;
-
-            // 2. Micro-Optimization: Replaced expensive CPU integer modulo (%) with direct bounds check
-            if (++state.Head == _windowSize) state.Head = 0;
-
-            // 3. Micro-Optimization: Reciprocal multiplication vs division
-            double invCount = 1.0d / state.Count;
-
-            double delta = midPrice - state.Mean;
-            state.Mean += delta * invCount;
-            double delta2 = midPrice - state.Mean;
-            state.M2 += delta * delta2;
-
-            if (state.Count < _windowSize) return Task.CompletedTask;
-
-            // 4. Statistical Rigor: Using Sample Variance (N-1) for real-world subsets
-            double sampleVariance = state.M2 / (state.Count - 1); 
-            double stdDev = Math.Sqrt(sampleVariance);
-
-            zScore = stdDev == 0 ? 0 : (midPrice - state.Mean) / stdDev;
-
-            if (Math.Abs(zScore) > 2.5d) 
-                detected = true;
+            zScore = UpdateStatisticsAndGetZScore(state, midPrice);
+            isExhausted = Math.Abs(zScore) > 2.5d && state.Count >= _windowSize;
         }
 
-        if (detected)
+        // 3. Execution Logic (Outside the lock to keep it fast)
+        if (isExhausted)
         {
-            notification.PriceActionSignal = zScore > 0 ? PriceActionType.ExhaustionHigh : PriceActionType.ExhaustionLow;
-            notification.AddReason(SignalReasonFlags.PriceActionExhaustion);
-
-            LogPriceActionSweep(_logger, notification.Symbol, zScore, notification.PriceActionSignal.ToString());
+            ApplyExhaustionSignal(notification, zScore);
         }
 
         return Task.CompletedTask;
+    }
+
+    private bool TryCalculateMidPrice(Signal signal, out double midPrice)
+    {
+        midPrice = 0;
+        if (!signal.BestBid.HasValue || !signal.BestAsk.HasValue) return false;
+        
+        midPrice = (signal.BestBid.Value + signal.BestAsk.Value) * 0.5d;
+        return true;
+    }
+
+    private double UpdateStatisticsAndGetZScore(SymbolState state, double price)
+    {
+        // Handle Rolling Window logic
+        if (state.Count == _windowSize)
+        {
+            double oldValue = state.Buffer[state.Head];
+            double deltaOld = oldValue - state.Mean;
+            state.Mean -= deltaOld / _windowSize;
+            state.M2 -= deltaOld * (oldValue - state.Mean);
+            
+            if (state.M2 < 0) state.M2 = 0;
+        }
+        else
+        {
+            state.Count++;
+        }
+
+        // Update Mean and M2 (Welford's Method)
+        state.Buffer[state.Head] = price;
+        if (++state.Head == _windowSize) state.Head = 0;
+
+        double delta = price - state.Mean;
+        state.Mean += delta / state.Count;
+        state.M2 += delta * (price - state.Mean);
+
+        if (state.Count < 2) return 0; // Prevent Division by Zero on (Count - 1)
+
+        double variance = state.M2 / (state.Count - 1);
+        double stdDev = Math.Sqrt(variance);
+
+        return stdDev < 1e-9 ? 0 : (price - state.Mean) / stdDev;
+    }
+
+    private void ApplyExhaustionSignal(Signal notification, double zScore)
+    {
+        notification.PriceActionSignal = zScore > 0 ? PriceActionType.ExhaustionHigh : PriceActionType.ExhaustionLow;
+        notification.AddReason(SignalReasonFlags.PriceActionExhaustion);
+
+        LogPriceActionSweep(_logger, notification.Symbol, zScore, notification.PriceActionSignal.ToString());
     }
 
     [LoggerMessage(EventId = 3, Level = LogLevel.Information, Message = "[PA DETECTED] Liquidity Sweep on {Symbol}. Z-Score: {ZScore:F2}. State: {State}")]

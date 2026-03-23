@@ -22,14 +22,15 @@ public sealed class OnlineMathHelper
 
     public OnlineMathHelper(int period)
     {
-        _period = period;
-        _alpha = 2.0 / (period + 1.0);
+        // Guard clause: Periyot 0 veya negatif olamaz
+        _period = period > 0 ? period : 14; 
+        _alpha = 2.0 / (_period + 1.0);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void UpdateEma(double currentPrice)
     {
-        if (Ema == 0)
+        if (Math.Abs(Ema) < double.Epsilon) // Daha güvenli "sıfır" kontrolü
         {
             Ema = currentPrice;
             return;
@@ -41,7 +42,7 @@ public sealed class OnlineMathHelper
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public double UpdateAndGetRSI(double currentPrice)
     {
-        if (_previousPrice == 0)
+        if (Math.Abs(_previousPrice) < double.Epsilon)
         {
             _previousPrice = currentPrice;
             return 50.0; // Neutral start
@@ -67,14 +68,16 @@ public sealed class OnlineMathHelper
             }
             return 50.0; // Warming up
         }
-        else
-        {
-            _avgGain = ((_avgGain * (_period - 1)) + currentGain) / _period;
-            _avgLoss = ((_avgLoss * (_period - 1)) + currentLoss) / _period;
-        }
+        
+        _avgGain = ((_avgGain * (_period - 1)) + currentGain) / _period;
+        _avgLoss = ((_avgLoss * (_period - 1)) + currentLoss) / _period;
 
-        if (_avgLoss == 0) return 100.0;
-        if (_avgGain == 0) return 0.0;
+        // SonarQube Fix: Division by zero prevention & Epsilon check
+        if (_avgLoss < double.Epsilon) 
+            return 100.0;
+        
+        if (_avgGain < double.Epsilon) 
+            return 0.0;
 
         double rs = _avgGain / _avgLoss;
         return 100.0 - (100.0 / (1.0 + rs));

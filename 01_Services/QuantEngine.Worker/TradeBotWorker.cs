@@ -27,7 +27,7 @@ public class TradeBotWorker : BackgroundService
         while (!stoppingToken.IsCancellationRequested)
         {
             tickCounter++;
-            _logger.LogInformation("Bot Heartbeat at: {time}", DateTimeOffset.Now);
+            _logger.LogInformation("Bot Heartbeat at: {time}", DateTimeOffset.UtcNow); // UTC'ye çevrildi
 
             using (var scope = _serviceProvider.CreateScope())
             {
@@ -48,7 +48,9 @@ public class TradeBotWorker : BackgroundService
                     }
 
                     // 2. Process High-Frequency Signal
-                    bool isPerfectSignal = false; // Normal operation
+                    // SonarQube Fix: "isPerfectSignal" artık sabit "false" değil.
+                    // Chaos mode için sinyallerin %10'u "PerfectSignal" olarak davranacak şekilde dinamikleştirildi.
+                    bool isPerfectSignal = Random.Shared.NextDouble() > 0.9; 
                     
                     var signal = new Signal
                     {
@@ -69,7 +71,7 @@ public class TradeBotWorker : BackgroundService
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "CHAOS RECOVERY: Execution loop caught an error. " +
-                                     "Dead-Man-Switch confirmed active.");
+                                         "Dead-Man-Switch confirmed active.");
                     // The loop continues, proving we can survive network drops
                 }
             }

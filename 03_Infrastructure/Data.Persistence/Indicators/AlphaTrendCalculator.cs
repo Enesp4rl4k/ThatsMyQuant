@@ -1,136 +1,74 @@
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.ValueObjects;
 
 namespace ThatsMyQuant.Infrastructure.Indicators;
 
-/// <summary>
-/// C# port of KivancOzbilgic's AlphaTrend indicator (Pine Script v5).
-///
-/// Logic:
-///   ATR = SMA(TrueRange, period)
-///   upT = Low - ATR * coeff
-///   downT = High + ATR * coeff
-///   AlphaTrend = RSI >= 50 ? max(upT, prev) : min(downT, prev)
-///   Buy = crossover(AT, AT[2])  with barsSince confirmation
-///   Sell = crossunder(AT, AT[2]) with barsSince confirmation
-/// </summary>
 public static class AlphaTrendCalculator
 {
     public static List<AlphaTrendResult> Calculate(List<Candle> candles, double coeff = 1.0, int period = 14)
     {
-        var results = new List<AlphaTrendResult>();
         int count = candles.Count;
+        var results = new List<AlphaTrendResult>(count);
 
         if (count < period + 3)
         {
-            // Not enough data — return empty results
-            for (int i = 0; i < count; i++)
-                results.Add(new AlphaTrendResult());
+            for (int i = 0; i < count; i++) results.Add(new AlphaTrendResult());
             return results;
         }
 
-        // Step 1: Compute True Range
-        var tr = new double[count];
-        tr[0] = (double)(candles[0].High - candles[0].Low);
-        for (int i = 1; i < count; i++)
-        {
-            double hl = (double)(candles[i].High - candles[i].Low);
-            double hc = Math.Abs((double)(candles[i].High - candles[i - 1].Close));
-            double lc = Math.Abs((double)(candles[i].Low - candles[i - 1].Close));
-            tr[i] = Math.Max(hl, Math.Max(hc, lc));
-        }
-
-        // Step 2: ATR = SMA(TR, period)
-        var atr = new double[count];
-        for (int i = 0; i < count; i++)
-        {
-            if (i < period - 1)
-            {
-                atr[i] = 0;
-                continue;
-            }
-            double sum = 0;
-            for (int j = i - period + 1; j <= i; j++)
-                sum += tr[j];
-            atr[i] = sum / period;
-        }
-
-        // Step 3: RSI(close, period)
+        // Step 1 & 2: O(n) ATR Calculation (Rolling Window)
+        var atr = ComputeATR(candles, period);
         var rsi = ComputeRSI(candles, period);
 
-        // Step 4: AlphaTrend calculation
+        // Step 3: AlphaTrend calculation
         var alphaTrend = new double[count];
-        for (int i = 0; i < count; i++)
-        {
-            if (i < period)
-            {
-                alphaTrend[i] = (double)candles[i].Close;
-                continue;
-            }
-
-            double upT = (double)candles[i].Low - atr[i] * coeff;
-            double downT = (double)candles[i].High + atr[i] * coeff;
-
-            bool bullish = rsi[i] >= 50;
-            double prev = alphaTrend[i - 1];
-
-            if (bullish)
-                alphaTrend[i] = upT < prev ? prev : upT;
-            else
-                alphaTrend[i] = downT > prev ? prev : downT;
-        }
-
-        // Step 5: Generate signals with barsSince confirmation
         int lastBuyBar = -1000;
         int lastSellBar = -1000;
 
         for (int i = 0; i < count; i++)
         {
-            if (i < 3)
+            if (i < period)
             {
-                results.Add(new AlphaTrendResult
-                {
-                    Value = alphaTrend[i],
-                    PreviousValue = alphaTrend[i],
-                    IsBullish = true
-                });
+                alphaTrend[i] = (double)candles[i].Close;
+                results.Add(new AlphaTrendResult { Value = alphaTrend[i] });
                 continue;
             }
 
+            double upT = (double)candles[i].Low - atr[i] * coeff;
+            double downT = (double)candles[i].High + atr[i] * coeff;
+            double prev = alphaTrend[i - 1];
+
+            // Kivanc's core logic
+            alphaTrend[i] = (rsi[i] >= 50) 
+                ? (upT < prev ? prev : upT) 
+                : (downT > prev ? prev : downT);
+
+            // Signal Generation (minimum index check)
+            if (i < 3) continue;
+
             double at = alphaTrend[i];
-            double at2 = alphaTrend[i - 2]; // AT[2] — 2 bars back
+            double at2 = alphaTrend[i - 2];
+            double at1 = alphaTrend[i - 1];
+            double at3 = alphaTrend[i - 3];
 
-            // Crossover: AT crosses above AT[2]
-            bool buySignal = alphaTrend[i] > alphaTrend[i - 2] && alphaTrend[i - 1] <= alphaTrend[i - 3];
-            // Crossunder: AT crosses below AT[2]
-            bool sellSignal = alphaTrend[i] < alphaTrend[i - 2] && alphaTrend[i - 1] >= alphaTrend[i - 3];
-
-            // barsSince confirmation: prevent duplicate signals
-            // O1 > K2: barsSince(prevBuy) > barsSince(lastSell)
-            bool buyConfirmed = false;
-            bool sellConfirmed = false;
-
-            if (buySignal)
-            {
-                int barsSinceLastSell = i - lastSellBar;
-                int barsSincePrevBuy = i - lastBuyBar;
-                buyConfirmed = barsSincePrevBuy > barsSinceLastSell;
-                if (buyConfirmed) lastBuyBar = i;
-            }
-
-            if (sellSignal)
-            {
-                int barsSinceLastBuy = i - lastBuyBar;
-                int barsSincePrevSell = i - lastSellBar;
-                sellConfirmed = barsSincePrevSell > barsSinceLastBuy;
-                if (sellConfirmed) lastSellBar = i;
-            }
+            bool buySignal = at > at2 && at1 <= at3;
+            bool sellSignal = at < at2 && at1 >= at3;
 
             TradeSide? signal = null;
             bool confirmed = false;
-            if (buySignal) { signal = TradeSide.Buy; confirmed = buyConfirmed; }
-            else if (sellSignal) { signal = TradeSide.Sell; confirmed = sellConfirmed; }
+
+            if (buySignal && (i - lastBuyBar > i - lastSellBar))
+            {
+                signal = TradeSide.Buy;
+                confirmed = true;
+                lastBuyBar = i;
+            }
+            else if (sellSignal && (i - lastSellBar > i - lastBuyBar))
+            {
+                signal = TradeSide.Sell;
+                confirmed = true;
+                lastSellBar = i;
+            }
 
             results.Add(new AlphaTrendResult
             {
@@ -145,50 +83,70 @@ public static class AlphaTrendCalculator
         return results;
     }
 
+    private static double[] ComputeATR(List<Candle> candles, int period)
+    {
+        int count = candles.Count;
+        var atr = new double[count];
+        double trSum = 0;
+
+        for (int i = 0; i < count; i++)
+        {
+            double tr = (i == 0) 
+                ? (double)(candles[i].High - candles[i].Low)
+                : Math.Max((double)(candles[i].High - candles[i].Low), 
+                  Math.Max(Math.Abs((double)(candles[i].High - candles[i - 1].Close)), 
+                           Math.Abs((double)(candles[i].Low - candles[i - 1].Close))));
+
+            trSum += tr;
+            if (i >= period) trSum -= (i == period) ? trSum / period : GetTR(candles, i - period); // Rolling Sum
+            
+            if (i >= period - 1) atr[i] = trSum / period;
+        }
+        return atr;
+    }
+
+    private static double GetTR(List<Candle> candles, int i)
+    {
+        if (i <= 0) return (double)(candles[0].High - candles[0].Low);
+        return Math.Max((double)(candles[i].High - candles[i].Low), 
+               Math.Max(Math.Abs((double)(candles[i].High - candles[i - 1].Close)), 
+                        Math.Abs((double)(candles[i].Low - candles[i - 1].Close))));
+    }
+
     private static double[] ComputeRSI(List<Candle> candles, int period)
     {
         int count = candles.Count;
         var rsi = new double[count];
-        var gains = new double[count];
-        var losses = new double[count];
+        double avgGain = 0, avgLoss = 0;
 
         for (int i = 1; i < count; i++)
         {
-            double change = (double)(candles[i].Close - candles[i - 1].Close);
-            gains[i] = change > 0 ? change : 0;
-            losses[i] = change < 0 ? -change : 0;
-        }
+            double diff = (double)(candles[i].Close - candles[i - 1].Close);
+            double gain = diff > 0 ? diff : 0;
+            double loss = diff < 0 ? -diff : 0;
 
-        // SMA for first period
-        double avgGain = 0, avgLoss = 0;
-        for (int i = 1; i <= period && i < count; i++)
-        {
-            avgGain += gains[i];
-            avgLoss += losses[i];
-        }
-        avgGain /= period;
-        avgLoss /= period;
-
-        for (int i = 0; i < count; i++)
-        {
-            if (i < period)
+            if (i <= period)
             {
-                rsi[i] = 50; // Default
-                continue;
+                avgGain += gain;
+                avgLoss += loss;
+                if (i == period)
+                {
+                    avgGain /= period;
+                    avgLoss /= period;
+                }
+            }
+            else
+            {
+                // Wilder's Smoothing
+                avgGain = (avgGain * (period - 1) + gain) / period;
+                avgLoss = (avgLoss * (period - 1) + loss) / period;
             }
 
-            if (i == period)
-            {
-                rsi[i] = avgLoss == 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
-                continue;
-            }
-
-            // Wilder's smoothed RSI
-            avgGain = (avgGain * (period - 1) + gains[i]) / period;
-            avgLoss = (avgLoss * (period - 1) + losses[i]) / period;
-            rsi[i] = avgLoss == 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+            if (i >= period)
+                rsi[i] = avgLoss < 1e-10 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
+            else
+                rsi[i] = 50;
         }
-
         return rsi;
     }
 }
