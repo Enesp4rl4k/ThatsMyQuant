@@ -25,7 +25,6 @@ builder.Services.AddSerilog();
 
 // --- CORE APPLICATION SERVICES ---
 builder.Services.AddThatsMyQuantApplication();
-builder.Services.AddSingleton<ISystemClock, RealSystemClock>();
 
 // --- INFRASTRUCTURE ADAPTERS ---
 builder.Services.AddSingleton<BorsaMarketDataService>();
@@ -46,15 +45,11 @@ else
     builder.Services.AddSingleton<IChatCompletionService, MockChatCompletionService>();
 }
 
-// MediatR
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
 
 // Persistence
 builder.Services.AddDbContext<QuantDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db"));
-builder.Services.AddSingleton<ThatsMyQuant.Infrastructure.Services.SignalWriterChannel>();
-builder.Services.AddHostedService<ThatsMyQuant.Infrastructure.Services.QuantPersistenceWorker>();
-builder.Services.AddSingleton<IPortfolioStateCache, ThatsMyQuant.Application.Strategy.PortfolioStateCache>();
+    options.UseSqlite(builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=quant.db"));
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
 
@@ -67,7 +62,6 @@ var host = builder.Build();
 using (var scope = host.Services.CreateScope())
 {
     scope.ServiceProvider.GetRequiredService<QuantDbContext>().Database.EnsureCreated();
-    scope.ServiceProvider.GetRequiredService<IPortfolioStateCache>().InitializeAsync().Wait();
 }
 
 host.Run();

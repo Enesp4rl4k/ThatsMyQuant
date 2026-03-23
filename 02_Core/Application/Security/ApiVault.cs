@@ -50,10 +50,17 @@ public sealed class ApiVault : IDisposable
 
         byte[] decryptedSpace = new byte[_encryptedKey.Length];
 
-        using var aesgcm = new AesGcm(_masterKek, 16);
-        aesgcm.Decrypt(_nonce, _encryptedKey, _tag, decryptedSpace);
-
-        return decryptedSpace;
+        try
+        {
+            using var aesgcm = new AesGcm(_masterKek, 16);
+            aesgcm.Decrypt(_nonce, _encryptedKey, _tag, decryptedSpace);
+            return decryptedSpace;
+        }
+        finally
+        {
+            // Note: We keep _masterKek for subsequent decryptions until Dispose()
+            // In a real HSM, this would be inside the secure enclave.
+        }
     }
 
     public void Dispose()

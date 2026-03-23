@@ -14,7 +14,6 @@ using ThatsMyQuant.Application.Strategy;
 using Microsoft.SemanticKernel.Connectors.Google;
 using Microsoft.EntityFrameworkCore;
 using ThatsMyQuant.Application.Security;
-using ThatsMyQuant.Dashboard.Services;
 
 namespace ThatsMyQuant.Dashboard;
 
@@ -56,25 +55,6 @@ public partial class App : System.Windows.Application
     private void ConfigureServices(IServiceCollection services)
     {
         var geminiApiKey = Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY");
-        var simulationMode = string.Equals(
-            Environment.GetEnvironmentVariable("TMQ_SIMULATION_MODE"),
-            "true",
-            StringComparison.OrdinalIgnoreCase);
-            
-        var replayMode = string.Equals(
-            Environment.GetEnvironmentVariable("TMQ_REPLAY_MODE"),
-            "true",
-            StringComparison.OrdinalIgnoreCase);
-
-        // Setup global timing synchronization
-        if (replayMode)
-        {
-            services.AddSingleton<ISystemClock, MarketReplayClock>();
-        }
-        else
-        {
-            services.AddSingleton<ISystemClock, RealSystemClock>();
-        }
 
         // Core Microservice Logic
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
@@ -96,7 +76,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IAiReasoningService, DeepSeekReasoningService>();
         services.AddSingleton<IAiAnalystService, AiAnalystService>();
         // Exchange Service Integration
-        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Disabled";
+        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Mock";
         
         if (exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) || 
             exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase))
@@ -130,20 +110,16 @@ public partial class App : System.Windows.Application
             }
             else
             {
-                services.AddSingleton<IExchangeService, DisabledExchangeService>();
+                // Fallback to Mock if keys are missing but mode is set
+                services.AddSingleton<IExchangeService, MockBrokerService>();
             }
-        }
-        else if (exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase) || simulationMode)
-        {
-            services.AddSingleton<IExchangeService, MockBrokerService>();
         }
         else
         {
-            services.AddSingleton<IExchangeService, DisabledExchangeService>();
+            services.AddSingleton<IExchangeService, MockBrokerService>();
         }
         services.AddSingleton<ITechnicalAnalysisService, QuantIndicatorService>();
         services.AddTransient<ThatsMyQuant.Application.Strategy.BacktestEngine>();
-        services.AddSingleton<ExitPolicyLearningService>();
         
         // Database & Repositories
         services.AddDbContext<ThatsMyQuant.Infrastructure.Persistence.QuantDbContext>(options =>
@@ -162,20 +138,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<SwarmOrchestrator>();
 
         // Phase 8: HFT & Quantitative Foundation
-        if (replayMode)
-        {
-            services.AddSingleton<IStreamingMarketDataService, MarketReplayService>();
-            services.AddSingleton<IExchangeService, ReplayBrokerService>();
-        }
-        else if (exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
-                 exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase))
-        {
-            services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
-        }
-        else
-        {
-            services.AddSingleton<IStreamingMarketDataService, DisabledStreamingMarketDataService>();
-        }
+        services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
         services.AddSingleton<ThatsMyQuant.Application.Strategy.TickPipeline>();
         services.AddSingleton(sp => new ThatsMyQuant.Application.Strategy.MicrosecondPredictionEngine(
             "models/price_prediction.onnx", // Placeholder path
@@ -187,20 +150,13 @@ public partial class App : System.Windows.Application
             services.AddKernel()
                     .AddGoogleAIGeminiChatCompletion("gemini-pro", geminiApiKey);
         }
-        else if (simulationMode)
+        else
         {
             services.AddKernel();
             services.AddSingleton<IChatCompletionService, MockChatCompletionService>();
         }
-        else
-        {
-            services.AddKernel();
-            services.AddSingleton<IChatCompletionService, UnavailableChatCompletionService>();
-        }
 
         // UI
-        services.AddSingleton<ITradingLoopService, TradingLoopService>();
-        services.AddSingleton<IStrategyHealthStore, JsonStrategyHealthStore>();
         services.AddTransient<MainWindow>();
         services.AddTransient<MainViewModel>();
         

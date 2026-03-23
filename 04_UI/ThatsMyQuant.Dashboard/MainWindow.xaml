@@ -139,7 +139,6 @@
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="THATSMYQUANT TERMINAL" FontSize="15" FontWeight="Black" Foreground="{StaticResource TextMain}" />
                         <TextBlock Text="INSTITUTIONAL GRADE EXECUTION" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" Margin="1,-2,0,0" />
-                        <TextBlock Text="{Binding RuntimeIntegrityStatus}" Foreground="{Binding RuntimeIntegrityColor}" FontSize="8" FontWeight="Black" Margin="1,2,0,0" />
                     </StackPanel>
                 </StackPanel>
 
@@ -148,10 +147,16 @@
                     <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,0,8,0">
                         <StackPanel Orientation="Horizontal">
                             <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
-                                <TextBlock Text="{Binding ExecutionServiceStatus}" Foreground="{Binding RuntimeIntegrityColor}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
+                                <Ellipse Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="SYS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
-                                <TextBlock Text="{Binding AiProviderStatus}" Foreground="{Binding RuntimeIntegrityColor}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
+                                <Ellipse Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="API" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <TextBlock Text="AI" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
                             </StackPanel>
                         </StackPanel>
                     </Border>
@@ -159,12 +164,6 @@
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="PING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0" />
                             <TextBlock Text="{Binding ApiPing}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Border>
-                    <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="8,0,0,0">
-                        <StackPanel>
-                            <TextBlock Text="{Binding ConfigValidationStatus}" Foreground="{Binding RuntimeIntegrityColor}" FontSize="9" FontWeight="Bold" />
-                            <TextBlock Text="{Binding ConfigValidationSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" TextWrapping="Wrap" MaxWidth="260" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -199,7 +198,7 @@
             </Grid.ColumnDefinitions>
 
             <TabControl x:Name="MainTabs" Grid.Column="0" Margin="0,0,24,0">
-                <TabItem Header="Strategy Terminal">
+                <TabItem Header="Terminal">
                     <Grid Margin="0,8,0,0">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" /> <!-- Summary Cards -->
@@ -253,7 +252,7 @@
                                 </StackPanel>
                                 <UniformGrid Grid.Column="2" Columns="2">
                                     <Button Style="{StaticResource DeckActionButtonAccentStyle}" Command="{Binding RefreshAnalysisCommand}" Content="RUN SCAN" Margin="0,0,6,6" Padding="0,8" />
-                                    <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding StartTradingCommand}" Content="START BOT" Margin="6,0,0,6" Padding="0,8" />
+                                    <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding StartTradingCommand}" Content="START LOOP" Margin="6,0,0,6" Padding="0,8" />
                                     <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding RunBacktestCommand}" Content="BACKTEST" Margin="0,0,6,0" Padding="0,8" />
                                     <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding ToggleTradingModeCommand}" Content="TOGGLE MODE" Margin="6,0,0,0" Padding="0,8" />
                                 </UniformGrid>
@@ -366,152 +365,6 @@
                     </Grid>
                 </TabItem>
 
-                <TabItem Header="HFT Terminal">
-                    <Grid Margin="0,8,0,0">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-
-                        <UniformGrid Grid.Row="0" Columns="4" Margin="0,0,0,12">
-                            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
-                                <StackPanel>
-                                    <TextBlock Text="EXECUTION BIAS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding HftExecutionBias}" Foreground="{Binding HftExecutionBiasColor}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
-                                </StackPanel>
-                            </Border>
-                            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
-                                <StackPanel>
-                                    <TextBlock Text="QUEUE HEALTH" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding QueueHealth}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
-                                </StackPanel>
-                            </Border>
-                            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
-                                <StackPanel>
-                                    <TextBlock Text="OFI / INFERENCE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding HftInferenceStatus}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
-                                </StackPanel>
-                            </Border>
-                            <Border Style="{StaticResource TerminalCardStyle}">
-                                <StackPanel>
-                                    <TextBlock Text="Z-SCORE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding ZScoreStatus}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
-                                </StackPanel>
-                            </Border>
-                        </UniformGrid>
-
-                        <Grid Grid.Row="1">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="1.15*" />
-                                <ColumnDefinition Width="0.85*" />
-                            </Grid.ColumnDefinitions>
-
-                            <Border Grid.Column="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,12,0">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                    </Grid.RowDefinitions>
-                                    <StackPanel Margin="0,0,0,12">
-                                        <TextBlock Text="MICROSTRUCTURE EXECUTION BOARD" Foreground="{StaticResource TextMain}" FontSize="15" FontWeight="Black" />
-                                        <TextBlock Text="{Binding HftWorkspaceHeadline}" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                    <Grid Grid.Row="1">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="*" />
-                                        </Grid.RowDefinitions>
-                                        <Border Grid.Row="0" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,10">
-                                            <StackPanel>
-                                                <TextBlock Text="LATENCY PROFILE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                                <TextBlock Text="{Binding HftLatencySummary}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="SemiBold" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                            </StackPanel>
-                                        </Border>
-                                        <Border Grid.Row="1" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,10">
-                                            <StackPanel>
-                                                <TextBlock Text="MICROSTRUCTURE CONTEXT" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                                <TextBlock Text="{Binding HftMicrostructureSummary}" Foreground="{StaticResource TextMain}" FontSize="11" FontWeight="SemiBold" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                            </StackPanel>
-                                        </Border>
-                                        <Border Grid.Row="2" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,10">
-                                            <StackPanel>
-                                                <TextBlock Text="HFT RISK STATE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                                <TextBlock Text="{Binding HftExecutionBias}" Foreground="{Binding HftExecutionBiasColor}" FontSize="16" FontWeight="Black" Margin="0,6,0,0" />
-                                                <TextBlock Text="{Binding HftRiskSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                            </StackPanel>
-                                        </Border>
-                                        <Border Grid.Row="3" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="0">
-                                            <Grid>
-                                                <Grid.RowDefinitions>
-                                                    <RowDefinition Height="Auto" />
-                                                    <RowDefinition Height="*" />
-                                                </Grid.RowDefinitions>
-                                                <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="12,8">
-                                                    <DockPanel>
-                                                        <TextBlock Text="OPEN EXECUTION BOOK" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" VerticalAlignment="Center" />
-                                                        <Button Content="CLOSE ALL" Command="{Binding CloseAllPositionsCommand}" Background="#7A2F45" Foreground="White" BorderThickness="0" FontSize="9" FontWeight="Black" Padding="12,4" HorizontalAlignment="Right" DockPanel.Dock="Right" />
-                                                    </DockPanel>
-                                                </Border>
-                                                <DataGrid Grid.Row="1" ItemsSource="{Binding ActivePositions}" AutoGenerateColumns="False" Background="{StaticResource AppBg}" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource BorderColor}" CanUserAddRows="False" RowBackground="{StaticResource AppBg}" AlternatingRowBackground="{StaticResource SurfaceBg}" Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}">
-                                                    <DataGrid.Columns>
-                                                        <DataGridTextColumn Header="SYMBOL" Binding="{Binding Symbol}" Width="*" />
-                                                        <DataGridTextColumn Header="SIDE" Binding="{Binding Side}" Width="90" />
-                                                        <DataGridTextColumn Header="ROE %" Binding="{Binding Roe, StringFormat={}{0:F2}%}" Width="90" />
-                                                        <DataGridTextColumn Header="MARK" Binding="{Binding MarkPrice, StringFormat={}{0:N2}}" Width="110" />
-                                                    </DataGrid.Columns>
-                                                </DataGrid>
-                                            </Grid>
-                                        </Border>
-                                    </Grid>
-                                </Grid>
-                            </Border>
-
-                            <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}">
-                                <StackPanel>
-                                    <TextBlock Text="HFT ACTIONS" Foreground="{StaticResource TextMain}" FontSize="15" FontWeight="Black" />
-                                    <TextBlock Text="Use this workspace for execution-sensitive workflows, queue review, and fast protection actions." Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,12" TextWrapping="Wrap" />
-                                    <UniformGrid Columns="2" Margin="0,0,0,12">
-                                        <Button Style="{StaticResource DeckActionButtonAccentStyle}" Content="RUN SCAN" Command="{Binding RefreshAnalysisCommand}" Margin="0,0,6,8" IsEnabled="{Binding IsHftRuntimeAvailable}" />
-                                        <Button Style="{StaticResource DeckActionButtonStyle}" Content="START BOT" Command="{Binding StartTradingCommand}" Margin="6,0,0,8" IsEnabled="{Binding IsHftRuntimeAvailable}" />
-                                        <Button Style="{StaticResource DeckActionButtonStyle}" Content="TOGGLE MODE" Command="{Binding ToggleTradingModeCommand}" Margin="0,0,6,8" IsEnabled="{Binding IsHftRuntimeAvailable}" />
-                                        <Button Style="{StaticResource DeckActionButtonStyle}" Content="RESET RISK" Command="{Binding ResetKillSwitchCommand}" Margin="6,0,0,8" IsEnabled="{Binding IsHftRuntimeAvailable}" />
-                                        <Button Style="{StaticResource DeckActionButtonStyle}" Content="BACKTEST" Command="{Binding RunBacktestCommand}" Margin="0,0,6,0" IsEnabled="{Binding IsHftRuntimeAvailable}" />
-                                        <Button Style="{StaticResource DeckActionButtonStyle}" Content="VERIFY" Command="{Binding VerifyConnectionCommand}" Margin="6,0,0,0" IsEnabled="{Binding IsHftRuntimeAvailable}" />
-                                    </UniformGrid>
-                                    <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                        <StackPanel>
-                                            <TextBlock Text="CURRENT GUARDRAILS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding StrategyThrottleStatus}" Foreground="{Binding StrategyThrottleColor}" FontSize="15" FontWeight="Black" Margin="0,6,0,0" />
-                                            <TextBlock Text="{Binding StrategyThrottleReason}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                            <TextBlock Text="{Binding ConfigValidationSummary}" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                        </StackPanel>
-                                    </Border>
-                                    <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                        <StackPanel>
-                                            <TextBlock Text="FILL QUALITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding HftFillQuality}" Foreground="{Binding HftFillQualityColor}" FontSize="15" FontWeight="Black" Margin="0,6,0,0" />
-                                            <TextBlock Text="{Binding HftEstimatedSlippage}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="SemiBold" Margin="0,6,0,0" />
-                                            <TextBlock Text="{Binding HftSessionWinRate}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" />
-                                            <TextBlock Text="{Binding HftSessionPnl}" Foreground="{Binding HftSessionPnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Bold" Margin="0,4,0,0" />
-                                        </StackPanel>
-                                    </Border>
-                                    <Button Content="EMERGENCY SHUTDOWN" Command="{Binding EmergencyStopCommand}" Background="Transparent" Foreground="{StaticResource SellColor}" BorderBrush="{StaticResource SellColor}" BorderThickness="1" Padding="0,10" FontSize="11" FontWeight="Black" />
-                                </StackPanel>
-                            </Border>
-                        </Grid>
-
-                        <Border Grid.Row="2" Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0">
-                            <StackPanel>
-                                <TextBlock Text="HFT WORKSPACE NOTES" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                <TextBlock Text="This terminal is for execution health, queue pressure, and fast controls. Keep HTF chart review and strategy design in Strategy Terminal and Bot Launcher." Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                            </StackPanel>
-                        </Border>
-                    </Grid>
-                </TabItem>
-
                 <TabItem Header="Portfolio">
                     <Grid Margin="0,8,0,0">
                         <Grid.RowDefinitions>
@@ -559,12 +412,6 @@
                                         <TextBlock Text="{Binding PortfolioRangeSummary}" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,0" />
                                     </StackPanel>
                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{Binding PortfolioExecutionModeColor}" BorderThickness="1" CornerRadius="8" Padding="10,6" Margin="0,0,12,0" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding PortfolioExecutionModeLabel}" Foreground="{Binding PortfolioExecutionModeColor}" FontSize="9" FontWeight="Bold" />
-                                        </Border>
-                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource Accent}" BorderThickness="1" CornerRadius="8" Padding="10,6" Margin="0,0,12,0" VerticalAlignment="Center">
-                                            <TextBlock Text="{Binding PortfolioPromotionStageLabel, StringFormat=Stage {0}}" Foreground="{StaticResource Accent}" FontSize="9" FontWeight="Bold" />
-                                        </Border>
                                         <Button Content="DAILY" Command="{Binding SetPortfolioRangeCommand}" CommandParameter="Daily" Style="{StaticResource PageNavButtonStyle}" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                                         <Button Content="WEEKLY" Command="{Binding SetPortfolioRangeCommand}" CommandParameter="Weekly" Style="{StaticResource PageNavButtonStyle}" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                                         <Button Content="MONTHLY" Command="{Binding SetPortfolioRangeCommand}" CommandParameter="Monthly" Style="{StaticResource PageNavButtonStyle}" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
@@ -641,50 +488,6 @@
                                     <TextBlock Text="BOT STRATEGIES" Foreground="{StaticResource TextMain}" FontSize="15" FontWeight="Black" />
                                     <TextBlock Text="Choose the bot style first, then tune launch settings on the right." Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,0" />
                                 </StackPanel>
-
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <TextBlock Text="QUICK PRESETS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <UniformGrid Columns="2" Margin="0,8,0,0">
-                                            <Button Content="TREND ATTACK" Command="{Binding ApplyBotPresetCommand}" CommandParameter="Trend Attack" Style="{StaticResource PageNavButtonStyle}" Margin="0,0,6,8" />
-                                            <Button Content="SAFE INCOME" Command="{Binding ApplyBotPresetCommand}" CommandParameter="Safe Income" Style="{StaticResource PageNavButtonStyle}" Margin="6,0,0,8" />
-                                            <Button Content="RECOVERY PROBE" Command="{Binding ApplyBotPresetCommand}" CommandParameter="Recovery Probe" Style="{StaticResource PageNavButtonStyle}" Margin="0,0,6,0" />
-                                            <Button Content="HFT PROBE" Command="{Binding ApplyBotPresetCommand}" CommandParameter="HFT Probe" Style="{StaticResource PageNavButtonStyle}" Margin="6,0,0,0" />
-                                        </UniformGrid>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <TextBlock Text="DISABLED STRATEGIES" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBlock Text="{Binding DisabledStrategiesSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                        <ItemsControl ItemsSource="{Binding DisabledStrategies}" Margin="0,8,0,0">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <Grid Margin="0,0,0,6">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <TextBlock Text="{Binding}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" />
-                                                        <Button Grid.Column="1"
-                                                                Content="RECOVER"
-                                                                Command="{Binding DataContext.ReEnableStrategyCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
-                                                                CommandParameter="{Binding}"
-                                                                Background="{StaticResource SurfaceBg}"
-                                                                Foreground="{StaticResource Accent}"
-                                                                BorderBrush="{StaticResource Accent}"
-                                                                BorderThickness="1"
-                                                                Padding="10,4"
-                                                                FontSize="9"
-                                                                FontWeight="Black"
-                                                                Margin="10,0,0,0" />
-                                                    </Grid>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-                                </Border>
 
                                 <ItemsControl Grid.Row="1" ItemsSource="{Binding BotStrategies}">
                                     <ItemsControl.ItemTemplate>
@@ -798,151 +601,6 @@
                                     </StackPanel>
                                 </Border>
 
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <DockPanel>
-                                            <TextBlock Text="BOT PRODUCTIVITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Left" />
-                                            <Button Content="AUTO-TUNE" Command="{Binding AutoTuneBotSetupCommand}" Background="{StaticResource Accent}" Foreground="White" BorderThickness="0" Padding="10,4" FontSize="9" FontWeight="Black" DockPanel.Dock="Right" />
-                                        </DockPanel>
-                                        <TextBlock Text="{Binding BotProductivityScore}" Foreground="{Binding BotProductivityColor}" FontSize="15" FontWeight="Black" Margin="0,8,0,0" />
-                                        <TextBlock Text="{Binding BotSetupVelocity}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="SemiBold" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                        <TextBlock Text="{Binding BotWorkflowAdvice}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <TextBlock Text="STRATEGY THROTTLE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBlock Text="{Binding StrategyThrottleStatus}" Foreground="{Binding StrategyThrottleColor}" FontSize="15" FontWeight="Black" Margin="0,6,0,0" />
-                                        <TextBlock Text="{Binding StrategyThrottleReason}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                        <Button Content="DISABLE SELECTED STRATEGY"
-                                                Command="{Binding DisableSelectedStrategyCommand}"
-                                                Background="Transparent"
-                                                Foreground="{StaticResource SellColor}"
-                                                BorderBrush="{StaticResource SellColor}"
-                                                BorderThickness="1"
-                                                Padding="0,8"
-                                                FontSize="10"
-                                                FontWeight="Black"
-                                                Margin="0,10,0,0" />
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <TextBlock Text="LAUNCH GUARD" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBlock Text="{Binding BotLaunchGuardStatus}" Foreground="{Binding BotLaunchGuardColor}" FontSize="15" FontWeight="Black" Margin="0,6,0,0" />
-                                        <TextBlock Text="{Binding BotLaunchGuardReason}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                        <TextBlock Text="{Binding BotRecommendedFunding, StringFormat=Recommended Capital {0:N0}}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Bold" Margin="0,8,0,0" />
-                                        <TextBlock Text="{Binding BotProfitabilityFocus}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,8,0,0" TextWrapping="Wrap" />
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <TextBlock Text="CAPITAL ALLOCATOR" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBlock Text="{Binding CapitalAllocatorSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                        <ItemsControl ItemsSource="{Binding CapitalAllocationRows}" Margin="0,8,0,0">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <Grid Margin="0,0,0,8">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <StackPanel>
-                                                            <TextBlock Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Bold">
-                                                                <Run Text="{Binding Symbol}" />
-                                                                <Run Text=" · " />
-                                                                <Run Text="{Binding StrategyTag}" />
-                                                                <Run Text=" / " />
-                                                                <Run Text="{Binding RegimeTag}" />
-                                                            </TextBlock>
-                                                            <TextBlock Foreground="{StaticResource TextSoft}" FontSize="9">
-                                                                <Run Text="{Binding AllocationPercent, StringFormat={}{0:F0}%}" />
-                                                                <Run Text=" allocation | " />
-                                                                <Run Text="{Binding RecommendedCapital, StringFormat={}{0:N0}}" />
-                                                            </TextBlock>
-                                                            <TextBlock Text="{Binding VenuePromotionImpact}" Foreground="{Binding VenuePromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                            <TextBlock Text="{Binding ExactBucketPromotionImpact}" Foreground="{Binding ExactBucketPromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                            <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                            <TextBlock Text="{Binding ExactBucketSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                            <TextBlock Text="{Binding VenueExecutionSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                            <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                            <TextBlock Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,3,0,0">
-                                                                <Run Text="Stage: " />
-                                                                <Run Text="{Binding PromotionStage}" />
-                                                                <Run Text=" | Session: " />
-                                                                <Run Text="{Binding SessionTag}" />
-                                                                <Run Text=" | Venue " />
-                                                                <Run Text="{Binding AverageVenueExecutionBias, StringFormat={}{0:F2}x}" />
-                                                            </TextBlock>
-                                                        </StackPanel>
-                                                        <Border Grid.Column="1" Background="{Binding StatusColor}" CornerRadius="4" Padding="8,3" VerticalAlignment="Top" Margin="10,0,0,0">
-                                                            <TextBlock Text="{Binding Status}" Foreground="White" FontSize="8" FontWeight="Black" />
-                                                        </Border>
-                                                    </Grid>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <TextBlock Text="DEPLOYMENT CHECKLIST" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <ItemsControl ItemsSource="{Binding DeploymentChecklist}" Margin="0,6,0,0">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <Grid Margin="0,0,0,8">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <StackPanel>
-                                                            <TextBlock Text="{Binding Title}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Bold" />
-                                                            <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,2,0,0" TextWrapping="Wrap" />
-                                                        </StackPanel>
-                                                        <Border Grid.Column="1" Background="{Binding Color}" CornerRadius="4" Padding="8,3" VerticalAlignment="Top" Margin="10,0,0,0">
-                                                            <TextBlock Text="{Binding Status}" Foreground="White" FontSize="8" FontWeight="Black" />
-                                                        </Border>
-                                                    </Grid>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-                                </Border>
-
-                                <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
-                                    <StackPanel>
-                                        <TextBlock Text="SESSION EDGE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <ItemsControl ItemsSource="{Binding SessionPerformanceRows}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <Grid Margin="0,6,0,0">
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <StackPanel>
-                                                            <TextBlock Text="{Binding SessionName}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Bold" />
-                                                            <TextBlock Foreground="{StaticResource TextSoft}" FontSize="9">
-                                                                <Run Text="WR " />
-                                                                <Run Text="{Binding WinRate, StringFormat={}{0:F1}%}" />
-                                                                <Run Text=" | PF " />
-                                                                <Run Text="{Binding ProfitFactor, StringFormat={}{0:F2}}" />
-                                                                <Run Text=" | Trades " />
-                                                                <Run Text="{Binding Trades}" />
-                                                            </TextBlock>
-                                                        </StackPanel>
-                                                        <TextBlock Grid.Column="1" Text="{Binding TotalPnL, StringFormat={}{0:N0}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,0,0" />
-                                                    </Grid>
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-                                </Border>
-
                                 <Button Content="START BOT"
                                         Command="{Binding StartTradingCommand}"
                                         Background="{StaticResource Accent}"
@@ -1041,295 +699,29 @@
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         
-                        <!-- 1. Edge Score Analytics -->
+                        <!-- 1. Performance Heatmap (Mockup) -->
                         <Border Grid.Row="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,0,12">
-                            <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="*" />
-                                </Grid.RowDefinitions>
-                                <DockPanel Grid.Row="0" Margin="0,0,0,12">
-                                    <TextBlock Text="EDGE SCORE ANALYTICS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Left" />
-                                    <TextBlock Text="{Binding EdgeAnalyticsStatus}" Foreground="{StaticResource Accent}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Right" />
+                            <StackPanel>
+                                <DockPanel>
+                                    <TextBlock Text="MONTHLY PERFORMANCE HEATMAP" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Left" />
+                                    <TextBlock Text="CURRENT YTD: +24.8%" Foreground="{StaticResource BuyColor}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Right" />
                                 </DockPanel>
-
-                                         <Grid Grid.Row="1">
-                                             <Grid.ColumnDefinitions>
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                                 <ColumnDefinition Width="*" />
-                                             </Grid.ColumnDefinitions>
-
-                                    <Border Grid.Column="0" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
-                                        <StackPanel>
-                                            <TextBlock Text="STRATEGY LEADERBOARD" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding StrategyLeaderboardStatus}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                            <ItemsControl ItemsSource="{Binding StrategyLeaderboard}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                            <StackPanel>
-                                                                <DockPanel>
-                                                                    <TextBlock Text="{Binding StrategyTag}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                    <TextBlock Text="{Binding TotalPnL, StringFormat={}{0:N2}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                </DockPanel>
-                                                                <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding ExactBucketPromotionImpact}" Foreground="{Binding ExactBucketPromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding ExactBucketSummary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Text="{Binding VenuePromotionImpact}" Foreground="{Binding VenuePromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding VenueExecutionSummary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0">
-                                                                    <Run Text="WR " />
-                                                                    <Run Text="{Binding WinRate, StringFormat={}{0:F1}%}" />
-                                                                    <Run Text=" | PF " />
-                                                                    <Run Text="{Binding ProfitFactor, StringFormat={}{0:F2}}" />
-                                                                    <Run Text=" | Venue " />
-                                                                    <Run Text="{Binding AverageVenueExecutionBias, StringFormat={}{0:F2}x}" />
-                                                                </TextBlock>
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <Border Grid.Column="1" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
-                                        <StackPanel>
-                                            <TextBlock Text="WHICH SCORES MAKE MONEY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="Observed score bands from journaled edge-score outcomes." Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                            <ItemsControl ItemsSource="{Binding EdgeScoreBands}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                            <StackPanel>
-                                                                <DockPanel>
-                                                                    <TextBlock Text="{Binding Band}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                    <TextBlock Text="{Binding TotalPnL, StringFormat={}{0:N2}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                </DockPanel>
-                                                                <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Text="{Binding WinRate, StringFormat=WR {0:F1}%}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <Border Grid.Column="2" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
-                                        <StackPanel>
-                                            <TextBlock Text="WHICH CONDITIONS FAIL" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding WorstEdgeFailureSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                            <ItemsControl ItemsSource="{Binding EdgeFailureConditions}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                            <StackPanel>
-                                                                <DockPanel>
-                                                                    <TextBlock Text="{Binding Condition}" Foreground="{Binding SeverityColor}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                    <TextBlock Text="{Binding Failures, StringFormat={}{0} fails}" Foreground="{StaticResource TextMuted}" FontFamily="{StaticResource MonoFont}" FontSize="9" DockPanel.Dock="Right" />
-                                                                </DockPanel>
-                                                                <TextBlock Text="{Binding ExecutionModeScope, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding PromotionStageScope, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Text="{Binding AverageSlippagePercent, StringFormat=Slip {0:F3}%}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <Border Grid.Column="3" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
-                                        <StackPanel>
-                                            <TextBlock Text="WHERE EDGE EXISTS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding BestEdgeZoneSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                            <ItemsControl ItemsSource="{Binding EdgeOpportunities}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                            <StackPanel>
-                                                                <DockPanel>
-                                                                    <TextBlock Text="{Binding StrategyTag}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                    <TextBlock Text="{Binding TotalPnL, StringFormat={}{0:N2}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                </DockPanel>
-                                                                <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding EdgeNote}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <Border Grid.Column="4" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
-                                        <StackPanel>
-                                            <TextBlock Text="WHICH EXITS ARE WINNING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding ExitPolicyAnalyticsSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                            <ItemsControl ItemsSource="{Binding ExitPolicyWinners}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                            <StackPanel>
-                                                                <DockPanel>
-                                                                    <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                    <TextBlock Text="{Binding TotalPnL, StringFormat={}{0:N2}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                </DockPanel>
-                                                                <TextBlock Text="{Binding ExitPolicyTag, StringFormat=Exit: {0}}" Foreground="{StaticResource AccentCyan}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Text="{Binding WinRate, StringFormat=WR {0:F1}%}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </Border>
-
-                                    <Border Grid.Column="5" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,12,0">
-                                        <StackPanel>
-                                            <TextBlock Text="WHICH EXITS ARE DRIFTING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding ExitPolicyDriftSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                            <ItemsControl ItemsSource="{Binding ExitPolicyDriftRows}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                            <StackPanel>
-                                                                <DockPanel>
-                                                                    <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                    <TextBlock Text="{Binding DriftScore, StringFormat=Drift {0:F2}}" Foreground="{Binding SeverityColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                </DockPanel>
-                                                                <TextBlock Text="{Binding ExitPolicyTag, StringFormat=Exit: {0}}" Foreground="{Binding SeverityColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Text="{Binding PaperTrades, StringFormat=Paper trades: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding LiveTrades, StringFormat=Live trades: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </StackPanel>
-                                    </Border>
-
-                                      <Border Grid.Column="6" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12">
-                                          <StackPanel>
-                                             <TextBlock Text="FINAL ALLOCATOR BIAS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding FinalAllocatorBiasSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                            <ItemsControl ItemsSource="{Binding FinalAllocatorBiasRows}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                            <StackPanel>
-                                                                <DockPanel>
-                                                                    <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                    <TextBlock Text="{Binding AverageBias, StringFormat=Bias {0:F2}x}" Foreground="{Binding BiasColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                </DockPanel>
-                                                                <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding AllocatorScope, StringFormat=Scope: {0}}" Foreground="{StaticResource AccentCyan}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                <TextBlock Text="{Binding TotalPnL, StringFormat=PnL {0:N2}}" Foreground="{Binding PnlColor}" FontSize="8" Margin="0,4,0,0" />
-                                                            </StackPanel>
-                                                        </Border>
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                              </ItemsControl>
-                                          </StackPanel>
-                                      </Border>
-
-                                      <Border Grid.Column="7" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="12,0,12,0">
-                                          <StackPanel>
-                                              <TextBlock Text="EXACT BUCKET PRESSURE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                              <TextBlock Text="{Binding ExactBucketPromotionPressureSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                              <ItemsControl ItemsSource="{Binding ExactBucketPromotionPressureRows}">
-                                                  <ItemsControl.ItemTemplate>
-                                                      <DataTemplate>
-                                                          <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                              <StackPanel>
-                                                                  <DockPanel>
-                                                                      <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                      <TextBlock Text="{Binding TotalPnL, StringFormat=PnL {0:N2}}" Foreground="{Binding PnlColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                  </DockPanel>
-                                                                  <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                  <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                  <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                  <TextBlock Text="{Binding PromotionImpact}" Foreground="{Binding PromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                  <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                  <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                  <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                  <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                  <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                              </StackPanel>
-                                                          </Border>
-                                                      </DataTemplate>
-                                                  </ItemsControl.ItemTemplate>
-                                              </ItemsControl>
-                                          </StackPanel>
-                                      </Border>
-
-                                      <Border Grid.Column="8" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,0">
-                                          <StackPanel>
-                                              <TextBlock Text="VENUE EXECUTION BIAS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                              <TextBlock Text="{Binding VenueExecutionBiasSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,10" TextWrapping="Wrap" />
-                                              <ItemsControl ItemsSource="{Binding VenueExecutionBiasRows}">
-                                                  <ItemsControl.ItemTemplate>
-                                                      <DataTemplate>
-                                                          <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,8">
-                                                              <StackPanel>
-                                                                  <DockPanel>
-                                                                      <TextBlock Text="{Binding Symbol}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" DockPanel.Dock="Left" />
-                                                                      <TextBlock Text="{Binding AverageBias, StringFormat=Bias {0:F2}x}" Foreground="{Binding BiasColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" DockPanel.Dock="Right" />
-                                                                  </DockPanel>
-                                                                  <TextBlock Text="{Binding StrategyTag, StringFormat=Strategy: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" />
-                                                                  <TextBlock Text="{Binding RegimeTag, StringFormat=Regime: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                  <TextBlock Text="{Binding SessionTag, StringFormat=Session: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                    <TextBlock Text="{Binding VenueExecutionScope, StringFormat=Venue scope: {0}}" Foreground="{StaticResource AccentCyan}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                    <TextBlock Text="{Binding PromotionImpact}" Foreground="{Binding PromotionImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                    <TextBlock Text="{Binding ConcordanceImpact}" Foreground="{Binding ConcordanceImpactColor}" FontSize="8" FontWeight="Bold" Margin="0,4,0,0" />
-                                                                    <TextBlock Text="{Binding ExecutionMode, StringFormat=Mode: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                    <TextBlock Text="{Binding PromotionStage, StringFormat=Stage: {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                                    <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                    <TextBlock Text="{Binding ConcordanceSummary}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                                                  <TextBlock Text="{Binding TotalPnL, StringFormat=PnL {0:N2}}" Foreground="{Binding PnlColor}" FontSize="8" Margin="0,4,0,0" />
-                                                              </StackPanel>
-                                                          </Border>
-                                                      </DataTemplate>
-                                                  </ItemsControl.ItemTemplate>
-                                              </ItemsControl>
-                                          </StackPanel>
-                                      </Border>
-                                  </Grid>
-                              </Grid>
-                          </Border>
+                                <UniformGrid Rows="1" Columns="12" Margin="0,10,0,0" Height="20">
+                                    <Border Background="{StaticResource BuyColor}" Opacity="0.8" Margin="2" CornerRadius="2" ToolTip="JAN: +4%" />
+                                    <Border Background="{StaticResource BuyColor}" Opacity="0.5" Margin="2" CornerRadius="2" ToolTip="FEB: +2%" />
+                                    <Border Background="{StaticResource SellColor}" Opacity="0.9" Margin="2" CornerRadius="2" ToolTip="MAR: -5%" />
+                                    <Border Background="{StaticResource BuyColor}" Opacity="1.0" Margin="2" CornerRadius="2" ToolTip="APR: +8%" />
+                                    <Border Background="{StaticResource BuyColor}" Opacity="0.3" Margin="2" CornerRadius="2" />
+                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
+                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
+                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
+                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
+                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
+                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
+                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
+                                </UniformGrid>
+                            </StackPanel>
+                        </Border>
 
                         <!-- 2. Historical Ledger -->
                         <Border Grid.Row="1" Style="{StaticResource TerminalCardStyle}" Padding="0">
@@ -1349,48 +741,9 @@
                                         <DataGridTextColumn Header="SYMBOL" Binding="{Binding Symbol}" Width="100">
                                             <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="FontWeight" Value="Black"/><Setter Property="Foreground" Value="{StaticResource TextMain}"/></Style></DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
-                                        <DataGridTemplateColumn Header="MODE" Width="70">
-                                            <DataGridTemplateColumn.CellTemplate>
-                                                <DataTemplate><TextBlock Text="{Binding ExecutionMode}" Foreground="{Binding ExecutionModeColor}" FontSize="10" FontWeight="Black" /></DataTemplate>
-                                            </DataGridTemplateColumn.CellTemplate>
-                                        </DataGridTemplateColumn>
                                         <DataGridTemplateColumn Header="SIDE" Width="80">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate><TextBlock Text="{Binding Side}" Foreground="{Binding SideColor}" FontSize="10" FontWeight="Black" /></DataTemplate>
-                                            </DataGridTemplateColumn.CellTemplate>
-                                        </DataGridTemplateColumn>
-                                        <DataGridTemplateColumn Header="VENUE" Width="170">
-                                            <DataGridTemplateColumn.CellTemplate>
-                                                <DataTemplate>
-                                                    <StackPanel>
-                                                        <TextBlock Text="{Binding VenueImpact}" Foreground="{Binding VenueImpactColor}" FontSize="9" FontWeight="Bold" />
-                                                        <TextBlock Text="{Binding StageExplanation}" Foreground="{StaticResource TextMuted}" FontSize="8" TextWrapping="Wrap" />
-                                                    </StackPanel>
-                                                </DataTemplate>
-                                            </DataGridTemplateColumn.CellTemplate>
-                                        </DataGridTemplateColumn>
-                                        <DataGridTemplateColumn Header="ALLOCATOR" Width="180">
-                                            <DataGridTemplateColumn.CellTemplate>
-                                                <DataTemplate>
-                                                    <StackPanel>
-                                                        <TextBlock Text="{Binding AllocatorImpact}" Foreground="{Binding AllocatorImpactColor}" FontSize="9" FontWeight="Bold" />
-                                                        <TextBlock Text="{Binding PromotionStage, StringFormat=Stage {0}}" Foreground="{StaticResource TextMuted}" FontSize="8" />
-                                                    </StackPanel>
-                                                </DataTemplate>
-                                            </DataGridTemplateColumn.CellTemplate>
-                                        </DataGridTemplateColumn>
-                                        <DataGridTemplateColumn Header="EDGE" Width="120">
-                                            <DataGridTemplateColumn.CellTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding EdgeSummary}" Foreground="{StaticResource AccentCyan}" FontSize="9" FontWeight="Bold" />
-                                                </DataTemplate>
-                                            </DataGridTemplateColumn.CellTemplate>
-                                        </DataGridTemplateColumn>
-                                        <DataGridTemplateColumn Header="EXIT" Width="140">
-                                            <DataGridTemplateColumn.CellTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding ExitSummary}" Foreground="{StaticResource TextMain}" FontSize="9" FontWeight="Bold" />
-                                                </DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
                                         <DataGridTextColumn Header="PNL" Binding="{Binding PnL, StringFormat={}{0:N2}}" Width="100">
@@ -1561,19 +914,7 @@
                                 </UniformGrid>
                                 
                                 <TextBlock Text="DIAGNOSTIC ALERTS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,8" />
-                                <Border Background="{StaticResource SurfaceBg}" Padding="16" CornerRadius="4" Margin="0,0,0,8">
-                                    <ItemsControl ItemsSource="{Binding OperatorAuditAlerts}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <StackPanel Margin="0,0,0,8">
-                                                    <TextBlock Text="{Binding Headline}" Foreground="{Binding AccentColor}" FontSize="10" FontWeight="Bold" />
-                                                    <TextBlock Text="{Binding Detail}" Foreground="{StaticResource TextSoft}" FontSize="9" TextWrapping="Wrap" />
-                                                </StackPanel>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </Border>
-                                <Border Background="{StaticResource SurfaceBg}" Padding="16" CornerRadius="4" Visibility="Collapsed">
+                                <Border Background="{StaticResource SurfaceBg}" Padding="16" CornerRadius="4">
                                     <StackPanel>
                                         <TextBlock Text="• API Latency stabilized at 42ms." Foreground="{StaticResource BuyColor}" FontSize="10" Margin="0,0,0,4" />
                                         <TextBlock Text="• WebSocket connection renewed successfully." Foreground="{StaticResource BuyColor}" FontSize="10" Margin="0,0,0,4" />
@@ -1588,13 +929,12 @@
 
             <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}" Background="{StaticResource SurfaceBg}">
                     <StackPanel>
-                        <TextBlock Text="TERMINAL DECK" FontSize="14" FontWeight="Black" Foreground="{StaticResource TextMain}" />
-                        <TextBlock Text="LIVE POSITIONS, RISK, AND FAST ACTIONS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,2,0,12" />
+                        <TextBlock Text="POSITION CONTROL DECK" FontSize="14" FontWeight="Black" Foreground="{StaticResource TextMain}" />
+                        <TextBlock Text="LIVE POSITIONS, RISK, AND COMMANDS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,2,0,12" />
                         
                         <TextBlock Text="NAVIGATION" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                         <WrapPanel Margin="0,6,0,10">
-                            <Button Style="{StaticResource PageNavButtonStyle}" Content="STRATEGY" Tag="Strategy Terminal" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
-                            <Button Style="{StaticResource PageNavButtonStyle}" Content="HFT" Tag="HFT Terminal" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
+                            <Button Style="{StaticResource PageNavButtonStyle}" Content="TERMINAL" Tag="Terminal" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="PORTFOLIO" Tag="Portfolio" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="LAUNCH" Tag="Bot Launcher" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="STUDIO" Tag="Strategy &amp; AI Studio" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
@@ -1656,6 +996,16 @@
                             </ScrollViewer>
                         </Border>
 
+                        <TextBlock Text="PROMPT RUNNER" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                        <Grid Margin="0,6,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding StrategyPrompt, UpdateSourceTrigger=PropertyChanged}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" FontSize="11" />
+                            <Button Grid.Column="1" Command="{Binding SubmitPromptCommand}" Content="APPLY" Background="{StaticResource Accent}" Foreground="White" FontSize="10" FontWeight="Black" BorderThickness="0" Padding="12,0" Margin="6,0,0,0" />
+                        </Grid>
+
                         <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,10">
                             <Grid>
                                 <Grid.ColumnDefinitions>
@@ -1694,13 +1044,6 @@
                             </Grid>
                         </Border>
 
-                        <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,10">
-                            <StackPanel>
-                                <TextBlock Text="WORKFLOW FOCUS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                <TextBlock Text="Use Bot Launcher for strategy templates, funding, and launch planning. Keep this deck for market context, live positions, and emergency actions." Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                            </StackPanel>
-                        </Border>
-
                         <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1,0,0,0" Padding="10" Margin="0,0,0,10">
                             <StackPanel>
                         <TextBlock Text="POSITION RISK STATUS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
@@ -1710,17 +1053,35 @@
                             </StackPanel>
                         </Border>
 
-                        <TextBlock Text="FAST ACTIONS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                        <TextBlock Text="EXECUTION FUNCTIONS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                         <UniformGrid Columns="2" Margin="0,6,0,10">
-                            <Button Style="{StaticResource DeckActionButtonAccentStyle}" Content="START BOT" Command="{Binding StartTradingCommand}" Margin="0,0,6,8" />
+                            <Button Style="{StaticResource DeckActionButtonAccentStyle}" Content="INITIALIZE BOT" Command="{Binding StartTradingCommand}" Margin="0,0,6,8" />
                             <Button Style="{StaticResource DeckActionButtonStyle}" Content="RUN SCAN" Command="{Binding RefreshAnalysisCommand}" Margin="6,0,0,8" />
-                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="TOGGLE MODE" Command="{Binding ToggleTradingModeCommand}" Margin="0,0,6,8" />
-                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="CLOSE ALL" Command="{Binding CloseAllPositionsCommand}" Margin="6,0,0,8" />
-                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="RESET RISK" Command="{Binding ResetKillSwitchCommand}" Margin="0,0,6,0" />
-                            <Button Style="{StaticResource PageNavButtonStyle}" Content="OPEN LAUNCHER" Tag="Bot Launcher" Click="NavigateTabButton_Click" Margin="6,0,0,0" />
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="LOCAL BACKTEST" Command="{Binding RunBacktestCommand}" Margin="0,0,6,8" />
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="GLOBAL BACKTEST" Command="{Binding RunGlobalBacktestCommand}" Margin="6,0,0,8" />
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="CALIBRATE AI" Command="{Binding CalibrateAiCommand}" Margin="0,0,6,0" />
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="VERIFY LINKS" Command="{Binding VerifyConnectionCommand}" Margin="6,0,0,0" />
                         </UniformGrid>
                         
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Button Grid.Column="0" Content="REFRESH" Command="{Binding RefreshAnalysisCommand}" Background="{StaticResource SurfaceBg}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Bold" BorderBrush="{StaticResource BorderColor}" Padding="0,10" Margin="0,0,4,0" />
+                            <Button Grid.Column="1" Content="LIVE / PAPER" Command="{Binding ToggleTradingModeCommand}" Background="{StaticResource SurfaceBg}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Bold" BorderBrush="{StaticResource BorderColor}" Padding="0,10" Margin="4,0,0,0" />
+                        </Grid>
+
+                        <TextBlock Text="OPERATIONS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                        <UniformGrid Columns="2" Margin="0,6,0,10">
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="EXPORT LEDGER" Command="{Binding ExportLedgerCommand}" Margin="0,0,6,8" />
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="SAVE SETTINGS" Command="{Binding SaveSettingsCommand}" Margin="6,0,0,8" />
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="CLOSE ALL" Command="{Binding CloseAllPositionsCommand}" Margin="0,0,6,0" />
+                            <Button Style="{StaticResource DeckActionButtonStyle}" Content="RESET RISK" Command="{Binding ResetKillSwitchCommand}" Margin="6,0,0,0" />
+                        </UniformGrid>
+
                         <Button Content="EMERGENCY SHUTDOWN" Command="{Binding EmergencyStopCommand}" Background="Transparent" Foreground="{StaticResource SellColor}" BorderBrush="{StaticResource SellColor}" BorderThickness="1" Padding="0,10" Margin="0,0,0,8" FontSize="11" FontWeight="Black" />
+                        <Button Content="RESET KILLSWITCH" Command="{Binding ResetKillSwitchCommand}" Background="Transparent" Foreground="{StaticResource BuyColor}" BorderBrush="{StaticResource BuyColor}" BorderThickness="1" Padding="0,10" FontSize="11" FontWeight="Black" />
                     </StackPanel>
             </Border>
         </Grid>

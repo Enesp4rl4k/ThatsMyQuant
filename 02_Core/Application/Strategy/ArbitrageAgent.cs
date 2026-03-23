@@ -40,22 +40,42 @@ public class ArbitrageAgent : INotificationHandler<Signal>
 
     public Task Handle(Signal notification, CancellationToken cancellationToken)
     {
-        // Zero-allocation proxy: avoids generating unmapped object[] arrays on the heap
-        int idx = notification.Symbol.IndexOf('-');
-        if (idx <= 0) return Task.CompletedTask;
+        if (!TryExtractSymbolInfo(notification.Symbol, out var baseSymbol, out var exchange))
+            return Task.CompletedTask;
 
-        string baseSymbol = notification.Symbol.Substring(0, idx);
-        string exchange = notification.Symbol.Substring(idx + 1);
-
-        // O(1) lookup preventing string closure captures
         var symbolBook = PricesBySymbol.GetOrAdd(baseSymbol, static _ => new ConcurrentDictionary<string, PricePoint>());
-
         long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        double currentPrice = (double)notification.Price;
 
         // Update the current exchange safely
-        symbolBook[exchange] = new PricePoint((double)notification.Price, nowMs);
+        symbolBook[exchange] = new PricePoint(currentPrice, nowMs);
         
-        // Compare ONLY within the same symbol. O(K) complexity where K is number of tracked exchanges (e.g. 5).
+        EvaluateArbitrageOpportunities(baseSymbol, exchange, currentPrice, nowMs, symbolBook);
+
+        return Task.CompletedTask;
+    }
+
+    private static bool TryExtractSymbolInfo(string symbol, out string baseSymbol, out string exchange)
+    {
+        baseSymbol = string.Empty;
+        exchange = string.Empty;
+
+        ReadOnlySpan<char> span = symbol.AsSpan();
+        int idx = span.IndexOf('-');
+        if (idx <= 0) return false;
+
+        baseSymbol = span[..idx].ToString();
+        exchange = span[(idx + 1)..].ToString();
+        return true;
+    }
+
+    private void EvaluateArbitrageOpportunities(
+        string baseSymbol, 
+        string exchange, 
+        double currentPrice, 
+        long nowMs, 
+        ConcurrentDictionary<string, PricePoint> symbolBook)
+    {
         foreach (var kvp in symbolBook)
         {
             if (kvp.Key == exchange) continue;
@@ -66,28 +86,42 @@ public class ArbitrageAgent : INotificationHandler<Signal>
             if (Math.Abs(nowMs - otherPoint.TimestampMs) > 100) continue; 
 
             double otherPrice = otherPoint.Price;
-            double price = (double)notification.Price;
-
-            double spread = Math.Abs(price - otherPrice);
-            double spreadPercent = (spread / otherPrice) * 100.0;
+            double spreadPercent = CalculateSpreadPercent(currentPrice, otherPrice);
 
             // Enterprise thresholds: Maker/Taker fees (0.05% x 2) + Slippage Buffer + Alpha edge
-            double minEdge = 0.10; 
-            double requiredProfit = 0.05;
+            const double MinEdge = 0.10; 
+            const double RequiredProfit = 0.05;
 
-            if (spreadPercent > (minEdge + requiredProfit)) 
+            if (IsEligibleForArbitrage(spreadPercent, MinEdge, RequiredProfit)) 
             {
-                // Institutional cross-venue execution directive
-                string action = price < otherPrice 
-                    ? $"BUY {exchange} / SELL {kvp.Key}"
-                    : $"SELL {exchange} / BUY {kvp.Key}";
-                
-                _logger.LogInformation($"[ARB DETECTED] {baseSymbol} spread is {spreadPercent:F3}%. Action: {action}.");
-                
-                // Here we would emit a paired TradeDecision for the Execution Router
+                LogArbitrageDetection(baseSymbol, exchange, kvp.Key, currentPrice, otherPrice, spreadPercent);
             }
         }
+    }
 
-        return Task.CompletedTask;
+    private static double CalculateSpreadPercent(double priceA, double priceB)
+    {
+        double spread = Math.Abs(priceA - priceB);
+        return (spread / priceB) * 100.0;
+    }
+
+    private static bool IsEligibleForArbitrage(double spreadPercent, double minEdge, double requiredProfit)
+    {
+        return spreadPercent > (minEdge + requiredProfit);
+    }
+
+    private void LogArbitrageDetection(
+        string baseSymbol, 
+        string exchange, 
+        string otherExchange, 
+        double price, 
+        double otherPrice, 
+        double spreadPercent)
+    {
+        string action = price < otherPrice 
+            ? $"BUY {exchange} / SELL {otherExchange}"
+            : $"SELL {exchange} / BUY {otherExchange}";
+        
+        _logger.LogInformation($"[ARB DETECTED] {baseSymbol} spread is {spreadPercent:F3}%. Action: {action}.");
     }
 }

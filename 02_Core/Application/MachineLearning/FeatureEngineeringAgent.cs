@@ -22,6 +22,7 @@ public class FeatureEngineeringAgent
     private readonly OnlineMathHelper _rsi14;
     private readonly OnlineMathHelper _emaFast;
     private readonly TickRingBuffer _movingAverageBuffer;
+    private readonly object _syncLock = new();
 
     private double _lastProcessedPrice;
 
@@ -46,19 +47,36 @@ public class FeatureEngineeringAgent
         _emaFast.UpdateEma(price);
         _movingAverageBuffer.Add(price);
 
-        // Map mathematical properties linearly
-        CurrentTensor[0] = (float)(rsi / 100.0); // Normalize generic percentages 
-        CurrentTensor[1] = (float)(price / _emaFast.Ema); // EMA Deviation natively bounds around 1.0 
-        CurrentTensor[2] = (float)(price / _movingAverageBuffer.MovingAverage); // Smoothing moving-average bias
-        
-        // Pseudo stubbing remainder array values indicating relative structural distances without arrays
-        CurrentTensor[3] = 0f;  
-        CurrentTensor[4] = 0f;
+        lock (_syncLock)
+        {
+            // Map mathematical properties linearly
+            CurrentTensor[0] = (float)(rsi / 100.0); // Normalize generic percentages 
+            CurrentTensor[1] = (float)(price / _emaFast.Ema); // EMA Deviation natively bounds around 1.0 
+            CurrentTensor[2] = (float)(price / _movingAverageBuffer.MovingAverage); // Smoothing moving-average bias
+            
+            // Populate Momentum (Price change over the buffer window)
+            // CurrentTensor[3] is reserved for Order Flow Imbalance (injected via ApplyOrderFlowImbalance)
+            double oldestPrice = _movingAverageBuffer.OldestValue;
+            CurrentTensor[4] = oldestPrice > 0 ? (float)(price / oldestPrice) : 1.0f;
+        }
+    }
+
+    public float[] GetSnapshot()
+    {
+        var snapshot = new float[5];
+        lock (_syncLock)
+        {
+            Array.Copy(CurrentTensor, snapshot, 5);
+        }
+        return snapshot;
     }
 
     public void ApplyOrderFlowImbalance(double imbalance)
     {
-        // Hard-map structural OrderFlow Imbalance (Between -1.0 and 1.0) directly onto Dimension 3.
-        CurrentTensor[3] = (float)imbalance;
+        lock (_syncLock)
+        {
+            // Hard-map structural OrderFlow Imbalance (Between -1.0 and 1.0) directly onto Dimension 3.
+            CurrentTensor[3] = (float)imbalance;
+        }
     }
 }

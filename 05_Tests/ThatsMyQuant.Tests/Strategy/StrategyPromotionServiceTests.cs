@@ -10,12 +10,12 @@ namespace ThatsMyQuant.Tests.Strategy;
 public class StrategyPromotionServiceTests
 {
     [Fact]
-    public void Evaluate_ShouldReduceSize_WhenPaperReadyButLiveSampleIsThin()
+    public async Task Evaluate_ShouldReduceSize_WhenPaperReadyButLiveSampleIsThin()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult());
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(120m),
             CreatePaperPosition(110m),
@@ -42,12 +42,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldBoost_WhenExactBucketAndLiveExitPolicyAreHealthy()
+    public async Task EvaluateFinalAllocatorBias_ShouldBoost_WhenExactBucketAndLiveExitPolicyAreHealthy()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
             CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
@@ -79,12 +79,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldTrim_WhenLiveExitPolicyDriftsFromPaper()
+    public async Task EvaluateFinalAllocatorBias_ShouldTrim_WhenLiveExitPolicyDriftsFromPaper()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(24m, exitPolicyTag: "TrendRunner"),
             CreatePaperPosition(22m, exitPolicyTag: "TrendRunner"),
@@ -113,12 +113,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldIncludeExactBucketLearning_WhenExactBucketIsHealthy()
+    public async Task EvaluateFinalAllocatorBias_ShouldIncludeExactBucketLearning_WhenExactBucketIsHealthy()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
             CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
@@ -150,12 +150,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulBoostedAllocations()
+    public async Task EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulBoostedAllocations()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
             CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
@@ -187,12 +187,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldCutBackAfterBoostedAllocationsUnderperform()
+    public async Task EvaluateFinalAllocatorBias_ShouldCutBackAfterBoostedAllocationsUnderperform()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(112m, exitPolicyTag: "TrendRunner"),
             CreatePaperPosition(104m, exitPolicyTag: "TrendRunner"),
@@ -222,12 +222,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldBoost_WhenVenueExecutionIsClean()
+    public async Task EvaluateFinalAllocatorBias_ShouldBoost_WhenVenueExecutionIsClean()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
             CreatePaperPosition(16m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
@@ -259,12 +259,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldTrim_WhenVenueExecutionIsDegraded()
+    public async Task EvaluateFinalAllocatorBias_ShouldTrim_WhenVenueExecutionIsDegraded()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", strategyTag: "TrendConfluence", regimeTag: "Trending", exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", strategyTag: "TrendConfluence", regimeTag: "Trending", exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(8m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
             CreatePaperPosition(7m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
@@ -296,12 +296,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulVenueBoosts()
+    public async Task EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulVenueBoosts()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
             CreatePaperPosition(16m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
@@ -333,12 +333,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldCutBackAfterVenueBoostsUnderperform()
+    public async Task EvaluateFinalAllocatorBias_ShouldCutBackAfterVenueBoostsUnderperform()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(20m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
             CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "BTC-USD"),
@@ -370,12 +370,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void EvaluateFinalAllocatorBias_ShouldApplyConcordanceOverlay_WhenExactBucketAndVenueBothSupport()
+    public async Task EvaluateFinalAllocatorBias_ShouldApplyConcordanceOverlay_WhenExactBucketAndVenueBothSupport()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(18m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
             CreatePaperPosition(16m, exitPolicyTag: "TrendRunner", symbol: "EURUSD="),
@@ -409,12 +409,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBoostSize_WhenExactSymbolSessionBucketIsScaledLiveAndHealthy()
+    public async Task Evaluate_ShouldBoostSize_WhenExactSymbolSessionBucketIsScaledLiveAndHealthy()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult());
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(112m),
             CreatePaperPosition(104m),
@@ -447,12 +447,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldDemote_WhenExactBucketLearningShowsExactOutcomesAreSoft()
+    public async Task Evaluate_ShouldDemote_WhenExactBucketLearningShowsExactOutcomesAreSoft()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult());
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(8m),
             CreatePaperPosition(7m),
@@ -481,12 +481,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBlock_WhenPaperLiveDriftIsSevere()
+    public async Task Evaluate_ShouldBlock_WhenPaperLiveDriftIsSevere()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult());
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(120m),
             CreatePaperPosition(90m),
@@ -515,12 +515,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBlock_WhenExitPolicyDriftIsSevere()
+    public async Task Evaluate_ShouldBlock_WhenExitPolicyDriftIsSevere()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(24m, exitPolicyTag: "TrendRunner"),
             CreatePaperPosition(22m, exitPolicyTag: "TrendRunner"),
@@ -547,12 +547,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldReduceSize_WhenExitPolicyDriftIsElevated()
+    public async Task Evaluate_ShouldReduceSize_WhenExitPolicyDriftIsElevated()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(16m, exitPolicyTag: "TrendRunner"),
             CreatePaperPosition(15m, exitPolicyTag: "TrendRunner"),
@@ -581,12 +581,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBlock_HftBucket_WhenLatencyBudgetIsBlown()
+    public async Task Evaluate_ShouldBlock_HftBucket_WhenLatencyBudgetIsBlown()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult("BTC-USD", "HftMicroEdge", "Volatile"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult("BTC-USD", "HftMicroEdge", "Volatile"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(80m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
             CreatePaperPosition(85m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
@@ -618,12 +618,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBlock_WhenLiveAverageEdgeScoreIsTooWeak()
+    public async Task Evaluate_ShouldBlock_WhenLiveAverageEdgeScoreIsTooWeak()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult());
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(120m),
             CreatePaperPosition(110m),
@@ -650,12 +650,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBlock_WhenHighEdgeTradesStillLoseDespiteOkayOverallBucket()
+    public async Task Evaluate_ShouldBlock_WhenHighEdgeTradesStillLoseDespiteOkayOverallBucket()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult());
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(120m),
             CreatePaperPosition(110m),
@@ -682,12 +682,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldDemoteToPaper_WhenVenueBoostsKeepUnderperforming()
+    public async Task Evaluate_ShouldDemoteToPaper_WhenVenueBoostsKeepUnderperforming()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(8m, symbol: "BTC-USD"),
             CreatePaperPosition(7m, symbol: "BTC-USD"),
@@ -719,12 +719,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldForceLiveProbe_WhenTrimmedVenueExecutionStillOutperforms()
+    public async Task Evaluate_ShouldForceLiveProbe_WhenTrimmedVenueExecutionStillOutperforms()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD="));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD="));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(18m, symbol: "EURUSD="),
             CreatePaperPosition(16m, symbol: "EURUSD="),
@@ -757,12 +757,12 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBlock_WhenExactBucketAndVenueAreBothWeak()
+    public async Task Evaluate_ShouldBlock_WhenExactBucketAndVenueAreBothWeak()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(8m, symbol: "BTC-USD"),
             CreatePaperPosition(7m, symbol: "BTC-USD"),
@@ -794,11 +794,11 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
-    public void Evaluate_ShouldBlock_WhenBacktestLadderGateIsMissing()
+    public async Task Evaluate_ShouldBlock_WhenBacktestLadderGateIsMissing()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new StrategyPromotionService(store);
-        service.RecordPaperState(new[]
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition(120m),
             CreatePaperPosition(110m),
@@ -933,8 +933,8 @@ public class StrategyPromotionServiceTests
     {
         private StrategyPerformanceState _state = new();
 
-        public StrategyPerformanceState Load() => _state;
+        public Task<StrategyPerformanceState> LoadAsync() => Task.FromResult(_state);
 
-        public void Save(StrategyPerformanceState state) => _state = state;
+        public Task SaveAsync(StrategyPerformanceState state) { _state = state; return Task.CompletedTask; }
     }
 }

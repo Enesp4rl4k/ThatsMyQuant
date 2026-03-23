@@ -5,8 +5,8 @@ namespace ThatsMyQuant.Application.Strategy;
 
 public interface IStrategyPerformanceStore
 {
-    StrategyPerformanceState Load();
-    void Save(StrategyPerformanceState state);
+    Task<StrategyPerformanceState> LoadAsync();
+    Task SaveAsync(StrategyPerformanceState state);
 }
 
 public sealed class JsonStrategyPerformanceStore : IStrategyPerformanceStore
@@ -23,7 +23,7 @@ public sealed class JsonStrategyPerformanceStore : IStrategyPerformanceStore
         _filePath = Path.Combine(root, "engine-strategy-performance.json");
     }
 
-    public StrategyPerformanceState Load()
+    public async Task<StrategyPerformanceState> LoadAsync()
     {
         try
         {
@@ -32,7 +32,7 @@ public sealed class JsonStrategyPerformanceStore : IStrategyPerformanceStore
                 return new StrategyPerformanceState();
             }
 
-            var json = File.ReadAllText(_filePath);
+            var json = await File.ReadAllTextAsync(_filePath);
             return JsonSerializer.Deserialize<StrategyPerformanceState>(json, JsonOptions)
                    ?? new StrategyPerformanceState();
         }
@@ -42,12 +42,12 @@ public sealed class JsonStrategyPerformanceStore : IStrategyPerformanceStore
         }
     }
 
-    public void Save(StrategyPerformanceState state)
+    public async Task SaveAsync(StrategyPerformanceState state)
     {
         try
         {
             var json = JsonSerializer.Serialize(state, JsonOptions);
-            File.WriteAllText(_filePath, json);
+            await File.WriteAllTextAsync(_filePath, json);
         }
         catch
         {
@@ -55,6 +55,7 @@ public sealed class JsonStrategyPerformanceStore : IStrategyPerformanceStore
         }
     }
 }
+
 
 public sealed class StrategyPerformanceState
 {

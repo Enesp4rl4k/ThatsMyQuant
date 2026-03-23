@@ -30,19 +30,17 @@ public class QuantDbContext : DbContext
             entity.Property(s => s.StrategyTag).HasMaxLength(50);
             entity.Property(s => s.RegimeTag).HasMaxLength(30);
 
-            // 🚀 GC DESTRUCTION: Erase dynamic Dictionary JSON runtime abstractions from target architecture
-            entity.Ignore(s => s.Metadata);
+            // Store Dictionary<string,string> as JSON column with a comparer
+            entity.Property(s => s.Metadata)
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, (JsonSerializerOptions?)null) ?? new())
+                .Metadata.SetValueComparer(new ValueComparer<Dictionary<string, string>>(
+                    (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
+                    c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                    c => c.ToDictionary(entry => entry.Key, entry => entry.Value)));
             
-            // Native FPU Database bounds mapping
-            entity.Property(s => s.OrderFlowImbalance);
-            entity.Property(s => s.BestBid).HasPrecision(18, 8);
-            entity.Property(s => s.BestAsk).HasPrecision(18, 8);
-            entity.Property(s => s.WallAgeMs);
-            
-            // Native bitwise / enumeration execution states stored explicitly over String-Concatenation models
-            entity.Property(s => s.ExecutionAction).HasConversion<string>().HasMaxLength(40);
-            entity.Property(s => s.PriceActionSignal).HasConversion<string>().HasMaxLength(40);
-            entity.Property(s => s.ReasonFlags).HasConversion<string>().HasMaxLength(255);
+            entity.Property(s => s.Metadata).HasColumnType("TEXT");
 
             entity.HasIndex(s => s.Symbol);
             entity.HasIndex(s => s.Timestamp);
@@ -57,21 +55,6 @@ public class QuantDbContext : DbContext
             entity.Property(t => t.EntryPrice).HasPrecision(18, 8);
             entity.Property(t => t.ExitPrice).HasPrecision(18, 8);
             entity.Property(t => t.Quantity).HasPrecision(18, 8);
-            entity.Property(t => t.EdgeScore).HasPrecision(18, 8);
-            entity.Property(t => t.EdgeBand).HasMaxLength(20);
-            entity.Property(t => t.ExactBucketImpactLabel).HasMaxLength(80);
-            entity.Property(t => t.ExactBucketSummary).HasMaxLength(200);
-            entity.Property(t => t.FinalAllocatorBias).HasPrecision(18, 8);
-            entity.Property(t => t.FinalAllocatorScope).HasMaxLength(50);
-            entity.Property(t => t.VenueExecutionBias).HasPrecision(18, 8);
-            entity.Property(t => t.VenueExecutionScope).HasMaxLength(50);
-            entity.Property(t => t.VenueImpactLabel).HasMaxLength(80);
-            entity.Property(t => t.ConcordanceImpactLabel).HasMaxLength(80);
-            entity.Property(t => t.ConcordanceSummary).HasMaxLength(240);
-            entity.Property(t => t.ExecutionMode).HasMaxLength(20);
-            entity.Property(t => t.PromotionStage).HasMaxLength(20);
-            entity.Property(t => t.EntrySlippagePercent).HasPrecision(18, 8);
-            entity.Property(t => t.ExecutionLatencyMs);
             entity.Property(t => t.Side).HasConversion<string>().HasMaxLength(10);
             entity.Property(t => t.Status).HasConversion<string>().HasMaxLength(20);
             entity.Property(t => t.StrategyTag).HasMaxLength(50);

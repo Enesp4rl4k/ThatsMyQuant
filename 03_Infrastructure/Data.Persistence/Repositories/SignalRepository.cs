@@ -3,20 +3,14 @@ using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
 using ThatsMyQuant.Domain.Interfaces;
 using ThatsMyQuant.Infrastructure.Persistence;
-using ThatsMyQuant.Infrastructure.Services;
 
 namespace ThatsMyQuant.Infrastructure.Repositories;
 
 public class SignalRepository : ISignalRepository
 {
     private readonly QuantDbContext _db;
-    private readonly SignalWriterChannel _writer;
 
-    public SignalRepository(QuantDbContext db, SignalWriterChannel writer) 
-    {
-        _db = db;
-        _writer = writer;
-    }
+    public SignalRepository(QuantDbContext db) => _db = db;
 
     public async Task<Signal?> GetByIdAsync(Guid id)
         => await _db.Signals.FindAsync(id);
@@ -36,14 +30,12 @@ public class SignalRepository : ISignalRepository
 
     public async Task AddAsync(Signal signal)
     {
-        // 🚀 O(1) LOCK-FREE HOT PATH: Signal physically escapes the executing thread directly into local generic RAM
-        _writer.TryWrite(signal);
-        await Task.CompletedTask;
+        await _db.Signals.AddAsync(signal);
+        await _db.SaveChangesAsync();
     }
 
     public async Task UpdateAsync(Signal signal)
     {
-        // Updates are typically manual and sparse; native EF execution is acceptable here
         _db.Signals.Update(signal);
         await _db.SaveChangesAsync();
     }

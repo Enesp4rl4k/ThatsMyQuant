@@ -17,7 +17,12 @@ public sealed class StrategyPromotionService
     {
         _store = store;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
-        _state = _store.Load();
+        _state = new StrategyPerformanceState();
+    }
+
+    public async Task InitializeAsync()
+    {
+        _state = await _store.LoadAsync();
     }
 
     public PromotionGuardResult Evaluate(Signal signal, TradeDecision decision, IReadOnlyList<Trade> liveTrades)
@@ -358,11 +363,16 @@ public sealed class StrategyPromotionService
         }
     }
 
-    public void RecordBacktestState(BacktestResult result)
+    public async Task RecordBacktestState(BacktestResult result)
     {
+        // ... (preserving logic)
+        // Note: keeping lock for state modification, but calling persist after
+        List<StrategyBucketPerformanceSnapshot> snapshots;
+        List<ExitPolicyPerformanceSnapshot> exitPolicySnapshots;
+
         lock (_sync)
         {
-            var snapshots = result.Trades
+            snapshots = result.Trades
                 .GroupBy(trade => new
                 {
                     result.Symbol,
@@ -389,43 +399,15 @@ public sealed class StrategyPromotionService
                         ProfitFactor = ComputeProfitFactor(pnlValues),
                         ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
                         TotalPnL = pnlValues.Sum(),
-                    AverageEdgeScore = 0m,
-                    HighEdgeTrades = 0,
-                    HighEdgeWinRate = 0,
-                    HighEdgeProfitFactor = 0,
-                    HighEdgeExpectedValue = 0m,
-                    HighEdgeTotalPnL = 0m,
-                    AverageFinalAllocatorBias = 0m,
-                    BoostedAllocatorTrades = 0,
-                    BoostedAllocatorWinRate = 0,
-                    BoostedAllocatorProfitFactor = 0,
-                    BoostedAllocatorExpectedValue = 0m,
-                    TrimmedAllocatorTrades = 0,
-                    TrimmedAllocatorWinRate = 0,
-                    TrimmedAllocatorProfitFactor = 0,
-                    TrimmedAllocatorExpectedValue = 0m,
-                    AverageVenueExecutionBias = 0m,
-                    BoostedVenueExecutionTrades = 0,
-                    BoostedVenueExecutionWinRate = 0,
-                    BoostedVenueExecutionProfitFactor = 0,
-                    BoostedVenueExecutionExpectedValue = 0m,
-                    TrimmedVenueExecutionTrades = 0,
-                    TrimmedVenueExecutionWinRate = 0,
-                    TrimmedVenueExecutionProfitFactor = 0,
-                    TrimmedVenueExecutionExpectedValue = 0m,
-                    AverageEntrySlippagePercent = 0m,
-                    AverageExecutionLatencyMs = 0,
                         BacktestPass = backtestPass,
-                        PaperPass = false,
-                        LiveProbePass = false,
-                        ScaledLiveEligible = false,
+                        RecordedAtUtc = DateTime.UtcNow,
                         PromotionReady = backtestPass,
-                        PromotionStage = "Backtest",
-                        RecordedAtUtc = DateTime.UtcNow
+                        PromotionStage = "Backtest"
                     };
                 })
                 .ToList();
-            var exitPolicySnapshots = result.Trades
+
+            exitPolicySnapshots = result.Trades
                 .GroupBy(trade => new
                 {
                     result.Symbol,
@@ -462,24 +444,23 @@ public sealed class StrategyPromotionService
                 _state.BacktestBuckets.Add(snapshot);
             }
             UpsertExitPolicySnapshots(exitPolicySnapshots);
-
-            _state.BacktestBuckets = _state.BacktestBuckets
-                .OrderByDescending(snapshot => snapshot.RecordedAtUtc)
-                .ToList();
-
-            Persist();
         }
+
+        await PersistAsync();
     }
 
-    public void RecordPaperState(IEnumerable<PaperPosition> closedPositions)
+    public async Task RecordPaperState(IEnumerable<PaperPosition> closedPositions)
     {
+        List<StrategyBucketPerformanceSnapshot> paperSnapshots;
+        List<ExitPolicyPerformanceSnapshot> exitPolicySnapshots;
+
+        var closedList = closedPositions
+            .Where(position => position.ExitTime.HasValue)
+            .ToList();
+
         lock (_sync)
         {
-            var closedList = closedPositions
-                .Where(position => position.ExitTime.HasValue)
-                .ToList();
-
-            _state.PaperBuckets = closedList
+            paperSnapshots = closedList
                 .GroupBy(position => new
                 {
                     position.Symbol,
@@ -509,72 +490,55 @@ public sealed class StrategyPromotionService
                         ProfitFactor = ComputeProfitFactor(pnlValues),
                         ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
                         TotalPnL = pnlValues.Sum(),
-                        AverageEdgeScore = 0m,
-                        HighEdgeTrades = 0,
-                        HighEdgeWinRate = 0,
-                        HighEdgeProfitFactor = 0,
-                        HighEdgeExpectedValue = 0m,
-                        HighEdgeTotalPnL = 0m,
-                        AverageFinalAllocatorBias = 0m,
-                        BoostedAllocatorTrades = 0,
-                        BoostedAllocatorWinRate = 0,
-                        BoostedAllocatorProfitFactor = 0,
-                        BoostedAllocatorExpectedValue = 0m,
-                        TrimmedAllocatorTrades = 0,
-                        TrimmedAllocatorWinRate = 0,
-                        TrimmedAllocatorProfitFactor = 0,
-                        TrimmedAllocatorExpectedValue = 0m,
-                        AverageVenueExecutionBias = 0m,
-                        BoostedVenueExecutionTrades = 0,
-                        BoostedVenueExecutionWinRate = 0,
-                        BoostedVenueExecutionProfitFactor = 0,
-                        BoostedVenueExecutionExpectedValue = 0m,
-                        TrimmedVenueExecutionTrades = 0,
-                        TrimmedVenueExecutionWinRate = 0,
-                        TrimmedVenueExecutionProfitFactor = 0,
-                        TrimmedVenueExecutionExpectedValue = 0m,
-                        AverageEntrySlippagePercent = 0m,
-                        AverageExecutionLatencyMs = 0,
                         BacktestPass = backtestPass,
                         PaperPass = paperPass,
-                        LiveProbePass = false,
-                        ScaledLiveEligible = false,
                         PromotionReady = paperPass,
                         PromotionStage = paperPass ? "Paper" : "Backtest",
                         RecordedAtUtc = DateTime.UtcNow
                     };
                 })
-                .OrderByDescending(snapshot => snapshot.RecordedAtUtc)
                 .ToList();
-            UpsertExitPolicySnapshots(
-                closedList
-                    .GroupBy(position => new
-                    {
-                        position.Symbol,
-                        position.StrategyTag,
-                        position.RegimeTag,
-                        SessionTag = ResolveSessionBucket(position.ExitTime!.Value),
-                        ExitPolicyTag = string.IsNullOrWhiteSpace(position.ExitPolicyTag) ? "TrendRunner" : position.ExitPolicyTag,
-                        ExecutionMode = string.IsNullOrWhiteSpace(position.ExecutionMode) ? "PAPER" : position.ExecutionMode
-                    })
-                    .Select(group => new ExitPolicyPerformanceSnapshot
-                    {
-                        Symbol = group.Key.Symbol,
-                        StrategyTag = group.Key.StrategyTag,
-                        RegimeTag = group.Key.RegimeTag,
-                        SessionTag = group.Key.SessionTag,
-                        ExitPolicyTag = group.Key.ExitPolicyTag,
-                        ExecutionMode = group.Key.ExecutionMode,
-                        Trades = group.Count(),
-                        WinRate = group.Count() == 0 ? 0 : group.Count(item => item.RealizedPnL > 0) * 100.0 / group.Count(),
-                        ProfitFactor = ComputeProfitFactor(group.Select(item => item.RealizedPnL)),
-                        ExpectedValue = group.Any() ? group.Average(item => item.RealizedPnL) : 0m,
-                        TotalPnL = group.Sum(item => item.RealizedPnL),
-                        RecordedAtUtc = DateTime.UtcNow
-                    }));
 
-            Persist();
+            exitPolicySnapshots = closedList
+                .GroupBy(position => new
+                {
+                    position.Symbol,
+                    position.StrategyTag,
+                    position.RegimeTag,
+                    SessionTag = ResolveSessionBucket(position.ExitTime!.Value),
+                    ExitPolicyTag = string.IsNullOrWhiteSpace(position.ExitPolicyTag) ? "TrendRunner" : position.ExitPolicyTag,
+                    ExecutionMode = string.IsNullOrWhiteSpace(position.ExecutionMode) ? "PAPER" : position.ExecutionMode
+                })
+                .Select(group => new ExitPolicyPerformanceSnapshot
+                {
+                    Symbol = group.Key.Symbol,
+                    StrategyTag = group.Key.StrategyTag,
+                    RegimeTag = group.Key.RegimeTag,
+                    SessionTag = group.Key.SessionTag,
+                    ExitPolicyTag = group.Key.ExitPolicyTag,
+                    ExecutionMode = group.Key.ExecutionMode,
+                    Trades = group.Count(),
+                    WinRate = group.Count() == 0 ? 0 : group.Count(item => item.RealizedPnL > 0) * 100.0 / group.Count(),
+                    ProfitFactor = ComputeProfitFactor(group.Select(item => item.RealizedPnL)),
+                    ExpectedValue = group.Any() ? group.Average(item => item.RealizedPnL) : 0m,
+                    TotalPnL = group.Sum(item => item.RealizedPnL),
+                    RecordedAtUtc = DateTime.UtcNow
+                })
+                .ToList();
+
+            foreach (var snapshot in paperSnapshots)
+            {
+                _state.PaperBuckets.RemoveAll(existing =>
+                    string.Equals(existing.Symbol, snapshot.Symbol, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.StrategyTag, snapshot.StrategyTag, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.RegimeTag, snapshot.RegimeTag, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.SessionTag, snapshot.SessionTag, StringComparison.OrdinalIgnoreCase));
+                _state.PaperBuckets.Add(snapshot);
+            }
+            UpsertExitPolicySnapshots(exitPolicySnapshots);
         }
+
+        await PersistAsync();
     }
 
     public StrategyPerformanceState GetState()
@@ -713,14 +677,22 @@ public sealed class StrategyPromotionService
                     TotalPnL = group.Sum(GetLivePnl),
                     RecordedAtUtc = DateTime.UtcNow
                 }));
-
-        Persist();
     }
 
-    private void Persist()
+    public async Task RecordLiveState(IEnumerable<Trade> closedTrades)
+    {
+        var tradeList = closedTrades.ToList();
+        lock (_sync)
+        {
+            RefreshLiveState(tradeList);
+        }
+        await PersistAsync();
+    }
+
+    private async Task PersistAsync()
     {
         _state.RecordedAtUtc = DateTime.UtcNow;
-        _store.Save(_state);
+        await _store.SaveAsync(_state);
     }
 
     private void UpsertExitPolicySnapshots(IEnumerable<ExitPolicyPerformanceSnapshot> snapshots)

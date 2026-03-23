@@ -2,6 +2,7 @@ namespace ThatsMyQuant.Dashboard.Services;
 
 public interface IStrategyHealthStore
 {
-    IReadOnlyList<StrategyHealthSnapshot> Load();
-    void Save(IEnumerable<StrategyHealthSnapshot> snapshots);
+    Task<IReadOnlyList<StrategyHealthSnapshot>> LoadAsync();
+    Task SaveAsync(IEnumerable<StrategyHealthSnapshot> snapshots);
 }
+

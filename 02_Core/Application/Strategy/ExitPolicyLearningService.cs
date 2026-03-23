@@ -6,20 +6,29 @@ namespace ThatsMyQuant.Application.Strategy;
 public sealed class ExitPolicyLearningService
 {
     private readonly IStrategyPerformanceStore _store;
-    private readonly object _sync = new();
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
     private StrategyPerformanceState _state;
+
 
     public ExitPolicyLearningService(IStrategyPerformanceStore store)
     {
         _store = store;
-        _state = _store.Load();
+        _state = new StrategyPerformanceState();
     }
 
-    public void RecordBacktestState(BacktestResult result)
+    public async Task InitializeAsync()
     {
-        lock (_sync)
+        _state = await _store.LoadAsync();
+    }
+
+
+    public async Task RecordBacktestState(BacktestResult result)
+    {
+        await _semaphore.WaitAsync();
+        try
         {
-            UpsertSnapshots(
+            await UpsertSnapshots(
+
                 result.Trades.GroupBy(trade => new
                 {
                     result.Symbol,
@@ -45,13 +54,20 @@ public sealed class ExitPolicyLearningService
                     RecordedAtUtc = DateTime.UtcNow
                 }));
         }
+        finally
+        {
+            _semaphore.Release();
+        }
     }
 
-    public void RecordPaperState(IEnumerable<PaperPosition> closedPositions)
+
+    public async Task RecordPaperState(IEnumerable<PaperPosition> closedPositions)
     {
-        lock (_sync)
+        await _semaphore.WaitAsync();
+        try
         {
-            UpsertSnapshots(
+            await UpsertSnapshots(
+
                 closedPositions
                     .Where(position => position.ExitTime.HasValue)
                     .GroupBy(position => new
@@ -79,13 +95,20 @@ public sealed class ExitPolicyLearningService
                         RecordedAtUtc = DateTime.UtcNow
                     }));
         }
+        finally
+        {
+            _semaphore.Release();
+        }
     }
 
-    public void RecordLiveState(IEnumerable<Trade> closedTrades)
+
+    public async Task RecordLiveState(IEnumerable<Trade> closedTrades)
     {
-        lock (_sync)
+        await _semaphore.WaitAsync();
+        try
         {
-            UpsertSnapshots(
+            await UpsertSnapshots(
+
                 closedTrades
                     .Where(trade => trade.IsClosed)
                     .GroupBy(trade => new
@@ -113,13 +136,20 @@ public sealed class ExitPolicyLearningService
                         RecordedAtUtc = DateTime.UtcNow
                     }));
         }
+        finally
+        {
+            _semaphore.Release();
+        }
     }
 
-    public TradeDecision ApplyLearnedPolicy(Signal signal, TradeDecision decision, decimal currentPrice, decimal atr)
+
+    public async Task<TradeDecision> ApplyLearnedPolicy(Signal signal, TradeDecision decision, decimal currentPrice, decimal atr)
     {
-        lock (_sync)
+        await _semaphore.WaitAsync();
+        try
         {
-            _state = _store.Load();
+            _state = await _store.LoadAsync();
+
             var recommendation = RecommendPolicy(signal, decision);
             if (recommendation is not { } learnedPolicy ||
                 string.Equals(learnedPolicy.ExitPolicyTag, decision.ExitPolicyTag, StringComparison.OrdinalIgnoreCase))
@@ -133,13 +163,20 @@ public sealed class ExitPolicyLearningService
                 Reasoning = $"{profiledDecision.Reasoning} | Exit learning promoted {learnedPolicy.ExitPolicyTag} ({learnedPolicy.MatchScope}, score {learnedPolicy.Score:F1}, sample {learnedPolicy.WeightedTrades:F1})."
             };
         }
+        finally
+        {
+            _semaphore.Release();
+        }
     }
 
-    public TradeDecision ApplyLiveSizingConfidence(Signal signal, TradeDecision decision)
+
+    public async Task<TradeDecision> ApplyLiveSizingConfidence(Signal signal, TradeDecision decision)
     {
-        lock (_sync)
+        await _semaphore.WaitAsync();
+        try
         {
-            _state = _store.Load();
+            _state = await _store.LoadAsync();
+
             var effectiveTimestamp = signal.Timestamp == default ? DateTime.UtcNow : signal.Timestamp;
             var sessionTag = ResolveSessionBucket(effectiveTimestamp);
             var candidates = FindMatchingSnapshots(signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag)
@@ -207,7 +244,12 @@ public sealed class ExitPolicyLearningService
                 Reasoning = $"{decision.Reasoning} | Exit sizing confidence {multiplier:F2}x: {reason}"
             };
         }
+        finally
+        {
+            _semaphore.Release();
+        }
     }
+
 
     private ExitPolicyRecommendation? RecommendPolicy(Signal signal, TradeDecision decision)
     {
@@ -363,7 +405,7 @@ public sealed class ExitPolicyLearningService
         return Math.Min(1.50, (winRateDrift * 0.35) + (profitFactorDrift * 0.35) + (expectedValueDrift * 0.30));
     }
 
-    private void UpsertSnapshots(IEnumerable<ExitPolicyPerformanceSnapshot> snapshots)
+    private async Task UpsertSnapshots(IEnumerable<ExitPolicyPerformanceSnapshot> snapshots)
     {
         foreach (var snapshot in snapshots)
         {
@@ -381,14 +423,15 @@ public sealed class ExitPolicyLearningService
         _state.ExitPolicyBuckets = _state.ExitPolicyBuckets
             .OrderByDescending(snapshot => snapshot.RecordedAtUtc)
             .ToList();
-        Persist();
+        await PersistAsync();
     }
 
-    private void Persist()
+    private async Task PersistAsync()
     {
         _state.RecordedAtUtc = DateTime.UtcNow;
-        _store.Save(_state);
+        await _store.SaveAsync(_state);
     }
+
 
     private static decimal GetModeWeight(string executionMode) => executionMode.ToUpperInvariant() switch
     {

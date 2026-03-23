@@ -50,5 +50,10 @@ public sealed class TickRingBuffer
     /// </summary>
     public double MovingAverage => _count == 0 ? 0 : _sum / _count;
 
+    /// <summary>
+    /// Returns the oldest value in the current window.
+    /// </summary>
+    public double OldestValue => _count == 0 ? 0 : _metrics[_head];
+
     public bool IsFilled => _count == _capacity;
 }

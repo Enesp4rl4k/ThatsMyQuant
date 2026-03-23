@@ -26,8 +26,7 @@ public class RiskAgent
     public Task<(bool Approved, string Reason, decimal SafePositionSizePercent)> EvaluateAsync(
         TradeDecision candidate, 
         RiskParameters riskProfile, 
-        decimal symbol24hVolume,
-        CancellationToken cancellationToken = default)
+        decimal symbol24hVolume)
     {
         // 1. Kelly Criterion — f = (b*p − q) / b  (half-Kelly for safety)
         //    b = expected profit multiple on a win  (1.5x assumed)
@@ -40,24 +39,6 @@ public class RiskAgent
         // 2. Size Constraint Resolution (half-Kelly capped by config max)
         decimal maxAllowedByConfig = riskProfile.MaxPositionSizePercent;
         decimal safeAllocation = Math.Min(rawKelly * 0.5m, maxAllowedByConfig);
-
-        if (candidate.Confidence < 65)
-        {
-            safeAllocation *= 0.60m;
-        }
-        else if (candidate.Confidence < 75)
-        {
-            safeAllocation *= 0.80m;
-        }
-
-        if (string.Equals(candidate.RegimeTag, "Volatile", StringComparison.OrdinalIgnoreCase))
-        {
-            safeAllocation *= 0.60m;
-        }
-        else if (string.Equals(candidate.RegimeTag, "Ranging", StringComparison.OrdinalIgnoreCase))
-        {
-            safeAllocation *= 0.80m;
-        }
 
         if (safeAllocation <= 0.001m)
         {
@@ -75,10 +56,6 @@ public class RiskAgent
                     safeAllocation, symbol24hVolume);
                 safeAllocation = maxAllowedByAdv;
             }
-        }
-        else
-        {
-            safeAllocation *= 0.70m;
         }
 
         if (riskProfile.StopLossPercent > 5.0m)
@@ -123,29 +100,6 @@ public class RiskAgent
                 $"Daily loss limit breached ({lossPercent:F2}% >= {riskProfile.MaxDailyLossPercent:F2}%). Kill-switch armed."));
         }
 
-        var recentClosed = recentTrades
-            .Where(t => t.ExitTime.HasValue)
-            .OrderByDescending(t => t.ExitTime)
-            .Take(4)
-            .ToList();
-        var consecutiveLosses = 0;
-        foreach (var trade in recentClosed)
-        {
-            var pnl = (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == TradeSide.Sell ? -1 : 1);
-            if (pnl < 0)
-            {
-                consecutiveLosses++;
-                continue;
-            }
-
-            break;
-        }
-
-        if (consecutiveLosses >= 3)
-        {
-            return Task.FromResult((false, $"Loss-streak guard active ({consecutiveLosses} consecutive losses). Cool down before new entries."));
-        }
-
         var openTrades = recentTrades.Count(t => !t.IsClosed && t.Status == TradeStatus.Executed);
         if (openTrades >= 5)
         {
@@ -181,6 +135,19 @@ public class RiskAgent
                 $"Requested position size {requestedPositionFraction:P2} exceeds configured max {maxAllowedFraction:P2}."));
         }
 
+        // 4. Consecutive Loss-Streak Guard (Reject after 3 losses in the same symbol)
+        var symbolRecentTrades = recentTrades
+            .Where(t => string.Equals(t.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) && t.IsClosed)
+            .OrderByDescending(t => t.ExitTime)
+            .Take(3)
+            .ToList();
+
+        if (symbolRecentTrades.Count >= 3 && symbolRecentTrades.All(t => (t.ExitPrice - t.EntryPrice) * (t.Side == TradeSide.Sell ? -1 : 1) < 0))
+        {
+            return Task.FromResult((false, $"Loss-streak guard: 3 consecutive losses on {signal.Symbol}. Cooling down."));
+        }
+
         return Task.FromResult((true, "Portfolio risk checks passed."));
+
     }
 }

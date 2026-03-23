@@ -18,5 +18,8 @@ public enum SignalReasonFlags
     Confluence = 1 << 5,
     SentimentVeto = 1 << 6,
     RiskVeto = 1 << 7,
-    MachineLearningVeto = 1 << 8
+    MachineLearningVeto = 1 << 8,
+    SystemError = 1 << 9,
+    AiVeto = 1 << 10
 }
+

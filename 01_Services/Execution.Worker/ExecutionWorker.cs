@@ -3,6 +3,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MediatR;
 using ThatsMyQuant.Application.Commands;
+using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
 using ThatsMyQuant.Domain.Interfaces;
 
@@ -25,58 +26,76 @@ public class ExecutionWorker : BackgroundService
         
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
-            {
-                using var scope = _serviceProvider.CreateScope();
-                var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
-                var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-
-                var queuedSignals = await signalRepository.GetByStatusAsync(TradeStatus.Queued, 25);
-                foreach (var signal in queuedSignals)
-                {
-                    try
-                    {
-                        var tradeResult = await mediator.Send(new ExecuteTradeCommand(signal), stoppingToken);
-                        
-                        if (tradeResult != null && tradeResult.Status == TradeStatus.Executed)
-                        {
-                            signal.Status = TradeStatus.Executed;
-                            _logger.LogInformation("Executed queued signal {SignalId} ({Symbol})", signal.Id, signal.Symbol);
-                        }
-                        else
-                        {
-                            signal.Status = TradeStatus.Failed;
-                            signal.Reasoning += $" | Execution returned non-success: {tradeResult?.Status}";
-                            _logger.LogWarning("Queued signal {SignalId} failed execution result: {Status}", signal.Id, tradeResult?.Status);
-                        }
-                        
-                        await signalRepository.UpdateAsync(signal);
-                    }
-                    catch (Exception ex)
-                    {
-                        signal.RetryCount++;
-                        if (signal.RetryCount >= 3)
-                        {
-                            signal.Status = TradeStatus.DeadLetter;
-                            signal.Reasoning = $"{signal.Reasoning} | Worker execution failed (Max Retries): {ex.Message}";
-                        }
-                        else
-                        {
-                            // Stays in Queued status for next poll
-                            signal.Reasoning = $"{signal.Reasoning} | Worker execution failed (Retry {signal.RetryCount}): {ex.Message}";
-                        }
-                        
-                        await signalRepository.UpdateAsync(signal);
-                        _logger.LogError(ex, "Failed executing queued signal {SignalId} (Attempt {Attempt})", signal.Id, signal.RetryCount);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Execution worker polling loop failed.");
-            }
-
+            await PollAndProcessSignals(stoppingToken);
             await Task.Delay(1500, stoppingToken);
         }
     }
+
+    private async Task PollAndProcessSignals(CancellationToken stoppingToken)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
+            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+            var queuedSignals = await signalRepository.GetByStatusAsync(TradeStatus.Queued, 25);
+            foreach (var signal in queuedSignals)
+            {
+                await ProcessSingleSignal(signal, signalRepository, mediator, stoppingToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Execution worker polling loop failed.");
+        }
+    }
+
+    private async Task ProcessSingleSignal(Signal signal, ISignalRepository signalRepository, IMediator mediator, CancellationToken stoppingToken)
+    {
+        try
+        {
+            var tradeResult = await mediator.Send(new ExecuteTradeCommand(signal), stoppingToken);
+            ApplyExecutionResult(signal, tradeResult);
+        }
+        catch (Exception ex)
+        {
+            HandleExecutionException(signal, ex);
+        }
+        finally
+        {
+            await signalRepository.UpdateAsync(signal);
+        }
+    }
+
+    private void ApplyExecutionResult(Signal signal, dynamic? tradeResult)
+    {
+        if (tradeResult != null && tradeResult.Status == TradeStatus.Executed)
+        {
+            signal.Status = TradeStatus.Executed;
+            _logger.LogInformation("Executed queued signal {SignalId} ({Symbol})", signal.Id, signal.Symbol);
+        }
+        else
+        {
+            signal.Status = TradeStatus.Failed;
+            signal.Reasoning += $" | Execution returned non-success: {tradeResult?.Status}";
+            _logger.LogWarning("Queued signal {SignalId} failed execution result: {Status}", signal.Id, (object?)tradeResult?.Status);
+        }
+    }
+
+    private void HandleExecutionException(Signal signal, Exception ex)
+    {
+        signal.RetryCount++;
+        if (signal.RetryCount >= 3)
+        {
+            signal.Status = TradeStatus.DeadLetter;
+            signal.Reasoning = $"{signal.Reasoning} | Worker execution failed (Max Retries): {ex.Message}";
+        }
+        else
+        {
+            signal.Reasoning = $"{signal.Reasoning} | Worker execution failed (Retry {signal.RetryCount}): {ex.Message}";
+        }
+        _logger.LogError(ex, "Failed executing queued signal {SignalId} (Attempt {Attempt})", signal.Id, signal.RetryCount);
+    }
+
 }

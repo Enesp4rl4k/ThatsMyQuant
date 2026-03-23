@@ -14,22 +14,11 @@ public class BacktestEngine
 {
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly ILogger<BacktestEngine> _logger;
-    private readonly MarketExecutionProfileService _executionProfiles;
-    private readonly StrategyPromotionService? _promotionService;
-    private readonly ExitPolicyLearningService? _exitPolicyLearningService;
 
-    public BacktestEngine(
-        ITechnicalAnalysisService technicalAnalysis,
-        ILogger<BacktestEngine> logger,
-        MarketExecutionProfileService? executionProfiles = null,
-        StrategyPromotionService? promotionService = null,
-        ExitPolicyLearningService? exitPolicyLearningService = null)
+    public BacktestEngine(ITechnicalAnalysisService technicalAnalysis, ILogger<BacktestEngine> logger)
     {
         _technicalAnalysis = technicalAnalysis;
         _logger = logger;
-        _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
-        _promotionService = promotionService;
-        _exitPolicyLearningService = exitPolicyLearningService;
     }
 
     public async Task<BacktestResult> RunAsync(
@@ -53,16 +42,9 @@ public class BacktestEngine
         decimal maxDrawdownPercent = 0;
         int consecutiveLosses = 0;
         int maxConsecutiveLosses = 0;
-        int cooldownCandlesRemaining = 0;
         var risk = RiskParameters.Default;
-        string market = symbol.Contains("-") ? "Crypto" : (symbol.Contains("=") ? "Forex" : "BIST");
-        var profile = _executionProfiles.ResolveForSymbol(symbol);
-        var effectiveSlippage = slippagePercent == 0.05m ? profile.SlippagePercent : slippagePercent;
-        var effectiveSpread = spreadPercent == 0.02m ? profile.SpreadPercent : spreadPercent;
-        var effectiveCommission = commissionPercentPerSide == 0.05m ? profile.CommissionPercentPerSide : commissionPercentPerSide;
 
         PaperPosition? openPosition = null;
-        var windowBuffer = new List<Candle>(lookback + 1);
 
         for (int i = lookback; i < historicalCandles.Count; i++)
         {
@@ -71,25 +53,12 @@ public class BacktestEngine
             {
                 continue;
             }
-            if (!IsPreferredTradeWindow(market, candle.Timestamp))
-            {
-                continue;
-            }
-            
-            windowBuffer.Clear();
-            for (int j = i - lookback; j <= i; j++)
-            {
-                windowBuffer.Add(historicalCandles[j]);
-            }
-            var window = windowBuffer;
+            var window = historicalCandles.GetRange(i - lookback, lookback + 1);
 
             // Update open position
             if (openPosition != null)
             {
-                openPosition.BarsHeld++;
                 openPosition.CurrentPrice = candle.Close;
-                ApplyBreakevenProtection(openPosition, candle);
-                var previousCandle = i > 0 ? historicalCandles[i - 1] : candle;
 
                 if (!openPosition.HasTakenPartialProfit && openPosition.PartialTakeProfit > 0)
                 {
@@ -104,22 +73,13 @@ public class BacktestEngine
 
                         if (partialQuantity > 0)
                         {
-                            var adjustedPartialExit = _executionProfiles.ApplyExecutionPrice(
-                                openPosition.PartialTakeProfit,
-                                openPosition.Side == "Buy",
-                                false,
-                                symbol,
-                                null,
-                                effectiveSlippage,
-                                effectiveSpread,
-                                candle);
+                            var adjustedPartialExit = ApplyExecutionCost(openPosition.PartialTakeProfit, openPosition.Side == "Buy", false, slippagePercent, spreadPercent);
                             var partialPnl = CalculateNetPnlWithFees(
                                 openPosition.EntryPrice,
                                 adjustedPartialExit,
                                 partialQuantity,
                                 openPosition.Side,
-                                symbol,
-                                effectiveCommission);
+                                commissionPercentPerSide);
 
                             equity += partialPnl;
                             equityCurve.Add(equity);
@@ -137,9 +97,6 @@ public class BacktestEngine
                                     Side = openPosition.Side,
                                     StrategyTag = openPosition.StrategyTag,
                                     RegimeTag = openPosition.RegimeTag,
-                                    ExitPolicyTag = openPosition.ExitPolicyTag,
-                                    ExecutionMode = openPosition.ExecutionMode,
-                                    PromotionStage = openPosition.PromotionStage,
                                     EntryPrice = openPosition.EntryPrice,
                                     ExitPrice = openPosition.PartialTakeProfit,
                                     PnL = partialPnl,
@@ -181,77 +138,35 @@ public class BacktestEngine
                 // Check exit conditions
                 string? exitReason = null;
                 decimal exitPrice = candle.Close;
-                bool isStopMarketOrder = false;
 
                 if (openPosition.Side == "Buy")
                 {
                     if (candle.Low <= openPosition.TrailingStopPrice && openPosition.TrailingStopPrice > 0)
-                    {
-                        exitReason = "TrailingSL";
-                        exitPrice = candle.Open < openPosition.TrailingStopPrice ? candle.Open : openPosition.TrailingStopPrice;
-                        isStopMarketOrder = true;
-                    }
+                    { exitReason = "TrailingSL"; exitPrice = openPosition.TrailingStopPrice; }
                     else if (candle.Low <= openPosition.StopLoss)
-                    {
-                        exitReason = "StopLoss";
-                        exitPrice = candle.Open < openPosition.StopLoss ? candle.Open : openPosition.StopLoss;
-                        isStopMarketOrder = true;
-                    }
+                    { exitReason = "StopLoss"; exitPrice = openPosition.StopLoss; }
                     else if (candle.High >= openPosition.TakeProfit)
                     { exitReason = "TakeProfit"; exitPrice = openPosition.TakeProfit; }
                 }
                 else
                 {
                     if (candle.High >= openPosition.TrailingStopPrice && openPosition.TrailingStopPrice > 0)
-                    {
-                        exitReason = "TrailingSL";
-                        exitPrice = candle.Open > openPosition.TrailingStopPrice ? candle.Open : openPosition.TrailingStopPrice;
-                        isStopMarketOrder = true;
-                    }
+                    { exitReason = "TrailingSL"; exitPrice = openPosition.TrailingStopPrice; }
                     else if (candle.High >= openPosition.StopLoss)
-                    {
-                        exitReason = "StopLoss";
-                        exitPrice = candle.Open > openPosition.StopLoss ? candle.Open : openPosition.StopLoss;
-                        isStopMarketOrder = true;
-                    }
+                    { exitReason = "StopLoss"; exitPrice = openPosition.StopLoss; }
                     else if (candle.Low <= openPosition.TakeProfit)
                     { exitReason = "TakeProfit"; exitPrice = openPosition.TakeProfit; }
                 }
 
-                if (exitReason == null)
-                {
-                    exitReason = TryGetStrategyPolicyExit(openPosition, candle, previousCandle);
-                    if (exitReason != null)
-                    {
-                        exitPrice = candle.Close;
-                    }
-                }
-
-                if (exitReason == null && openPosition.MaxHoldingBars > 0 && openPosition.BarsHeld >= openPosition.MaxHoldingBars)
-                {
-                    exitReason = $"TimeStop({openPosition.ExitPolicyTag})";
-                    exitPrice = candle.Close;
-                }
-
                 if (exitReason != null)
                 {
-                    var appliedSlippage = isStopMarketOrder ? effectiveSlippage * 2.0m : effectiveSlippage;
-                    var adjustedExit = _executionProfiles.ApplyExecutionPrice(
-                        exitPrice,
-                        openPosition.Side == "Buy",
-                        false,
-                        symbol,
-                        null,
-                        appliedSlippage,
-                        effectiveSpread,
-                        candle);
+                    var adjustedExit = ApplyExecutionCost(exitPrice, openPosition.Side == "Buy", false, slippagePercent, spreadPercent);
                     decimal netPnL = CalculateNetPnlWithFees(
                         openPosition.EntryPrice,
                         adjustedExit,
                         openPosition.RemainingQuantity,
                         openPosition.Side,
-                        symbol,
-                        effectiveCommission);
+                        commissionPercentPerSide);
 
                     equity += netPnL;
                     equityCurve.Add(equity);
@@ -263,9 +178,6 @@ public class BacktestEngine
                         Side = openPosition.Side,
                         StrategyTag = openPosition.StrategyTag,
                         RegimeTag = openPosition.RegimeTag,
-                        ExitPolicyTag = openPosition.ExitPolicyTag,
-                        ExecutionMode = openPosition.ExecutionMode,
-                        PromotionStage = openPosition.PromotionStage,
                         EntryPrice = openPosition.EntryPrice,
                         ExitPrice = exitPrice,
                         PnL = netPnL,
@@ -279,11 +191,6 @@ public class BacktestEngine
                     if (netPnL < 0) { consecutiveLosses++; maxConsecutiveLosses = Math.Max(maxConsecutiveLosses, consecutiveLosses); }
                     else consecutiveLosses = 0;
 
-                    if (consecutiveLosses >= 3)
-                    {
-                        cooldownCandlesRemaining = 5;
-                    }
-
                     // Drawdown tracking
                     if (equity > peakEquity) peakEquity = equity;
                     decimal drawdown = peakEquity - equity;
@@ -294,14 +201,8 @@ public class BacktestEngine
                     }
 
                     openPosition = null;
-            }
-            continue; // Skip analysis while position is open
-        }
-
-            if (cooldownCandlesRemaining > 0)
-            {
-                cooldownCandlesRemaining--;
-                continue;
+                }
+                continue; // Skip analysis while position is open
             }
 
             // Run analysis
@@ -310,32 +211,15 @@ public class BacktestEngine
 
             if (decision.ShouldTrade && decision.Confidence >= 60)
             {
-                decimal adaptiveSize = AdaptiveSizingService.Apply(
-                    decision.PositionSizePercent,
-                    decision.Confidence,
-                    symbol.Contains("-") ? "Crypto" : (symbol.Contains("=") ? "Forex" : "BIST"),
-                    candle.Timestamp);
-                decimal positionValue = equity * adaptiveSize;
+                decimal positionValue = equity * decision.PositionSizePercent;
                 decimal quantity = candle.Close > 0 ? Math.Floor(positionValue / candle.Close) : 0;
 
                 // HFT COMMISSION GUARD: Ensure the spread overcomes two-way exchange fees
-                bool approvedByCommissionGuard = CommissionGuard.IsTradeProfitableAfterFees(
-                    candle.Close,
-                    decision.TakeProfit,
-                    quantity,
-                    effectiveCommission / 100m);
+                bool approvedByCommissionGuard = CommissionGuard.IsTradeProfitableAfterFees(candle.Close, decision.TakeProfit, quantity);
 
                 if (quantity > 0 && approvedByCommissionGuard)
                 {
-                    var adjustedEntry = _executionProfiles.ApplyExecutionPrice(
-                        candle.Close,
-                        decision.Side == TradeSide.Buy,
-                        true,
-                        symbol,
-                        null,
-                        effectiveSlippage,
-                        effectiveSpread,
-                        candle);
+                    var adjustedEntry = ApplyExecutionCost(candle.Close, decision.Side == TradeSide.Buy, true, slippagePercent, spreadPercent);
                     openPosition = new PaperPosition
                     {
                         Symbol = symbol,
@@ -348,13 +232,8 @@ public class BacktestEngine
                         TakeProfit = decision.TakeProfit,
                         PartialTakeProfit = decision.PartialTakeProfit,
                         PartialExitFraction = decision.PartialExitFraction <= 0 ? 0.50m : decision.PartialExitFraction,
-                        ExitPolicyTag = decision.ExitPolicyTag,
-                        BreakevenTriggerFraction = decision.BreakevenTriggerFraction,
-                        MaxHoldingBars = decision.MaxHoldingBars,
                         StrategyTag = decision.StrategyTag,
                         RegimeTag = decision.RegimeTag,
-                        ExecutionMode = "SIMULATED",
-                        PromotionStage = "Backtest",
                         TrailingStopPrice = 0,
                         HighestPriceSinceEntry = candle.Close,
                         EntryTime = candle.Timestamp
@@ -367,30 +246,19 @@ public class BacktestEngine
         if (openPosition != null)
         {
             var lastCandle = historicalCandles.Last();
-            var adjustedExit = _executionProfiles.ApplyExecutionPrice(
-                lastCandle.Close,
-                openPosition.Side == "Buy",
-                false,
-                symbol,
-                null,
-                effectiveSlippage,
-                effectiveSpread,
-                lastCandle);
+            var adjustedExit = ApplyExecutionCost(lastCandle.Close, openPosition.Side == "Buy", false, slippagePercent, spreadPercent);
             decimal netPnL = CalculateNetPnlWithFees(
                 openPosition.EntryPrice,
                 adjustedExit,
                 openPosition.RemainingQuantity,
                 openPosition.Side,
-                symbol,
-                effectiveCommission);
+                commissionPercentPerSide);
             
             equity += netPnL;
             trades.Add(new BacktestTradeResult
             {
                 EntryTime = openPosition.EntryTime, ExitTime = lastCandle.Timestamp,
                 Side = openPosition.Side, StrategyTag = openPosition.StrategyTag, RegimeTag = openPosition.RegimeTag,
-                ExitPolicyTag = openPosition.ExitPolicyTag,
-                ExecutionMode = openPosition.ExecutionMode, PromotionStage = openPosition.PromotionStage,
                 EntryPrice = openPosition.EntryPrice,
                 ExitPrice = lastCandle.Close, PnL = netPnL, ExitReason = openPosition.HasTakenPartialProfit ? "PartialTakeProfit -> EndOfData" : "EndOfData"
             });
@@ -429,8 +297,6 @@ public class BacktestEngine
             "Backtest Complete: {Trades} trades | WinRate={WR:F1}% | PnL=₺{PnL:N0} | Sharpe={S:F2} | MaxDD={DD:F1}%",
             result.TotalTrades, result.WinRate, result.TotalPnL, result.SharpeRatio, result.MaxDrawdownPercent);
 
-        _promotionService?.RecordBacktestState(result);
-        _exitPolicyLearningService?.RecordBacktestState(result);
         return result;
     }
 
@@ -467,78 +333,20 @@ public class BacktestEngine
         return winners.Average() / losers.Average();
     }
 
-    private static void ApplyBreakevenProtection(PaperPosition position, Candle candle)
+    private static decimal ApplyExecutionCost(
+        decimal price,
+        bool isBuy,
+        bool isEntry,
+        decimal slippagePercent,
+        decimal spreadPercent)
     {
-        if (position.IsBreakevenArmed || position.BreakevenTriggerFraction <= 0)
-        {
-            return;
-        }
+        var slippage = slippagePercent / 100m;
+        var spreadHalf = (spreadPercent / 100m) / 2m;
+        var cost = slippage + spreadHalf;
 
-        var targetDistance = Math.Abs(position.TakeProfit - position.EntryPrice);
-        if (targetDistance <= 0)
-        {
-            return;
-        }
-
-        var triggerDistance = targetDistance * position.BreakevenTriggerFraction;
-        var triggerReached = position.Side == "Buy"
-            ? candle.High >= position.EntryPrice + triggerDistance
-            : candle.Low <= position.EntryPrice - triggerDistance;
-
-        if (!triggerReached)
-        {
-            return;
-        }
-
-        position.IsBreakevenArmed = true;
-        var breakevenBuffer = position.EntryPrice * 0.0005m;
-
-        if (position.Side == "Buy")
-        {
-            position.StopLoss = Math.Max(position.StopLoss, position.EntryPrice + breakevenBuffer);
-        }
-        else
-        {
-            position.StopLoss = position.StopLoss == 0
-                ? position.EntryPrice - breakevenBuffer
-                : Math.Min(position.StopLoss, position.EntryPrice - breakevenBuffer);
-        }
-    }
-
-    private static string? TryGetStrategyPolicyExit(PaperPosition position, Candle candle, Candle previousCandle)
-    {
-        var bearishBar = candle.Close < candle.Open && candle.Close < previousCandle.Close;
-        var bullishBar = candle.Close > candle.Open && candle.Close > previousCandle.Close;
-
-        return position.ExitPolicyTag switch
-        {
-            "TrendRunner" when position.IsBreakevenArmed &&
-                               position.BarsHeld >= Math.Max(6, position.MaxHoldingBars / 2) &&
-                               ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
-                => "TrendMomentumFade",
-            "MeanReversion" when position.BarsHeld >= 4 && !position.IsBreakevenArmed
-                => "MeanReversionTimeout",
-            "BreakoutExpansion" when position.BarsHeld >= 3 && position.IsBreakevenArmed &&
-                                      ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
-                => "BreakoutFailure",
-            "HftScalp" when position.BarsHeld >= 2
-                => "HftMicroExit",
-            _ => null
-        };
-    }
-
-    private static bool IsPreferredTradeWindow(string market, DateTime timestamp)
-    {
-        if (string.Equals(market, "BIST", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        var turkeyTime = timestamp.Kind == DateTimeKind.Utc
-            ? TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp, "Turkey Standard Time")
-            : TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp.ToUniversalTime(), "Turkey Standard Time");
-
-        return turkeyTime.Hour is >= 10 and < 13 or >= 15 and < 18;
+        // Buying pays up on entry; selling pays down on exit.
+        var direction = (isBuy && isEntry) || (!isBuy && !isEntry) ? 1m : -1m;
+        return price * (1m + (direction * cost));
     }
 
     private static decimal CalculateNetPnlWithFees(
@@ -546,7 +354,6 @@ public class BacktestEngine
         decimal exitPrice,
         decimal quantity,
         string side,
-        string symbol,
         decimal commissionPercentPerSide)
     {
         var direction = side == "Sell" ? -1m : 1m;

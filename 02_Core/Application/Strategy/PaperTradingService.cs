@@ -121,8 +121,9 @@ public class PaperTradingService
                 Portfolio.ClosedPositions.Add(position);
                 Portfolio.OpenPositions.Remove(position);
                 Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
-                _promotionService?.RecordPaperState(Portfolio.ClosedPositions);
-                _exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions);
+                await (_promotionService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
+                await (_exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
+
 
                 _logger.LogInformation("📄 PAPER {Exit}: {Symbol} PnL=₺{PnL:N2} ({Reason})",
                     exitReason, symbol, position.RealizedPnL, exitReason);

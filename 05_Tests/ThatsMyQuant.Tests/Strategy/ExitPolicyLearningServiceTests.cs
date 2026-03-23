@@ -10,18 +10,18 @@ namespace ThatsMyQuant.Tests.Strategy;
 public class ExitPolicyLearningServiceTests
 {
     [Fact]
-    public void ApplyLearnedPolicy_ShouldPromoteBestExitPolicy_ForExactBucket()
+    public async Task ApplyLearnedPolicy_ShouldPromoteBestExitPolicy_ForExactBucket()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new ExitPolicyLearningService(store);
 
-        service.RecordBacktestState(CreateBacktestResult("TrendRunner", new[] { -20m, 10m, -15m, 8m }));
-        service.RecordBacktestState(CreateBacktestResult("MeanReversion", new[] { 35m, 28m, 22m, 26m }));
+        await service.RecordBacktestState(CreateBacktestResult("TrendRunner", new[] { -20m, 10m, -15m, 8m }));
+        await service.RecordBacktestState(CreateBacktestResult("MeanReversion", new[] { 35m, 28m, 22m, 26m }));
 
         var signal = CreateSignal();
         var decision = CreateDecision();
 
-        var updated = service.ApplyLearnedPolicy(signal, decision, 100m, 2m);
+        var updated = await service.ApplyLearnedPolicy(signal, decision, 100m, 2m);
 
         updated.ExitPolicyTag.Should().Be("MeanReversion");
         updated.MaxHoldingBars.Should().Be(8);
@@ -29,14 +29,14 @@ public class ExitPolicyLearningServiceTests
     }
 
     [Fact]
-    public void ApplyLearnedPolicy_ShouldLetRealOutcomesOutweighBacktestAndPaper()
+    public async Task ApplyLearnedPolicy_ShouldLetRealOutcomesOutweighBacktestAndPaper()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new ExitPolicyLearningService(store);
 
-        service.RecordBacktestState(CreateBacktestResult("TrendRunner", new[] { 30m, 25m, 18m, 12m }));
-        service.RecordBacktestState(CreateBacktestResult("MeanReversion", new[] { 18m, 16m, 14m, 12m }));
-        service.RecordPaperState(new[]
+        await service.RecordBacktestState(CreateBacktestResult("TrendRunner", new[] { 30m, 25m, 18m, 12m }));
+        await service.RecordBacktestState(CreateBacktestResult("MeanReversion", new[] { 18m, 16m, 14m, 12m }));
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition("MeanReversion", 25m),
             CreatePaperPosition("MeanReversion", 22m),
@@ -45,7 +45,7 @@ public class ExitPolicyLearningServiceTests
             CreatePaperPosition("TrendRunner", -3m),
             CreatePaperPosition("TrendRunner", 4m)
         });
-        service.RecordLiveState(new[]
+        await service.RecordLiveState(new[]
         {
             CreateLiveTrade("TrendRunner", 28m),
             CreateLiveTrade("TrendRunner", 22m),
@@ -55,18 +55,18 @@ public class ExitPolicyLearningServiceTests
             CreateLiveTrade("MeanReversion", -6m)
         });
 
-        var updated = service.ApplyLearnedPolicy(CreateSignal(), CreateDecision(), 100m, 2m);
+        var updated = await service.ApplyLearnedPolicy(CreateSignal(), CreateDecision(), 100m, 2m);
 
         updated.ExitPolicyTag.Should().Be("TrendRunner");
     }
 
     [Fact]
-    public void ApplyLiveSizingConfidence_ShouldBoostSize_WhenRealExitPolicyPerformsStrongly()
+    public async Task ApplyLiveSizingConfidence_ShouldBoostSize_WhenRealExitPolicyPerformsStrongly()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new ExitPolicyLearningService(store);
 
-        service.RecordLiveState(new[]
+        await service.RecordLiveState(new[]
         {
             CreateLiveTrade("TrendRunner", 18m),
             CreateLiveTrade("TrendRunner", 14m),
@@ -74,19 +74,19 @@ public class ExitPolicyLearningServiceTests
             CreateLiveTrade("TrendRunner", 11m)
         });
 
-        var updated = service.ApplyLiveSizingConfidence(CreateSignal(), CreateDecision());
+        var updated = await service.ApplyLiveSizingConfidence(CreateSignal(), CreateDecision());
 
         updated.PositionSizePercent.Should().BeGreaterThan(CreateDecision().PositionSizePercent);
         updated.Reasoning.Should().Contain("Exit sizing confidence");
     }
 
     [Fact]
-    public void ApplyLiveSizingConfidence_ShouldReduceSize_WhenRealExitPolicyUnderperforms()
+    public async Task ApplyLiveSizingConfidence_ShouldReduceSize_WhenRealExitPolicyUnderperforms()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new ExitPolicyLearningService(store);
 
-        service.RecordLiveState(new[]
+        await service.RecordLiveState(new[]
         {
             CreateLiveTrade("TrendRunner", -10m),
             CreateLiveTrade("TrendRunner", -8m),
@@ -94,19 +94,19 @@ public class ExitPolicyLearningServiceTests
             CreateLiveTrade("TrendRunner", -6m)
         });
 
-        var updated = service.ApplyLiveSizingConfidence(CreateSignal(), CreateDecision());
+        var updated = await service.ApplyLiveSizingConfidence(CreateSignal(), CreateDecision());
 
         updated.PositionSizePercent.Should().BeLessThan(CreateDecision().PositionSizePercent);
         updated.Reasoning.Should().Contain("Exit sizing confidence");
     }
 
     [Fact]
-    public void ApplyLearnedPolicy_ShouldDemotePolicy_WhenLiveDriftBreaksPaperWinner()
+    public async Task ApplyLearnedPolicy_ShouldDemotePolicy_WhenLiveDriftBreaksPaperWinner()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new ExitPolicyLearningService(store);
 
-        service.RecordPaperState(new[]
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition("TrendRunner", 24m),
             CreatePaperPosition("TrendRunner", 22m),
@@ -117,7 +117,7 @@ public class ExitPolicyLearningServiceTests
             CreatePaperPosition("MeanReversion", 11m),
             CreatePaperPosition("MeanReversion", 9m)
         });
-        service.RecordLiveState(new[]
+        await service.RecordLiveState(new[]
         {
             CreateLiveTrade("TrendRunner", -12m),
             CreateLiveTrade("TrendRunner", -9m),
@@ -129,25 +129,25 @@ public class ExitPolicyLearningServiceTests
             CreateLiveTrade("MeanReversion", 5m)
         });
 
-        var updated = service.ApplyLearnedPolicy(CreateSignal(), CreateDecision(), 100m, 2m);
+        var updated = await service.ApplyLearnedPolicy(CreateSignal(), CreateDecision(), 100m, 2m);
 
         updated.ExitPolicyTag.Should().Be("MeanReversion");
     }
 
     [Fact]
-    public void ApplyLiveSizingConfidence_ShouldCutSize_WhenLiveVsPaperDriftIsSevere()
+    public async Task ApplyLiveSizingConfidence_ShouldCutSize_WhenLiveVsPaperDriftIsSevere()
     {
         var store = new InMemoryStrategyPerformanceStore();
         var service = new ExitPolicyLearningService(store);
 
-        service.RecordPaperState(new[]
+        await service.RecordPaperState(new[]
         {
             CreatePaperPosition("TrendRunner", 20m),
             CreatePaperPosition("TrendRunner", 18m),
             CreatePaperPosition("TrendRunner", 17m),
             CreatePaperPosition("TrendRunner", 15m)
         });
-        service.RecordLiveState(new[]
+        await service.RecordLiveState(new[]
         {
             CreateLiveTrade("TrendRunner", -10m),
             CreateLiveTrade("TrendRunner", -8m),
@@ -155,7 +155,7 @@ public class ExitPolicyLearningServiceTests
             CreateLiveTrade("TrendRunner", 1m)
         });
 
-        var updated = service.ApplyLiveSizingConfidence(CreateSignal(), CreateDecision());
+        var updated = await service.ApplyLiveSizingConfidence(CreateSignal(), CreateDecision());
 
         updated.PositionSizePercent.Should().BeLessThan(CreateDecision().PositionSizePercent * 0.85m);
         updated.Reasoning.Should().Contain("drift");
@@ -255,8 +255,8 @@ public class ExitPolicyLearningServiceTests
     {
         private StrategyPerformanceState _state = new();
 
-        public StrategyPerformanceState Load() => _state;
+        public Task<StrategyPerformanceState> LoadAsync() => Task.FromResult(_state);
 
-        public void Save(StrategyPerformanceState state) => _state = state;
+        public Task SaveAsync(StrategyPerformanceState state) { _state = state; return Task.CompletedTask; }
     }
 }

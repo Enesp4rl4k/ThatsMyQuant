@@ -209,10 +209,12 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             (decimal)atr,
             reasons));
 
-        var learnedDecision = _exitPolicyLearningService?.ApplyLearnedPolicy(signal, routedDecision, currentPrice, (decimal)atr)
-                             ?? routedDecision;
-        learnedDecision = _exitPolicyLearningService?.ApplyLiveSizingConfidence(signal, learnedDecision)
-                          ?? learnedDecision;
+        var learnedDecision = _exitPolicyLearningService != null
+            ? await _exitPolicyLearningService.ApplyLearnedPolicy(signal, routedDecision, currentPrice, (decimal)atr)
+            : routedDecision;
+        learnedDecision = _exitPolicyLearningService != null
+            ? await _exitPolicyLearningService.ApplyLiveSizingConfidence(signal, learnedDecision)
+            : learnedDecision;
 
         if (!string.Equals(learnedDecision.ExitPolicyTag, routedDecision.ExitPolicyTag, StringComparison.OrdinalIgnoreCase))
         {

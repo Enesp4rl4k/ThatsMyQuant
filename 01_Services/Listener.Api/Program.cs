@@ -12,6 +12,7 @@ using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Application.Common;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Infrastructure.Ai;
+using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 
@@ -36,14 +37,8 @@ builder.Services.AddRateLimiter(options =>
 builder.Services.AddDbContext<QuantDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db"));
 
-builder.Services.AddSingleton<ThatsMyQuant.Infrastructure.Services.SignalWriterChannel>();
-builder.Services.AddHostedService<ThatsMyQuant.Infrastructure.Services.QuantPersistenceWorker>();
-builder.Services.AddSingleton<IPortfolioStateCache, ThatsMyQuant.Application.Strategy.PortfolioStateCache>();
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
-
-builder.Services.AddSingleton<Listener.Api.Services.SignalIngestionChannel>();
-builder.Services.AddHostedService<Listener.Api.Services.SignalIngestionWorker>();
 
 // --- MediatR ---
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
@@ -91,19 +86,14 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
     db.Database.EnsureCreated();
-    scope.ServiceProvider.GetRequiredService<IPortfolioStateCache>().InitializeAsync().Wait();
 }
 
 app.UseMiddleware<HmacValidationMiddleware>();
 app.UseMiddleware<ApiKeyValidationMiddleware>();
 
-// 🚀 HFT PIPELINE: Decouple Listener Network Thread
-app.MapPost("/webhook", (Signal signal, Listener.Api.Services.SignalIngestionChannel channel) =>
+app.MapPost("/webhook", async (Signal signal, IMediator mediator) =>
 {
-    // O(1) Push into active RAM memory block
-    channel.TryWrite(signal);
-
-    // Reply cleanly to executing TradingView/Remote Webhooks securely under 1 millisecond limits
+    await mediator.Send(new ProcessSignalCommand(signal));
     return Results.Accepted();
 });
 

@@ -25,7 +25,7 @@ public class StructuralAnalysisResult
 /// </summary>
 public static class StructuralPatternDetector
 {
-    public static StructuralAnalysisResult Analyze(List<Candle> candles, int lookback = 100)
+    public static StructuralAnalysisResult Analyze(IReadOnlyList<Candle> candles, int lookback = 100)
     {
         if (candles.Count < 20)
             return new StructuralAnalysisResult { Description = "Insufficient data" };
@@ -87,7 +87,7 @@ public static class StructuralPatternDetector
         };
     }
 
-    private static List<decimal> IdentifySwingPoints(List<Candle> candles, bool isHigh)
+    private static List<decimal> IdentifySwingPoints(IReadOnlyList<Candle> candles, bool isHigh)
     {
         var points = new List<decimal>();
         // Simple 5-candle fractal detection

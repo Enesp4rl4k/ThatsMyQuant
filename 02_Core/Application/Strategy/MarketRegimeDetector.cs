@@ -30,7 +30,7 @@ public static class MarketRegimeDetector
         public string Description { get; init; } = "";
     }
 
-    public static RegimeResult Detect(List<Candle> candles, int lookback = 20)
+    public static RegimeResult Detect(IReadOnlyList<Candle> candles, int lookback = 20)
     {
         if (candles.Count < lookback + 14)
             return new RegimeResult { Regime = MarketRegime.Unknown, AdaptedRsiPeriod = 14,
@@ -91,7 +91,7 @@ public static class MarketRegimeDetector
         };
     }
 
-    private static double ComputeAverageATR(List<Candle> candles)
+    private static double ComputeAverageATR(IReadOnlyList<Candle> candles)
     {
         double totalTR = 0;
         for (int i = 1; i < candles.Count; i++)
@@ -104,7 +104,7 @@ public static class MarketRegimeDetector
         return candles.Count > 1 ? totalTR / (candles.Count - 1) : 0;
     }
 
-    private static double ComputeTrendStrength(List<Candle> candles)
+    private static double ComputeTrendStrength(IReadOnlyList<Candle> candles)
     {
         int upBars = 0, downBars = 0;
         for (int i = 1; i < candles.Count; i++)

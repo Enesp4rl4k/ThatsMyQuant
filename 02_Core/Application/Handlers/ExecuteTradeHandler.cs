@@ -1,12 +1,11 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
-using System.Globalization;
 using ThatsMyQuant.Application.Commands;
 using ThatsMyQuant.Application.Resilience;
-using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
 using ThatsMyQuant.Domain.Interfaces;
+using System.Globalization;
 
 namespace ThatsMyQuant.Application.Handlers;
 
@@ -15,21 +14,15 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
     private readonly ILogger<ExecuteTradeHandler> _logger;
     private readonly IExchangeService _exchangeService;
     private readonly ITradeRepository _tradeRepository;
-    private readonly HftExecutionService _hftExecutionService;
-    private readonly ExitPolicyLearningService? _exitPolicyLearningService;
 
     public ExecuteTradeHandler(
         ILogger<ExecuteTradeHandler> logger, 
         IExchangeService exchangeService,
-        ITradeRepository tradeRepository,
-        HftExecutionService hftExecutionService,
-        ExitPolicyLearningService? exitPolicyLearningService = null)
+        ITradeRepository tradeRepository)
     {
         _logger = logger;
         _exchangeService = exchangeService;
         _tradeRepository = tradeRepository;
-        _hftExecutionService = hftExecutionService;
-        _exitPolicyLearningService = exitPolicyLearningService;
     }
 
     public async Task<Trade> Handle(ExecuteTradeCommand request, CancellationToken cancellationToken)
@@ -47,57 +40,27 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
             return existingTrade;
         }
 
+        // Domain Logic: Reject weak liquidity HFT probes before hitting the venue
+        if (request.Signal.Metadata.TryGetValue("ExecutionMode", out var mode) && mode == "HFT")
+        {
+            if (request.Signal.Volume24h < 500_000m)
+            {
+                _logger.LogWarning("Rejecting HFT Signal {Id} due to insufficient 24h volume ({Volume})", request.Signal.Id, request.Signal.Volume24h);
+                return new Trade { Status = TradeStatus.Failed, SignalId = request.Signal.Id, Symbol = request.Signal.Symbol };
+            }
+        }
+
         // Execute with Polly full pipeline (Retry + Circuit Breaker)
         var pipeline = ResiliencePolicies.CreateFullPipeline(_logger);
 
         Trade trade;
         try
         {
-            trade = IsHftSignal(request.Signal)
-                ? await pipeline.ExecuteAsync(async ct =>
-                    await _hftExecutionService.ExecuteAsync(request.Signal, ct), cancellationToken)
-                : await pipeline.ExecuteAsync(async ct =>
-                    await _exchangeService.ExecuteOrderAsync(request.Signal), cancellationToken);
+            trade = await pipeline.ExecuteAsync(async ct =>
+                await _exchangeService.ExecuteOrderAsync(request.Signal), cancellationToken);
 
-            trade.Side = request.Signal.Side;
-            trade.StrategyTag = request.Signal.StrategyTag;
-            trade.RegimeTag = request.Signal.RegimeTag;
-            trade.ExitPolicyTag = request.Signal.Metadata.GetValueOrDefault("ExitPolicyTag", trade.ExitPolicyTag);
-            trade.EdgeBand = request.Signal.Metadata.GetValueOrDefault("EdgeBand", string.Empty);
-            trade.ExactBucketImpactLabel = request.Signal.Metadata.GetValueOrDefault("ExactBucketImpactLabel", string.Empty);
-            trade.ExactBucketSummary = request.Signal.Metadata.GetValueOrDefault("ExactBucketSummary", string.Empty);
-            trade.FinalAllocatorScope = request.Signal.Metadata.GetValueOrDefault("FinalAllocatorScope", string.Empty);
-            trade.VenueExecutionScope = request.Signal.Metadata.GetValueOrDefault("VenueExecutionScope", string.Empty);
-            trade.VenueImpactLabel = request.Signal.Metadata.GetValueOrDefault("VenueImpactLabel", string.Empty);
-            trade.ConcordanceImpactLabel = request.Signal.Metadata.GetValueOrDefault("ConcordanceImpactLabel", string.Empty);
-            trade.ConcordanceSummary = request.Signal.Metadata.GetValueOrDefault("ConcordanceSummary", string.Empty);
-            trade.ExecutionMode = request.Signal.Metadata.GetValueOrDefault("ExecutionMode", "REAL");
-            trade.PromotionStage = request.Signal.Metadata.GetValueOrDefault("PromotionStage", "Backtest");
-            if (decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var edgeScore) ||
-                decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), out edgeScore))
-            {
-                trade.EdgeScore = edgeScore;
-            }
-            if (decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("FinalAllocatorBias", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var finalAllocatorBias) ||
-                decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("FinalAllocatorBias", "0"), out finalAllocatorBias))
-            {
-                trade.FinalAllocatorBias = finalAllocatorBias;
-            }
-            if (decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("VenueExecutionBias", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var venueExecutionBias) ||
-                decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("VenueExecutionBias", "0"), out venueExecutionBias))
-            {
-                trade.VenueExecutionBias = venueExecutionBias;
-            }
-            if (trade.Status == default)
-            {
-                trade.Status = TradeStatus.Executed;
-            }
-            if (trade.EntrySlippagePercent == 0m)
-            {
-                trade.EntrySlippagePercent = request.Signal.Price > 0
-                    ? Math.Abs((trade.EntryPrice - request.Signal.Price) / request.Signal.Price) * 100m
-                    : 0m;
-            }
+            trade.Status = TradeStatus.Executed;
+            MapSignalMetadataToTrade(request.Signal, trade);
         }
         catch (Exception ex)
         {
@@ -115,37 +78,12 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
                 Status = TradeStatus.Failed,
                 StrategyTag = request.Signal.StrategyTag,
                 RegimeTag = request.Signal.RegimeTag,
-                ExitPolicyTag = request.Signal.Metadata.GetValueOrDefault("ExitPolicyTag", "TrendRunner"),
-                EdgeBand = request.Signal.Metadata.GetValueOrDefault("EdgeBand", string.Empty),
-                ExactBucketImpactLabel = request.Signal.Metadata.GetValueOrDefault("ExactBucketImpactLabel", string.Empty),
-                ExactBucketSummary = request.Signal.Metadata.GetValueOrDefault("ExactBucketSummary", string.Empty),
-                FinalAllocatorScope = request.Signal.Metadata.GetValueOrDefault("FinalAllocatorScope", string.Empty),
-                VenueExecutionScope = request.Signal.Metadata.GetValueOrDefault("VenueExecutionScope", string.Empty),
-                VenueImpactLabel = request.Signal.Metadata.GetValueOrDefault("VenueImpactLabel", string.Empty),
-                ConcordanceImpactLabel = request.Signal.Metadata.GetValueOrDefault("ConcordanceImpactLabel", string.Empty),
-                ConcordanceSummary = request.Signal.Metadata.GetValueOrDefault("ConcordanceSummary", string.Empty),
-                ExecutionMode = request.Signal.Metadata.GetValueOrDefault("ExecutionMode", "REAL"),
-                PromotionStage = request.Signal.Metadata.GetValueOrDefault("PromotionStage", "Backtest"),
-                EdgeScore = decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var failedEdgeScore) ||
-                            decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("EdgeScore", "0"), out failedEdgeScore)
-                    ? failedEdgeScore
-                    : 0m,
-                FinalAllocatorBias = decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("FinalAllocatorBias", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var failedAllocatorBias) ||
-                                     decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("FinalAllocatorBias", "0"), out failedAllocatorBias)
-                    ? failedAllocatorBias
-                    : 0m,
-                VenueExecutionBias = decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("VenueExecutionBias", "0"), NumberStyles.Number, CultureInfo.InvariantCulture, out var failedVenueBias) ||
-                                     decimal.TryParse(request.Signal.Metadata.GetValueOrDefault("VenueExecutionBias", "0"), out failedVenueBias)
-                    ? failedVenueBias
-                    : 0m,
-                EntrySlippagePercent = 0m,
                 EntryTime = DateTime.UtcNow
             };
         }
 
         // Persist trade result
         await _tradeRepository.AddAsync(trade);
-        _exitPolicyLearningService?.RecordLiveState(new[] { trade });
 
         _logger.LogInformation("Trade {Status}: {TradeId} @ {Price}",
             trade.Status, trade.Id, trade.EntryPrice);
@@ -153,9 +91,27 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         return trade;
     }
 
-    private static bool IsHftSignal(Signal signal)
-        => signal.Source.Contains("HFT", StringComparison.OrdinalIgnoreCase) ||
-           (signal.Metadata.TryGetValue("ExecutionMode", out var mode) &&
-            mode.Contains("HFT", StringComparison.OrdinalIgnoreCase)) ||
-           string.Equals(signal.StrategyTag, "HftMicroEdge", StringComparison.OrdinalIgnoreCase);
+    private void MapSignalMetadataToTrade(Signal signal, Trade trade)
+    {
+        trade.Side = signal.Side;
+        trade.StrategyTag = signal.StrategyTag;
+        trade.RegimeTag = signal.RegimeTag;
+
+        if (signal.Metadata.TryGetValue("EdgeScore", out var esStr) && decimal.TryParse(esStr, CultureInfo.InvariantCulture, out var es))
+            trade.EdgeScore = es;
+
+        if (signal.Metadata.TryGetValue("EdgeBand", out var eb)) trade.EdgeBand = eb;
+        if (signal.Metadata.TryGetValue("VenueImpactLabel", out var vil)) trade.VenueImpactLabel = vil;
+        if (signal.Metadata.TryGetValue("VenueExecutionScope", out var ves)) trade.VenueExecutionScope = ves;
+        if (signal.Metadata.TryGetValue("ExactBucketImpactLabel", out var ebil)) trade.ExactBucketImpactLabel = ebil;
+        if (signal.Metadata.TryGetValue("ExactBucketSummary", out var ebs)) trade.ExactBucketSummary = ebs;
+        if (signal.Metadata.TryGetValue("ConcordanceImpactLabel", out var cil)) trade.ConcordanceImpactLabel = cil;
+        if (signal.Metadata.TryGetValue("ConcordanceSummary", out var cs)) trade.ConcordanceSummary = cs;
+        if (signal.Metadata.TryGetValue("ExitPolicyTag", out var ept)) trade.ExitPolicyTag = ept;
+        if (signal.Metadata.TryGetValue("ExecutionMode", out var em)) trade.ExecutionMode = em;
+
+        if (signal.Price > 0 && trade.EntryPrice > 0)
+            trade.EntrySlippagePercent = ((trade.EntryPrice - signal.Price) / signal.Price) * 100m;
+    }
+
 }

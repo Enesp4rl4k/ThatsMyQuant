@@ -17,7 +17,6 @@ public class ExecuteTradeHandlerTests
     private readonly ILogger<ExecuteTradeHandler> _logger;
     private readonly IExchangeService _exchangeService;
     private readonly ITradeRepository _tradeRepository;
-    private readonly HftExecutionService _hftExecutionService;
     private readonly ExecuteTradeHandler _handler;
 
     public ExecuteTradeHandlerTests()
@@ -25,10 +24,10 @@ public class ExecuteTradeHandlerTests
         _logger = Substitute.For<ILogger<ExecuteTradeHandler>>();
         _exchangeService = Substitute.For<IExchangeService>();
         _tradeRepository = Substitute.For<ITradeRepository>();
-        _hftExecutionService = new HftExecutionService(_exchangeService, Substitute.For<ILogger<HftExecutionService>>());
 
-        _handler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, _hftExecutionService);
+        _handler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository);
     }
+
 
     [Fact]
     public async Task Handle_SuccessfulExecution_ShouldReturnTradeAndPersist()

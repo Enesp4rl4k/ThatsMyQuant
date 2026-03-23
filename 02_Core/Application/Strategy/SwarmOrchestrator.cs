@@ -5,6 +5,10 @@ using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
 using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Domain.Interfaces;
+using Microsoft.Extensions.Logging;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -16,6 +20,7 @@ public class SwarmNegotiationRequest : IRequest<SwarmConsensusResult>
     public Signal Signal { get; set; } = null!;
     public TradeDecision InitialDecision { get; set; } = null!;
     public RiskParameters Risk { get; set; } = null!;
+    public IReadOnlyList<Candle> Candles { get; set; } = null!;
 }
 
 public class SwarmConsensusResult
@@ -40,68 +45,140 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
 {
     private readonly RiskAgent _riskAgent;
     private readonly SentimentAgent _sentimentAgent;
-    private readonly InferenceAgent _inferenceAgent; // The ML.NET System Engine
+    private readonly InferenceAgent _inferenceAgent;
     private readonly FeatureEngineeringAgent _featureAgent;
+    private readonly ITradeRepository _tradeRepository;
+    private readonly OFIExecutionAgent _ofiAgent;
+    private readonly ILogger<SwarmOrchestrator> _logger;
+
+    private const float MlDownsideThreshold = -0.01f;
+    private const float SuccessThreshold = 0.6f;
 
     public SwarmOrchestrator(
         RiskAgent riskAgent, 
         SentimentAgent sentimentAgent, 
         InferenceAgent inferenceAgent,
-        FeatureEngineeringAgent featureAgent)
+        FeatureEngineeringAgent featureAgent,
+        ITradeRepository tradeRepository,
+        OFIExecutionAgent ofiAgent,
+        ILogger<SwarmOrchestrator> logger)
     {
         _riskAgent = riskAgent;
         _sentimentAgent = sentimentAgent;
         _inferenceAgent = inferenceAgent;
         _featureAgent = featureAgent;
+        _tradeRepository = tradeRepository;
+        _ofiAgent = ofiAgent;
+        _logger = logger;
     }
 
     public async Task<SwarmConsensusResult> Handle(SwarmNegotiationRequest request, CancellationToken cancellationToken)
     {
-        // 1. TRUE SWARM CONCURRENCY: Execute all AI agents simultaneously (Task.WhenAll)
-        // Eliminates the massive 50+ms linear bottleneck in the old architecture.
-        var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, cancellationToken);
-        var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, request.Risk, request.Signal.Volume24h, cancellationToken);
-        
-        // 2. O(1) ML INFERENCE
-        // ML.NET inference is fully instantaneous natively through processor-arrays, executed natively on this host core.
-        // Reading structurally contiguous memory directly from FeatureEngineeringAgent bypassing the .NET Garbage Collector:
-        var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.CurrentTensor);
+        var result = new SwarmConsensusResult { Approved = false };
 
-        // Await the external/network asynchronous bounds concurrently
-        await Task.WhenAll(sentimentTask, riskTask);
-        
-        var sentimentVote = sentimentTask.Result;
-        var riskVote = riskTask.Result;
-
-        // 3. VETO CONSOLIDATION: Zero-Allocation Flag Aggregation
-        var result = new SwarmConsensusResult { Approved = true };
-
-        if (!sentimentVote.Approved)
+        try
         {
-            result.Approved = false;
-            result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
-        }
+            // 1. REGIME & STRUCTURE DETECTION
+            var regime = MarketRegimeDetector.Detect(request.Candles);
+            
+            // Adapt risk parameters to the current regime if not already adapted
+            var riskParams = request.Risk;
+            if (riskParams == RiskParameters.Default)
+            {
+                riskParams = regime.Regime switch
+                {
+                    MarketRegime.Volatile => RiskParameters.Default with { MaxPositionSizePercent = 2.5m },
+                    MarketRegime.Trending => RiskParameters.Default with { MaxPositionSizePercent = 7.5m },
+                    _ => RiskParameters.Default
+                };
+            }
 
-        if (!riskVote.Approved)
+            // 2. PORTFOLIO RISK GUARDRAILS
+            var recentTrades = await _tradeRepository.GetAllAsync(500);
+            var portfolioGuard = await _riskAgent.EvaluatePortfolioGuardrailsAsync(
+                recentTrades,
+                request.Signal,
+                request.InitialDecision.PositionSizePercent,
+                riskParams);
+
+            if (!portfolioGuard.Approved)
+            {
+                result.RejectionFlags |= SignalReasonFlags.RiskVeto;
+                return result;
+            }
+
+            // 3. CONCURRENT SWARM EXECUTION
+            var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, cancellationToken);
+            var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, riskParams, request.Signal.Volume24h);
+            
+            // Wait with timeout to prevent system-wide hangs
+            await Task.WhenAll(sentimentTask, riskTask).WaitAsync(cancellationToken);
+            
+            var sentimentVote = sentimentTask.Result;
+            var riskVote = riskTask.Result;
+
+            // 4. ML INFERENCE WITH THREAD-SAFE FEATURES
+            var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.GetSnapshot());
+
+            // 5. WEIGHTED VOTING ENGINE (Hedge Fund Standard: 30/40/30)
+            float confidenceScore = 0;
+            
+            // Sentiment Weight (30%)
+            if (sentimentVote.Approved) confidenceScore += 0.3f;
+            else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
+
+            // Technical/Risk Weight (40%)
+            if (riskVote.Approved) confidenceScore += 0.4f;
+            else result.RejectionFlags |= SignalReasonFlags.RiskVeto;
+
+            // ML Weight (30%)
+            if (mlPrediction.IsValid)
+            {
+                // ML as Weighting Engine rather than hard veto
+                if (mlPrediction.Value < MlDownsideThreshold && request.InitialDecision.Side == TradeSide.Buy)
+                {
+                    result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
+                    // Catastrophic ML prediction can still lower score significantly
+                    confidenceScore -= 0.5f; 
+                }
+                else
+                {
+                    confidenceScore += 0.3f;
+                }
+            }
+
+            // 6. MICROSTRUCTURE (OFI) INJECTION
+            if (request.Signal.OrderFlowImbalance.HasValue)
+            {
+                await _ofiAgent.Handle(request.Signal, cancellationToken);
+                result.ExecutionAction = request.Signal.ExecutionAction;
+                
+                // OFI Front-run approval adds extra confidence
+                if (result.ExecutionAction != ExecutionActionType.MarketTaker)
+                {
+                    confidenceScore += 0.1f;
+                }
+            }
+
+            // 7. FINAL CONSENSUS
+            if (confidenceScore >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
+            {
+                result.Approved = true;
+                result.AdjustedKellyFraction = riskVote.SafePositionSizePercent * (decimal)(1.0f + mlPrediction.Value);
+                result.AdjustedTakeProfit = request.InitialDecision.TakeProfit;
+                
+                if (result.ExecutionAction == ExecutionActionType.None)
+                {
+                    result.ExecutionAction = ExecutionActionType.MarketTaker;
+                }
+            }
+        }
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Swarm Orchestration CRITICAL FAILURE for {Symbol}", request.Signal.Symbol);
             result.Approved = false;
-            result.RejectionFlags |= SignalReasonFlags.RiskVeto;
+            result.RejectionFlags |= SignalReasonFlags.SystemError;
         }
-
-        // ML Directional Defense Guard
-        if (mlPrediction.IsValid && mlPrediction.Value < -0.01f && request.InitialDecision.Side == TradeSide.Buy)
-        {
-            // The Machine Learning model predicts a catastrophic downside return on an expected 'Long' configuration
-            result.Approved = false;
-            result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
-        }
-
-        if (!result.Approved) return result;
-
-        // 4. UNANIMOUS CONSENSUS: Configure execution target
-        result.AdjustedKellyFraction = riskVote.SafePositionSizePercent;
-        result.AdjustedTakeProfit = request.InitialDecision.TakeProfit;
-        result.ExecutionAction = ExecutionActionType.MarketTaker; // Core technical execution defaults
 
         return result;
     }

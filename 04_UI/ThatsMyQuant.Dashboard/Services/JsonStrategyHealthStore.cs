@@ -17,7 +17,7 @@ public sealed class JsonStrategyHealthStore : IStrategyHealthStore
         _filePath = Path.Combine(root, "strategy-health.json");
     }
 
-    public IReadOnlyList<StrategyHealthSnapshot> Load()
+    public async Task<IReadOnlyList<StrategyHealthSnapshot>> LoadAsync()
     {
         try
         {
@@ -26,7 +26,7 @@ public sealed class JsonStrategyHealthStore : IStrategyHealthStore
                 return Array.Empty<StrategyHealthSnapshot>();
             }
 
-            var json = File.ReadAllText(_filePath);
+            var json = await File.ReadAllTextAsync(_filePath);
             return JsonSerializer.Deserialize<List<StrategyHealthSnapshot>>(json, JsonOptions)
                    ?? new List<StrategyHealthSnapshot>();
         }
@@ -36,12 +36,12 @@ public sealed class JsonStrategyHealthStore : IStrategyHealthStore
         }
     }
 
-    public void Save(IEnumerable<StrategyHealthSnapshot> snapshots)
+    public async Task SaveAsync(IEnumerable<StrategyHealthSnapshot> snapshots)
     {
         try
         {
             var json = JsonSerializer.Serialize(snapshots.ToList(), JsonOptions);
-            File.WriteAllText(_filePath, json);
+            await File.WriteAllTextAsync(_filePath, json);
         }
         catch
         {
