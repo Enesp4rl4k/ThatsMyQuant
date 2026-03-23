@@ -1,7 +1,4 @@
-using System;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using Microsoft.ML;
 
 namespace ThatsMyQuant.Application.MachineLearning;
@@ -20,18 +17,14 @@ public struct PredictionResult
 /// <summary>
 /// The ultra-low latency execution component of the ML pipeline.
 /// Upgraded with Tier-1 HFT Engine paradigms:
-/// - O(1) hardware-array execution mapping via `Thread.GetCurrentProcessorId()`.
+/// - O(1) concurrent pool execution via `ConcurrentStack`.
 /// - Destroyed `ThreadLocal` memory fragmentation churn.
 /// - Full-Hardware Parallel JIT pipeline warming.
 /// - `PredictionResult` rigorous deterministic telemetry.
 /// </summary>
 public class InferenceAgent
 {
-    // NUMA-aligned prediction engines arrays (Bypasses GC and ThreadLocal mapping)
-    private readonly PredictionEngine<CandleMlData, CandlePrediction>[] _engines;
-    private readonly CandleMlData[] _inputBuffers;
-    
-    // Bounds limit for modulo execution logic
+    private readonly ConcurrentStack<(PredictionEngine<CandleMlData, CandlePrediction> Engine, CandleMlData Buffer)> _pool = new();
     private readonly int _processorCount;
     private readonly MLContext _mlContext;
 
@@ -42,11 +35,9 @@ public class InferenceAgent
         if (!File.Exists(modelPath))
             throw new FileNotFoundException($"Cannot start Quantitative AI. Trained Model {modelPath} not found.");
 
-        ITransformer loadedModel = _mlContext.Model.Load(modelPath, out var modelInputSchema);
+        ITransformer loadedModel = _mlContext.Model.Load(modelPath, out var _);
 
         _processorCount = Environment.ProcessorCount;
-        _engines = new PredictionEngine<CandleMlData, CandlePrediction>[_processorCount];
-        _inputBuffers = new CandleMlData[_processorCount];
 
         // 🔥 FULL HARDWARE WARMUP
         // Spin up the pre-compiler concurrently across every single physical and logical core in the system.
@@ -58,14 +49,14 @@ public class InferenceAgent
             var dummyData = new CandleMlData { Features = new float[5] };
             engine.Predict(dummyData); // Heat up the JIT compiler memory pipelines
             
-            _engines[coreId] = engine;
-            _inputBuffers[coreId] = new CandleMlData();
+            // Pool the engine with its own dedicated buffer to ensure zero-allocation thread-safety
+            _pool.Push((engine, new CandleMlData()));
         });
     }
 
     /// <summary>
     /// Predicts the target trajectory using the realtime features.
-    /// Operates without managed abstractions (ThreadLocal) by aligning exclusively against Processor IDs.
+    /// Operates using a concurrent pool to guarantee thread-safety without lock-contention.
     /// </summary>
     public PredictionResult PredictNextReturn(float[] currentNormalizedFeatures)
     {
@@ -81,22 +72,27 @@ public class InferenceAgent
             }
         }
 
-        // Lock-Free Hardware Core Alignment: Extracted CPU integer index mapping.
-        int coreIndex = Thread.GetCurrentProcessorId() % _processorCount;
+        if (_pool.TryPop(out var item))
+        {
+            try
+            {
+                item.Buffer.Features = currentNormalizedFeatures;
+                var prediction = item.Engine.Predict(item.Buffer);
+                
+                return new PredictionResult 
+                { 
+                    Value = prediction.PredictedNextClose,
+                    IsValid = true,
+                    Confidence = 0.99f 
+                };
+            }
+            finally
+            {
+                _pool.Push(item);
+            }
+        }
 
-        // Guaranteed Zero-Allocation Buffer
-        var input = _inputBuffers[coreIndex];
-        input.Features = currentNormalizedFeatures;
-
-        // FPU-Mapped Context Execution
-        var engine = _engines[coreIndex];
-        var prediction = engine.Predict(input);
-        
-        return new PredictionResult 
-        { 
-            Value = prediction.PredictedNextClose, // Architecturally targeted mapping for Returns vs Raw Price
-            IsValid = true,
-            Confidence = 0.99f // Stub for downstream probability weighting
-        };
+        // Fallback for extreme burst edge-cases outside pre-warmed pool (unlikely in practice)
+        return new PredictionResult { Value = 0f, IsValid = false };
     }
 }

@@ -62,7 +62,7 @@ public class BinanceExchangeService : IExchangeService
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogError("❌ Binance Execution REJECTED: {Content}", content);
-                throw new Exception($"Binance API Error: {response.StatusCode} - {content}");
+                throw new HttpRequestException($"Binance API Error: {response.StatusCode} - {content}", null, response.StatusCode);
             }
 
             // 4. Parse Execution Result

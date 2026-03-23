@@ -51,7 +51,7 @@ public class ChaosExchangeDecorator : IExchangeService
         if (Random.Shared.NextDouble() < FailureProbability)
         {
             _logger.LogError("[CHAOS] INJECTING ARTIFICIAL FAILURE in {Method}!", methodName);
-            throw new Exception($"[CHAOS_ERROR] Simulated exchange Timeout/Disconnect in {methodName}");
+            throw new TimeoutException($"[CHAOS_ERROR] Simulated exchange Timeout/Disconnect in {methodName}");
         }
     }
 }

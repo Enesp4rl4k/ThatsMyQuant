@@ -71,7 +71,8 @@ builder.Services.AddHostedService<TradeBotWorker>();
 var host = builder.Build();
 using (var scope = host.Services.CreateScope())
 {
-    scope.ServiceProvider.GetRequiredService<QuantDbContext>().Database.EnsureCreated();
+    var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
+    await db.Database.EnsureCreatedAsync();
 }
 
-host.Run();
+await host.RunAsync();

@@ -11,7 +11,6 @@ using ThatsMyQuant.Application.Commands;
 using ThatsMyQuant.Application.Common;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Infrastructure.Ai;
-using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 
@@ -61,7 +60,8 @@ var host = builder.Build();
 
 using (var scope = host.Services.CreateScope())
 {
-    scope.ServiceProvider.GetRequiredService<QuantDbContext>().Database.EnsureCreated();
+    var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
+    await db.Database.EnsureCreatedAsync();
 }
 
-host.Run();
+await host.RunAsync();

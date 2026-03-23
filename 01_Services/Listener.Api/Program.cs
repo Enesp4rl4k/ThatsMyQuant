@@ -12,7 +12,6 @@ using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Application.Common;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Infrastructure.Ai;
-using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 
@@ -85,7 +84,7 @@ app.UseRateLimiter();
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
-    db.Database.EnsureCreated();
+    await db.Database.EnsureCreatedAsync();
 }
 
 app.UseMiddleware<HmacValidationMiddleware>();
@@ -97,4 +96,4 @@ app.MapPost("/webhook", async (Signal signal, IMediator mediator) =>
     return Results.Accepted();
 });
 
-app.Run();
+await app.RunAsync();

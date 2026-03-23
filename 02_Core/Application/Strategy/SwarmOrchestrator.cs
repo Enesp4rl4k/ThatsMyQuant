@@ -114,8 +114,8 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
             // Wait with timeout to prevent system-wide hangs
             await Task.WhenAll(sentimentTask, riskTask).WaitAsync(cancellationToken);
             
-            var sentimentVote = sentimentTask.Result;
-            var riskVote = riskTask.Result;
+            var sentimentVote = await sentimentTask;
+            var riskVote = await riskTask;
 
             // 4. ML INFERENCE WITH THREAD-SAFE FEATURES
             var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.GetSnapshot());

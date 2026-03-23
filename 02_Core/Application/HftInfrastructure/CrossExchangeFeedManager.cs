@@ -44,7 +44,7 @@ public class CrossExchangeFeedManager : BackgroundService
             try
             {
                 // Simulate a price around $65,000 for BTC/USDT with slight drift between exchanges
-                decimal simulatedPrice = 65000m + (decimal)(new Random().NextDouble() * 100) * (1 + drift);
+                decimal simulatedPrice = 65000m + (decimal)(Random.Shared.NextDouble() * 100) * (1 + drift);
                 
                 var signal = _signalPool.Rent($"BTCUSDT-{exchangeName}", simulatedPrice);
                 bool success = _ringBuffer.TryEnqueue(signal);

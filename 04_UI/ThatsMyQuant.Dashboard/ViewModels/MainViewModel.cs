@@ -570,11 +570,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     }
 
     [RelayCommand]
-    private async Task SelectSymbol(string symbol)
+    private Task SelectSymbol(string symbol)
     {
         SelectedSymbol = symbol;
         BacktestMarkers.Clear();
         // Removed manual AnalyzeSymbol call to avoid double execution (property change handler already triggers it)
+        return Task.CompletedTask;
     }
 
     [RelayCommand]
@@ -973,7 +974,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 TradeJournal.Insert(0, new TradeJournalEntry
                 {
-                    Time = DateTime.Now,
+                    Time = DateTime.UtcNow,
                     Symbol = symbol,
                     Side = decision.Side.ToString(),
                     Price = ind.CurrentPrice,
@@ -1629,7 +1630,6 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private void UpdatePortfolioGrowth()
     {
         var baseline = Convert.ToDouble(Balance);
-        var now = DateTime.Now;
         var closedTrades = _tradeCache
             .Where(t => t.IsClosed && t.ExitTime.HasValue && t.Status == TradeStatus.Executed)
             .OrderBy(t => t.ExitTime)
@@ -1649,34 +1649,37 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        DateTime windowStart;
+        DateTime windowStartUtc;
         Func<DateTime, string> labelSelector;
+        var now = DateTime.UtcNow;
+        var today = now.Date;
+
         switch (SelectedPortfolioRange)
         {
             case "Daily":
-                windowStart = now.Date;
-                labelSelector = d => d.ToString("HH");
+                windowStartUtc = today;
+                labelSelector = d => d.ToLocalTime().ToString("HH");
                 PortfolioRangeSummary = "Daily equity curve from realized trades";
                 break;
             case "Weekly":
-                windowStart = now.Date.AddDays(-6);
-                labelSelector = d => d.ToString("ddd");
+                windowStartUtc = today.AddDays(-6);
+                labelSelector = d => d.ToLocalTime().ToString("ddd");
                 PortfolioRangeSummary = "Weekly realized portfolio growth";
                 break;
             case "Yearly":
-                windowStart = new DateTime(now.Year, 1, 1);
+                windowStartUtc = new DateTime(now.Year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
                 labelSelector = d => $"Q{((d.Month - 1) / 3) + 1}";
                 PortfolioRangeSummary = "Yearly realized portfolio growth";
                 break;
             default:
-                windowStart = new DateTime(now.Year, now.Month, 1);
+                windowStartUtc = new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc);
                 labelSelector = d => $"W{((d.Day - 1) / 7) + 1}";
                 PortfolioRangeSummary = "Monthly realized portfolio growth";
                 break;
         }
 
         var tradesInWindow = closedTrades
-            .Where(t => t.ExitTime!.Value >= windowStart)
+            .Where(t => t.ExitTime!.Value >= windowStartUtc)
             .ToList();
 
         if (tradesInWindow.Count == 0)

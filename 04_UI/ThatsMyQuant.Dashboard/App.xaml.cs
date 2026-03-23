@@ -21,13 +21,13 @@ public partial class App : System.Windows.Application
 {
     public static IServiceProvider? ServiceProvider { get; private set; }
 
-    protected override void OnStartup(StartupEventArgs e)
+    protected override async void OnStartup(StartupEventArgs e)
     {
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         var services = new ServiceCollection();
         ConfigureServices(services);
         ServiceProvider = services.BuildServiceProvider();
-        EnsureDatabaseReady();
+        await EnsureDatabaseReadyAsync();
 
         var loginWindow = new LoginWindow();
         if (loginWindow.ShowDialog() == true)
@@ -45,11 +45,14 @@ public partial class App : System.Windows.Application
         base.OnStartup(e);
     }
 
-    private void EnsureDatabaseReady()
+    private async Task EnsureDatabaseReadyAsync()
     {
         using var scope = ServiceProvider?.CreateScope();
         var db = scope?.ServiceProvider.GetService<ThatsMyQuant.Infrastructure.Persistence.QuantDbContext>();
-        db?.Database.EnsureCreated();
+        if (db != null)
+        {
+            await db.Database.EnsureCreatedAsync();
+        }
     }
 
     private void ConfigureServices(IServiceCollection services)

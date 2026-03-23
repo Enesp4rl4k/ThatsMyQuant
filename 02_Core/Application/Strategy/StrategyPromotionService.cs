@@ -61,14 +61,17 @@ public sealed class StrategyPromotionService
             res = CheckVenuePromotionBias(venuePromotionBias, capitalBiasMultiplier, capitalBiasLabel);
             if (res != null) return res.Value;
 
-            res = CheckEdgeQuality(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
+            if (liveBucket != null)
+            {
+                res = CheckEdgeQuality(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
+                if (res != null) return res.Value;
 
-            res = CheckHighEdgeOutcomes(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
+                res = CheckHighEdgeOutcomes(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
+                if (res != null) return res.Value;
 
-            res = CheckHftLatency(decision, liveBucket, executionProfile, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
+                res = CheckHftLatency(decision, liveBucket, executionProfile, capitalBiasMultiplier, capitalBiasLabel);
+                if (res != null) return res.Value;
+            }
 
             var exactBucketPromotionBias = ComputeExactBucketPromotionBias(signal, decision, liveMatch);
             res = CheckExactBucketPromotionBias(exactBucketPromotionBias, capitalBiasLabel);
@@ -78,11 +81,15 @@ public sealed class StrategyPromotionService
             res = CheckExitPolicyDrift(decision, sessionTag, exitPolicyDrift, capitalBiasMultiplier, capitalBiasLabel);
             if (res != null) return res.Value;
 
-            var driftScore = ComputeDriftScore(paperBucket, liveBucket);
-            res = CheckPaperLiveDrift(sessionTag, liveBucket, driftScore, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
+            double driftScoreValue = 0;
+            if (paperBucket != null && liveBucket != null)
+            {
+                driftScoreValue = ComputeDriftScore(paperBucket, liveBucket);
+                res = CheckPaperLiveDrift(sessionTag, liveBucket, driftScoreValue, capitalBiasMultiplier, capitalBiasLabel);
+                if (res != null) return res.Value;
+            }
 
-            return CreateFinalPromotionResult(liveBucket ?? new StrategyBucketPerformanceSnapshot(), concordancePromotionBias, capitalBiasMultiplier, capitalBiasLabel, driftScore);
+            return CreateFinalPromotionResult(liveBucket ?? new StrategyBucketPerformanceSnapshot(), concordancePromotionBias, capitalBiasMultiplier, capitalBiasLabel, driftScoreValue);
         }
     }
 
