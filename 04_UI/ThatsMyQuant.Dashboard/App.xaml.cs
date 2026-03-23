@@ -122,7 +122,7 @@ public partial class App : System.Windows.Application
             services.AddSingleton<IExchangeService, MockBrokerService>();
         }
         services.AddSingleton<ITechnicalAnalysisService, QuantIndicatorService>();
-        services.AddTransient<ThatsMyQuant.Application.Strategy.BacktestEngine>();
+        services.AddTransient<ThatsMyQuant.Application.Strategy.BacktestEngineApp>();
         
         // Database & Repositories
         services.AddDbContext<ThatsMyQuant.Infrastructure.Persistence.QuantDbContext>(options =>

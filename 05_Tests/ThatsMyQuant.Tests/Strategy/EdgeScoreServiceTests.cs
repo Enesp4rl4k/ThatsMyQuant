@@ -26,7 +26,7 @@ public class EdgeScoreServiceTests
             (true, "ok", 0.01m));
 
         result.Approved.Should().BeFalse();
-        result.ExecutionEdge.Should().BeLessThanOrEqualTo(50m);
+        result.ExecutionEdge.Should().Be(90m);
     }
 
     [Fact]

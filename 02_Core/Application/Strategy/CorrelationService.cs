@@ -129,3 +129,15 @@ public static class CorrelationService
         return denominator < double.Epsilon ? 0 : sumAb / denominator;
     }
 }
+
+public class CorrelationCheckResult
+{
+    public string Symbol { get; set; } = string.Empty;
+    public string Sector { get; set; } = string.Empty;
+    public double SectorExposurePercent { get; set; }
+    public int SameSecPositionCount { get; set; }
+    public bool IsHighlyCorrelated { get; set; }
+    public bool ExceedsSectorLimit { get; set; }
+    public bool ShouldReduce { get; set; }
+    public string Recommendation { get; set; } = string.Empty;
+}

@@ -294,7 +294,7 @@ public class MainViewModelTests
     }
 
     [Fact]
-    public async Task ReEnableStrategyCommand_ShouldMoveDisabledBucketIntoRecoveryMode()
+    public async Task ForceEnableStrategyCommand_ShouldMoveDisabledBucketIntoRecoveryMode()
     {
         var tradeRepository = Substitute.For<ITradeRepository>();
         tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
@@ -342,7 +342,7 @@ public class MainViewModelTests
         await viewModel.RefreshStrategyLeaderboardAsync();
         viewModel.DisabledStrategies.Should().Contain("TrendConfluence");
 
-        viewModel.ReEnableStrategyCommand.Execute("TrendConfluence");
+        viewModel.ForceEnableStrategyCommand.Execute("TrendConfluence");
 
         viewModel.DisabledStrategies.Should().NotContain("TrendConfluence");
         viewModel.StrategyThrottleStatus.Should().Be("Reduced");
@@ -1225,7 +1225,7 @@ public class MainViewModelTests
                 });
         }
 
-        var backtestEngine = new BacktestEngine(technicalAnalysis, Substitute.For<ILogger<BacktestEngine>>());
+        var backtestEngine = new BacktestEngineApp(technicalAnalysis, Substitute.For<ILogger<BacktestEngineApp>>());
         var signalRepository = Substitute.For<ISignalRepository>();
         signalRepository.GetStatusCountsAsync().Returns(new Dictionary<TradeStatus, int>());
         if (tradeRepository == null)
@@ -1235,7 +1235,7 @@ public class MainViewModelTests
         }
 
         strategyHealthStore ??= Substitute.For<IStrategyHealthStore>();
-        strategyHealthStore.Load().Returns(Array.Empty<StrategyHealthSnapshot>());
+        strategyHealthStore.LoadAsync().Returns(Task.FromResult<IReadOnlyList<StrategyHealthSnapshot>>(Array.Empty<StrategyHealthSnapshot>()));
 
         return new MainViewModel(
             marketDataService,
@@ -1246,7 +1246,7 @@ public class MainViewModelTests
             new RiskAgent(Substitute.For<ILogger<RiskAgent>>()),
             signalRepository,
             tradeRepository,
-            new TradingLoopService(),
+            new TradingLoopService(Substitute.For<ILogger<TradingLoopService>>()),
             strategyHealthStore,
             enableBackgroundTimers: false,
             enableAutomaticAnalysis: false);

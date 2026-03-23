@@ -1,54 +1,58 @@
+using Microsoft.Extensions.Logging;
+
 namespace ThatsMyQuant.Dashboard.Services;
 
-public sealed class TradingLoopService : ITradingLoopService
+public sealed class TradingLoopService : ITradingLoopService, IDisposable
 {
-    private readonly object _sync = new();
-    private CancellationTokenSource? _cts;
-    private Task? _loopTask;
+    private readonly ILogger<TradingLoopService> _logger;
+    private CancellationTokenSource? _loopCts;
+    private Task? _executingTask;
+    private bool _disposed;
 
-    public bool IsRunning
+    public bool IsRunning => _executingTask != null && !_executingTask.IsCompleted;
+
+    public TradingLoopService(ILogger<TradingLoopService> logger) => _logger = logger;
+
+    public async Task StartAsync(Func<CancellationToken, Task> cycle, TimeSpan interval, CancellationToken cancellationToken = default)
     {
-        get
-        {
-            lock (_sync)
-            {
-                return _loopTask is { IsCompleted: false };
-            }
-        }
+        if (IsRunning) return;
+
+        _loopCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _executingTask = RunLoopAsync(cycle, interval, _loopCts.Token);
+        
+        _logger.LogInformation("Trading Loop started with interval: {Interval}ms", interval.TotalMilliseconds);
+        await Task.CompletedTask;
     }
 
-    public Task StartAsync(Func<CancellationToken, Task> cycle, TimeSpan interval, CancellationToken cancellationToken = default)
+    private async Task RunLoopAsync(Func<CancellationToken, Task> cycle, TimeSpan interval, CancellationToken token)
     {
-        lock (_sync)
+        using var timer = new PeriodicTimer(interval);
+
+        while (!token.IsCancellationRequested && await timer.WaitForNextTickAsync(token))
         {
-            if (_loopTask is { IsCompleted: false })
+            try
             {
-                return Task.CompletedTask;
+                await cycle(token).ConfigureAwait(false);
             }
-
-            _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var token = _cts.Token;
-
-            _loopTask = Task.Run(async () =>
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
             {
-                await cycle(token);
-
-                while (!token.IsCancellationRequested)
-                {
-                    await Task.Delay(interval, token);
-                    await cycle(token);
-                }
-            }, token);
+                _logger.LogError(ex, "Critical error in Trading Cycle. Bot is recovering for next tick...");
+            }
         }
-
-        return Task.CompletedTask;
     }
 
     public void Stop()
     {
-        lock (_sync)
-        {
-            _cts?.Cancel();
-        }
+        _logger.LogWarning("Stopping Trading Loop...");
+        _loopCts?.Cancel();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _loopCts?.Cancel();
+        _loopCts?.Dispose();
     }
 }

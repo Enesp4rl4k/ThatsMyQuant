@@ -7,20 +7,13 @@ using ThatsMyQuant.Infrastructure.Persistence;
 
 namespace Listener.Api.Middleware;
 
-/// <summary>
-/// Validates incoming webhook requests using HMAC-SHA256 signature.
-/// Expects the signature in the "X-Signature-256" header.
-/// 
-/// To generate a valid signature for testing:
-///   - Body = JSON payload as UTF-8
-///   - Signature = HMAC-SHA256(Secret, Body) → hex string prefixed with "sha256="
-/// </summary>
 public class HmacValidationMiddleware
 {
     private const string SignatureHeader = "X-Signature-256";
     private const string TimestampHeader = "X-Timestamp";
     private const string NonceHeader = "X-Nonce";
     private const string IdempotencyHeader = "X-Idempotency-Key";
+
     private readonly RequestDelegate _next;
     private readonly string? _secret;
     private readonly TimeSpan _maxSkew;
@@ -42,149 +35,135 @@ public class HmacValidationMiddleware
 
     public async Task InvokeAsync(HttpContext context, QuantDbContext dbContext)
     {
-        // Only validate POST requests to webhook endpoints
-        if (context.Request.Method == HttpMethods.Post && 
-            context.Request.Path.StartsWithSegments("/webhook"))
+        if (!IsWebhookRequest(context))
         {
-            if (string.IsNullOrWhiteSpace(_secret))
-            {
-                _logger.LogError("WebhookSecret is not configured. Rejecting webhook request.");
-                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                await context.Response.WriteAsync("Webhook secret is not configured.");
-                return;
-            }
-
-            // Enable buffering so we can read the body multiple times
-            context.Request.EnableBuffering();
-
-            using var reader = new StreamReader(context.Request.Body, Encoding.UTF8, leaveOpen: true);
-            var body = await reader.ReadToEndAsync();
-            context.Request.Body.Position = 0; // Reset for the next middleware/handler
-
-            if (!context.Request.Headers.TryGetValue(SignatureHeader, out var signatureHeader))
-            {
-                _logger.LogWarning("Webhook request rejected: Missing {Header} from {IP}",
-                    SignatureHeader,
-                    context.Connection.RemoteIpAddress);
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("Missing signature header.");
-                return;
-            }
-
-            if (!context.Request.Headers.TryGetValue(TimestampHeader, out var timestampHeader) ||
-                !long.TryParse(timestampHeader.ToString(), out var unixTimestamp))
-            {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("Missing or invalid timestamp.");
-                return;
-            }
-
-            var requestTimestamp = DateTimeOffset.FromUnixTimeSeconds(unixTimestamp);
-            var now = DateTimeOffset.UtcNow;
-            if ((now - requestTimestamp).Duration() > _maxSkew)
-            {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("Request timestamp is outside the allowed window.");
-                return;
-            }
-
-            if (!context.Request.Headers.TryGetValue(NonceHeader, out var nonceHeader) ||
-                string.IsNullOrWhiteSpace(nonceHeader.ToString()))
-            {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("Missing nonce header.");
-                return;
-            }
-
-            if (!context.Request.Headers.TryGetValue(IdempotencyHeader, out var idempotencyHeader) ||
-                string.IsNullOrWhiteSpace(idempotencyHeader.ToString()))
-            {
-                context.Response.StatusCode = StatusCodes.Status409Conflict;
-                await context.Response.WriteAsync("Missing idempotency key.");
-                return;
-            }
-
-            var expectedSignature = ComputeSignature(body);
-            var receivedSignature = signatureHeader.ToString();
-
-            if (!CryptographicEquals(expectedSignature, receivedSignature))
-            {
-                _logger.LogWarning("Webhook request rejected: Invalid signature from {IP}",
-                    context.Connection.RemoteIpAddress);
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("Invalid signature.");
-                return;
-            }
-
-            var nonceCacheKey = $"webhook-nonce:{nonceHeader}";
-            if (_cache.TryGetValue(nonceCacheKey, out _))
-            {
-                context.Response.StatusCode = StatusCodes.Status409Conflict;
-                await context.Response.WriteAsync("Duplicate nonce detected.");
-                return;
-            }
-
-            var idempotencyCacheKey = $"webhook-idempotency:{idempotencyHeader}";
-            if (_cache.TryGetValue(idempotencyCacheKey, out _))
-            {
-                context.Response.StatusCode = StatusCodes.Status409Conflict;
-                await context.Response.WriteAsync("Duplicate idempotency key detected.");
-                return;
-            }
-
-            var idempotencyKey = idempotencyHeader.ToString();
-            var nonce = nonceHeader.ToString();
-            var existsInDb = await dbContext.WebhookRequestLogs.AnyAsync(x =>
-                x.IdempotencyKey == idempotencyKey || x.Nonce == nonce);
-            if (existsInDb)
-            {
-                context.Response.StatusCode = StatusCodes.Status409Conflict;
-                await context.Response.WriteAsync("Duplicate webhook request detected.");
-                return;
-            }
-
-            var entryOptions = new MemoryCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = _maxSkew
-            };
-            _cache.Set(nonceCacheKey, true, entryOptions);
-            _cache.Set(idempotencyCacheKey, true, entryOptions);
-            dbContext.WebhookRequestLogs.Add(new WebhookRequestLog
-            {
-                IdempotencyKey = idempotencyKey,
-                Nonce = nonce,
-                Signature = receivedSignature,
-                ReceivedAtUtc = DateTime.UtcNow,
-                ExpiresAtUtc = DateTime.UtcNow.Add(_maxSkew)
-            });
-            await dbContext.SaveChangesAsync();
-
-            _logger.LogInformation("Webhook signature validated successfully.");
+            await _next(context);
+            return;
         }
 
+        if (string.IsNullOrWhiteSpace(_secret))
+        {
+            _logger.LogCritical("WebhookSecret missing! Rejecting all incoming signals.");
+            await SendResponse(context, StatusCodes.Status500InternalServerError, "Security configuration error.");
+            return;
+        }
+
+        // 1. Pre-validation (Headers and Timing)
+        if (!TryValidateHeaders(context, out var headers))
+        {
+            await SendResponse(context, StatusCodes.Status401Unauthorized, "Missing security headers.");
+            return;
+        }
+
+        if (!IsTimestampValid(headers.Timestamp))
+        {
+            await SendResponse(context, StatusCodes.Status401Unauthorized, "Timestamp outside allowed window.");
+            return;
+        }
+
+        // 2. Cryptographic Validation
+        context.Request.EnableBuffering();
+        var body = await ReadBodyAsync(context.Request);
+
+        if (!IsSignatureValid(body, headers.Signature))
+        {
+            _logger.LogWarning("Invalid HMAC signature from {IP}", context.Connection.RemoteIpAddress);
+            await SendResponse(context, StatusCodes.Status401Unauthorized, "Invalid signature.");
+            return;
+        }
+
+        // 3. Replay Attack & Idempotency Protection
+        if (await IsDuplicateRequest(headers.Nonce, headers.Idempotency, dbContext))
+        {
+            await SendResponse(context, StatusCodes.Status409Conflict, "Duplicate request detected.");
+            return;
+        }
+
+        // 4. Finalize and Log
+        await RegisterSuccessfulRequest(headers, dbContext);
         await _next(context);
+    }
+
+    private static bool IsWebhookRequest(HttpContext context) =>
+        context.Request.Method == HttpMethods.Post && context.Request.Path.StartsWithSegments("/webhook");
+
+    private bool TryValidateHeaders(HttpContext context, out (string Signature, string Timestamp, string Nonce, string Idempotency) headers)
+    {
+        headers = (
+            context.Request.Headers[SignatureHeader].ToString(),
+            context.Request.Headers[TimestampHeader].ToString(),
+            context.Request.Headers[NonceHeader].ToString(),
+            context.Request.Headers[IdempotencyHeader].ToString()
+        );
+
+        return !string.IsNullOrWhiteSpace(headers.Signature) &&
+               !string.IsNullOrWhiteSpace(headers.Timestamp) &&
+               !string.IsNullOrWhiteSpace(headers.Nonce) &&
+               !string.IsNullOrWhiteSpace(headers.Idempotency);
+    }
+
+    private bool IsTimestampValid(string timestampStr)
+    {
+        if (!long.TryParse(timestampStr, out var unixTs)) return false;
+        var requestTime = DateTimeOffset.FromUnixTimeSeconds(unixTs);
+        return (DateTimeOffset.UtcNow - requestTime).Duration() <= _maxSkew;
+    }
+
+    private bool IsSignatureValid(string body, string receivedSignature)
+    {
+        var expected = ComputeSignature(body);
+        return CryptographicEquals(expected, receivedSignature);
+    }
+
+    private async Task<bool> IsDuplicateRequest(string nonce, string idempotency, QuantDbContext db)
+    {
+        if (_cache.TryGetValue($"webhook:{nonce}", out _) || _cache.TryGetValue($"webhook:{idempotency}", out _))
+            return true;
+
+        return await db.WebhookRequestLogs.AnyAsync(x => x.IdempotencyKey == idempotency || x.Nonce == nonce);
+    }
+
+    private async Task RegisterSuccessfulRequest((string Signature, string Timestamp, string Nonce, string Idempotency) h, QuantDbContext db)
+    {
+        var options = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = _maxSkew };
+        _cache.Set($"webhook:{h.Nonce}", true, options);
+        _cache.Set($"webhook:{h.Idempotency}", true, options);
+
+        db.WebhookRequestLogs.Add(new WebhookRequestLog
+        {
+            IdempotencyKey = h.Idempotency,
+            Nonce = h.Nonce,
+            Signature = h.Signature,
+            ReceivedAtUtc = DateTime.UtcNow,
+            ExpiresAtUtc = DateTime.UtcNow.Add(_maxSkew)
+        });
+        await db.SaveChangesAsync();
     }
 
     private string ComputeSignature(string payload)
     {
-        if (string.IsNullOrWhiteSpace(_secret))
-        {
-            throw new InvalidOperationException("Webhook secret is not configured.");
-        }
-
-        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_secret));
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_secret!));
         var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
         return "sha256=" + Convert.ToHexStringLower(hash);
     }
 
-    /// <summary>
-    /// Constant-time comparison to prevent timing attacks.
-    /// </summary>
     private static bool CryptographicEquals(string expected, string actual)
     {
         if (expected.Length != actual.Length) return false;
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(expected),
-            Encoding.UTF8.GetBytes(actual));
+        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(actual));
+    }
+
+    private static async Task<string> ReadBodyAsync(HttpRequest request)
+    {
+        using var reader = new StreamReader(request.Body, Encoding.UTF8, leaveOpen: true);
+        var body = await reader.ReadToEndAsync();
+        request.Body.Position = 0;
+        return body;
+    }
+
+    private static async Task SendResponse(HttpContext context, int statusCode, string message)
+    {
+        context.Response.StatusCode = statusCode;
+        await context.Response.WriteAsync(message);
     }
 }

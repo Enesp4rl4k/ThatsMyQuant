@@ -1,16 +1,13 @@
-using System.Net.WebSockets;
-using System.Text;
+﻿using System.Net.WebSockets;
 using System.Text.Json;
+using System.Buffers;
+using System.Buffers.Text;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 namespace ThatsMyQuant.Application.HftInfrastructure;
 
-/// <summary>
-/// A dedicated BackgroundService establishing a persistent streaming WebSocket connection directly 
-/// to the Binance cryptocurrency matching engine (stream.binance.com).
-/// </summary>
-public class BinanceWebsocketAdapter : BackgroundService
+public sealed class BinanceWebsocketAdapter : BackgroundService
 {
     private readonly HftRingBuffer<Domain.Entities.Signal> _ringBuffer;
     private readonly AllocationFreeSignalPool _signalPool;
@@ -30,62 +27,71 @@ public class BinanceWebsocketAdapter : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Initializing Binance Live Streaming Socket...");
-        
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            using var client = new ClientWebSocket();
-            try
-            {
-                await client.ConnectAsync(new Uri(_webSocketUrl), stoppingToken);
-                _logger.LogInformation("Connected to Binance BTC/USDT Live Trade Feed.");
 
-                var pool = System.Buffers.ArrayPool<byte>.Shared;
-                var arrayBuffer = pool.Rent(4096);
-                
-                try 
+        // 64KB Buffer for safety across high-volatility tick bursts
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(65536);
+
+        try
+        {
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                using var client = new ClientWebSocket();
+                try
                 {
+                    await client.ConnectAsync(new Uri(_webSocketUrl), stoppingToken).ConfigureAwait(false);
+                    _logger.LogInformation("Connected to Binance BTC/USDT Live Trade Feed.");
+
                     while (client.State == WebSocketState.Open && !stoppingToken.IsCancellationRequested)
                     {
-                        var result = await client.ReceiveAsync(new ArraySegment<byte>(arrayBuffer), stoppingToken);
+                        var result = await client.ReceiveAsync(new ArraySegment<byte>(buffer), stoppingToken).ConfigureAwait(false);
+
                         if (result.MessageType == WebSocketMessageType.Close) break;
 
-                        // Optimized Zero-Allocation JSON Parsing
-                        var reader = new Utf8JsonReader(arrayBuffer.AsSpan(0, result.Count));
-                        decimal price = 0;
-                        
-                        while (reader.Read())
+                        // SonarQube Fix: Sadece tam mesajları işle (Partial message protection)
+                        if (result.EndOfMessage)
                         {
-                            if (reader.TokenType == JsonTokenType.PropertyName && reader.ValueTextEquals("p"))
-                            {
-                                reader.Read();
-                                if (decimal.TryParse(reader.GetString(), out price)) break;
-                            }
-                        }
-
-                        if (price > 0)
-                        {
-                            var signal = _signalPool.Rent("BTCUSDT", price);
-
-                            // 2. Safely dump it onto the Lock-Free execution pipeline.
-                            bool enqueued = _ringBuffer.TryEnqueue(signal);
-                            
-                            if (!enqueued)
-                            {
-                                _logger.LogWarning("Execution Swarm Overloaded. Tick Dropped (RingBuffer Full).");
-                                _signalPool.Return(signal); 
-                            }
+                            ParseAndDispatch(buffer.AsSpan(0, result.Count));
                         }
                     }
                 }
-                finally
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    pool.Return(arrayBuffer);
+                    _logger.LogError(ex, "Binance WS Network Disconnect. Reconnecting...");
+                    await Task.Delay(3000, stoppingToken).ConfigureAwait(false);
                 }
             }
-            catch (Exception ex)
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private void ParseAndDispatch(ReadOnlySpan<byte> span)
+    {
+        var reader = new Utf8JsonReader(span);
+        decimal price = 0;
+
+        while (reader.Read())
+        {
+            // SonarQube Fix: reader.ValueTextEquals kullanarak string allocation'ı engelle
+            if (reader.TokenType == JsonTokenType.PropertyName && reader.ValueTextEquals("p"))
             {
-                _logger.LogError($"Binance WS Network Disconnect: {ex.Message}. Reconnecting in 3 seconds.");
-                await Task.Delay(3000, stoppingToken);
+                reader.Read();
+                // HFT Optimization: reader.ValueSpan üzerinden doğrudan decimal'e çevir
+                if (Utf8Parser.TryParse(reader.ValueSpan, out price, out _)) break;
+            }
+        }
+
+        if (price > 0)
+        {
+            var signal = _signalPool.Rent("BTCUSDT", price);
+
+            if (!_ringBuffer.TryEnqueue(signal))
+            {
+                // Telemetry: Hız yetişemezse sinyali havuza iade et ve logla
+                _signalPool.Return(signal);
+                _logger.LogWarning("Execution Overloaded. Tick Dropped.");
             }
         }
     }

@@ -1,5 +1,6 @@
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Domain.ValueObjects;
 
 namespace ThatsMyQuant.Infrastructure.Indicators;
 
