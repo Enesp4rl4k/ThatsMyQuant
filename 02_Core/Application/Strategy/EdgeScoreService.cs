@@ -30,8 +30,8 @@ public sealed class EdgeScoreService
         var metrics = new ScoreMetrics(
             ComputeSignalEdge(decision),
             ComputeHistoricalEdge(guards.Expectancy, guards.Symbol, guards.Promotion),
-            ComputeExecutionEdge(signal, decision, guards.Promotion, profile),
-            ComputeRiskContext(signal, decision, guards.Portfolio, guards.Risk)
+            ComputeExecutionEdge(signal, profile),
+            ComputeRiskContext(guards.Portfolio, guards.Risk)
         );
 
         var finalScore = (metrics.Signal * WeightSignal) + (metrics.Historical * WeightHistorical) +
@@ -48,23 +48,25 @@ public sealed class EdgeScoreService
 
     private EdgeScoreBreakdown ResolveFinalDecision(ScoreMetrics m, decimal final, decimal adj, List<string> reasons)
     {
-        if (m.Execution < 50m) return CreateBreakdown(m, final, adj, 0m, "reject", false, reasons, "Hard gate: Low Execution");
-        if (m.Risk < 50m) return CreateBreakdown(m, final, adj, 0m, "reject", false, reasons, "Hard gate: High Risk");
+        if (m.Execution < 50m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: Low Execution");
+        if (m.Risk < 50m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: High Risk");
 
         return adj switch
         {
-            >= 85m => CreateBreakdown(m, final, adj, 1.00m, "full", true, reasons),
-            >= 70m => CreateBreakdown(m, final, adj, 0.65m, "reduced", true, reasons, "Band: reduced size"),
-            >= 55m => CreateBreakdown(m, final, adj, 0m, "probe", false, reasons, "Band: probe/paper only"),
-            _ => CreateBreakdown(m, final, adj, 0m, "reject", false, reasons, "Band: reject")
+            >= 85m => CreateBreakdown(m, new BreakdownResult(final, adj, 1.00m, "full", true), reasons),
+            >= 70m => CreateBreakdown(m, new BreakdownResult(final, adj, 0.65m, "reduced", true), reasons, "Band: reduced size"),
+            >= 55m => CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "probe", false), reasons, "Band: probe/paper only"),
+            _ => CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Band: reject")
         };
     }
 
-    private static EdgeScoreBreakdown CreateBreakdown(ScoreMetrics m, decimal f, decimal a, decimal mult, string band, bool approved, List<string> reasons, string? extraReason = null)
+    private static EdgeScoreBreakdown CreateBreakdown(ScoreMetrics m, BreakdownResult res, List<string> reasons, string? extraReason = null)
     {
         if (extraReason != null) reasons.Add(extraReason);
-        return new EdgeScoreBreakdown(m.Signal, m.Historical, m.Execution, m.Risk, f, a, mult, band, approved, reasons);
+        return new EdgeScoreBreakdown(m.Signal, m.Historical, m.Execution, m.Risk, res.Final, res.Adjusted, res.Multiplier, res.Band, res.Approved, reasons);
     }
+
+    private readonly record struct BreakdownResult(decimal Final, decimal Adjusted, decimal Multiplier, string Band, bool Approved);
 
     private static decimal ComputeSignalEdge(TradeDecision decision)
     {
@@ -83,7 +85,7 @@ public sealed class EdgeScoreService
         return Math.Clamp((expectancyScore * 0.40m) + (symbolScore * 0.25m) + (promotionScore * 0.35m) - driftPenalty, 0m, 100m);
     }
 
-    private static decimal ComputeExecutionEdge(Signal signal, TradeDecision decision, PromotionGuardResult promotionGuard, MarketExecutionProfile profile)
+    private static decimal ComputeExecutionEdge(Signal signal, MarketExecutionProfile profile)
     {
         decimal edge = 78m;
         if (signal.Volume24h > 0)
@@ -94,7 +96,7 @@ public sealed class EdgeScoreService
         return Math.Clamp(edge, 0m, 100m);
     }
 
-    private static decimal ComputeRiskContext(Signal signal, TradeDecision decision, (bool Approved, string Reason) portfolioGuard, (bool Approved, string Reason, decimal SafeSize) riskVote)
+    private static decimal ComputeRiskContext((bool Approved, string Reason) portfolioGuard, (bool Approved, string Reason, decimal SafeSize) riskVote)
     {
         decimal score = 80m;
         if (!portfolioGuard.Approved) score -= 45m;

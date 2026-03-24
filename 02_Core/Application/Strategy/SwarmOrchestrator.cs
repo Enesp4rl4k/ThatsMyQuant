@@ -84,11 +84,10 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
             var (sentimentVote, riskVote) = await RunConcurrentAgents(request, riskParams, cancellationToken);
             var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.GetSnapshot());
 
-            float confidenceScore = CalculateConfidence(sentimentVote, riskVote, mlPrediction, request.InitialDecision, ref result);
+            float confidenceScore = CalculateConfidence(sentimentVote, riskVote, mlPrediction, request.InitialDecision, result);
+            confidenceScore = await ApplyMicrostructureInjection(request.Signal, result, confidenceScore, cancellationToken);
 
-            await ApplyMicrostructureInjection(request.Signal, ref result, ref confidenceScore, cancellationToken);
-
-            FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision, ref result);
+            FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision, result);
         }
         catch (Exception ex)
         {
@@ -119,7 +118,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         return (await sentimentTask, await riskTask);
     }
 
-    private float CalculateConfidence((bool Approved, string Reason) sentiment, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, ref SwarmConsensusResult result)
+    private float CalculateConfidence((bool Approved, string Reason) sentiment, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, SwarmConsensusResult result)
     {
         float score = 0;
         if (sentiment.Approved) score += 0.3f; else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
@@ -137,17 +136,18 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         return score;
     }
 
-    private async Task ApplyMicrostructureInjection(Signal signal, ref SwarmConsensusResult result, ref float confidence, CancellationToken ct)
+    private async Task<float> ApplyMicrostructureInjection(Signal signal, SwarmConsensusResult result, float confidence, CancellationToken ct)
     {
         if (signal.OrderFlowImbalance.HasValue)
         {
             await _ofiAgent.Handle(signal, ct);
             result.ExecutionAction = signal.ExecutionAction;
-            if (result.ExecutionAction != ExecutionActionType.MarketTaker) confidence += 0.1f;
+            if (result.ExecutionAction != ExecutionActionType.MarketTaker) return confidence + 0.1f;
         }
+        return confidence;
     }
 
-    private void FinalizeConsensus(float score, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, ref SwarmConsensusResult result)
+    private void FinalizeConsensus(float score, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, SwarmConsensusResult result)
     {
         if (score >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
         {

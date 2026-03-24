@@ -47,8 +47,8 @@ public class RiskAgent
         decimal b = 1.5m;
         decimal rawKelly = Math.Max(0m, (b * p - q) / b);
 
-        decimal safeAllocation = Math.Min(rawKelly * 0.5m, riskProfile.MaxPositionSizePercent);
-        if (safeAllocation <= 0.001m) return Task.FromResult((false, "Negative Edge.", 0m));
+        decimal safeAllocation = Math.Min(rawKelly * 0.5m, riskProfile.MaxPositionSizePercent / 100m);
+        if (safeAllocation <= 0.0001m) return Task.FromResult((false, "Negative Edge.", 0m));
 
         if (symbol24hVolume > 0)
         {
@@ -99,7 +99,7 @@ public class RiskAgent
             .Where(t => t.ExitTime.HasValue && t.ExitTime.Value >= dayStart && t.Status == TradeStatus.Executed && t.ExitPrice > 0)
             .Sum(t => (t.ExitPrice - t.EntryPrice) * t.Quantity * (t.Side == TradeSide.Sell ? -1 : 1));
 
-        var equity = assumedStartingEquity > 0 ? assumedStartingEquity : (riskProfile.StartingEquity > 0 ? riskProfile.StartingEquity : 100_000m);
+        var equity = GetBaseEquityForRiskCheck(assumedStartingEquity, riskProfile);
         var lossPercent = equity <= 0 ? 0 : Math.Abs(Math.Min(0, dailyClosedPnL) / equity) * 100m;
 
         if (lossPercent >= riskProfile.MaxDailyLossPercent)
@@ -108,6 +108,13 @@ public class RiskAgent
             return (false, "Daily loss limit breached.");
         }
         return (true, "");
+    }
+
+    private decimal GetBaseEquityForRiskCheck(decimal assumedStartingEquity, RiskParameters riskProfile)
+    {
+        if (assumedStartingEquity > 0) return assumedStartingEquity;
+        if (riskProfile.StartingEquity > 0) return riskProfile.StartingEquity;
+        return 100_000m;
     }
 
     private (bool Approved, string Reason) CheckConcurrentTradeLimits(IReadOnlyList<Trade> recentTrades, Signal signal)

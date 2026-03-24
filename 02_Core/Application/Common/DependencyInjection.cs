@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Application.MachineLearning;
+using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Domain.ValueObjects;
 
 namespace ThatsMyQuant.Application.Common;
 

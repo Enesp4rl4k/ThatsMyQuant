@@ -536,7 +536,7 @@ public partial class MainViewModel : ObservableObject
             StrategyTag = group.Key.Strategy, RegimeTag = group.Key.Regime,
             ExecutionMode = ResolveExecutionModeScope(group), PromotionStage = ResolvePromotionStageScope(group),
             Trades = group.Count(), WinRate = group.Count() > 0 ? wins * 100.0 / group.Count() : 0,
-            TotalPnL = pnls.Sum(), ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
+            TotalPnL = pnls.Sum(), ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss),
             AverageVenueExecutionBias = averageVenueBias, VenuePromotionImpact = venueImpact, VenueExecutionSummary = venueSummary,
             ExactBucketPromotionImpact = exactBucketImpact, ExactBucketSummary = exactBucketSummary,
             ConcordanceImpact = concordanceImpact, ConcordanceSummary = concordanceSummary,
@@ -592,7 +592,7 @@ public partial class MainViewModel : ObservableObject
                     SessionName = g.Key,
                     Trades = g.Count(),
                     WinRate = g.Count() == 0 ? 0 : wins * 100.0 / g.Count(),
-                    ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
+                    ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss),
                     TotalPnL = pnls.Sum(),
                     PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
                 };
@@ -732,7 +732,7 @@ public partial class MainViewModel : ObservableObject
         return new EdgeScoreBandRow
         {
             Band = group.Key, ExecutionMode = executionMode, PromotionStage = promotionStage, Trades = group.Count(), WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
-            ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0, TotalPnL = pnls.Sum(),
+            ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss), TotalPnL = pnls.Sum(),
             Summary = $"Avg score {averageScore:F1}. {wins}/{group.Count()} {summaryContext}.", PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
         };
     }
@@ -755,7 +755,7 @@ public partial class MainViewModel : ObservableObject
                 var wins = pnls.Count(pnl => pnl > 0);
                 var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
                 var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-                var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+                var profitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss);
                 var winRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count();
                 return profitFactor < 1.0 || winRate < 45;
             })
@@ -826,7 +826,7 @@ public partial class MainViewModel : ObservableObject
                 var wins = pnls.Count(pnl => pnl > 0);
                 var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
                 var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-                var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+                var profitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss);
                 var totalPnl = pnls.Sum();
 
                 return new EdgeOpportunityRow
@@ -931,7 +931,7 @@ public partial class MainViewModel : ObservableObject
         var grossProfit = pnls.Where(p => p > 0).Sum();
         var grossLoss = Math.Abs(pnls.Where(p => p < 0).Sum());
         
-        var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+        var profitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss);
         var winRate = wins * 100.0 / pnls.Count;
         
         return profitFactor < 1.0 || winRate < 45;
@@ -972,7 +972,7 @@ public partial class MainViewModel : ObservableObject
         var wins = pnls.Count(pnl => pnl > 0);
         var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
         var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-        var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+        var profitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss);
         var totalPnl = pnls.Sum();
         var mode = ResolveExecutionModeScope(policyGroup);
         var stage = ResolvePromotionStageScope(policyGroup);
@@ -1041,45 +1041,7 @@ public partial class MainViewModel : ObservableObject
                 Session = ResolveSessionBucketForTrade(trade),
                 ExitPolicy = string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "TrendRunner" : trade.ExitPolicyTag
             })
-            .Select(group =>
-            {
-                var paperTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "PAPER", StringComparison.OrdinalIgnoreCase)).ToList();
-                var liveTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "REAL", StringComparison.OrdinalIgnoreCase)).ToList();
-                if (paperTrades.Count < 2 || liveTrades.Count < 2)
-                {
-                    return null;
-                }
-
-                var paperPnls = paperTrades.Select(CalculateTradePnL).ToList();
-                var livePnls = liveTrades.Select(CalculateTradePnL).ToList();
-                var paperWinRate = paperPnls.Count(pnl => pnl > 0) * 100.0 / paperTrades.Count;
-                var liveWinRate = livePnls.Count(pnl => pnl > 0) * 100.0 / liveTrades.Count;
-                var paperProfitFactor = ComputeProfitFactorFromPnls(paperPnls);
-                var liveProfitFactor = ComputeProfitFactorFromPnls(livePnls);
-                var paperExpectedValue = paperPnls.Average();
-                var liveExpectedValue = livePnls.Average();
-                var driftScore = ComputeExitPolicyDriftScore(paperWinRate, liveWinRate, paperProfitFactor, liveProfitFactor, paperExpectedValue, liveExpectedValue);
-
-                return new ExitPolicyDriftRow
-                {
-                    Symbol = group.Key.Symbol,
-                    StrategyTag = group.Key.Strategy,
-                    RegimeTag = group.Key.Regime,
-                    SessionTag = group.Key.Session,
-                    ExitPolicyTag = group.Key.ExitPolicy,
-                    PaperTrades = paperTrades.Count,
-                    LiveTrades = liveTrades.Count,
-                    DriftScore = driftScore,
-                    PaperWinRate = paperWinRate,
-                    LiveWinRate = liveWinRate,
-                    PaperProfitFactor = paperProfitFactor,
-                    LiveProfitFactor = liveProfitFactor,
-                    PaperExpectedValue = paperExpectedValue,
-                    LiveExpectedValue = liveExpectedValue,
-                    Summary = ResolveStoredExitPolicyDriftSummary(group, group.Key.Symbol, group.Key.Strategy, group.Key.Regime, group.Key.Session, group.Key.ExitPolicy, driftScore, paperExpectedValue, liveExpectedValue, paperProfitFactor, liveProfitFactor),
-                    SeverityColor = driftScore >= 0.65 ? RedBrush : driftScore >= 0.45 ? OrangeBrush : GrayBrush
-                };
-            })
+            .Select(CreateExitPolicyDriftRow)
             .Where(row => row is not null && row.DriftScore >= 0.25)
             .Cast<ExitPolicyDriftRow>()
             .OrderByDescending(row => row.DriftScore)
@@ -1096,11 +1058,51 @@ public partial class MainViewModel : ObservableObject
             ?? "No meaningful live-vs-paper exit drift is visible yet for exact buckets.";
     }
 
+    private ExitPolicyDriftRow? CreateExitPolicyDriftRow(IGrouping<dynamic, Trade> group)
+    {
+        var paperTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "PAPER", StringComparison.OrdinalIgnoreCase)).ToList();
+        var liveTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "REAL", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (paperTrades.Count < 2 || liveTrades.Count < 2)
+        {
+            return null;
+        }
+
+        var paperPnls = paperTrades.Select(CalculateTradePnL).ToList();
+        var livePnls = liveTrades.Select(CalculateTradePnL).ToList();
+        var paperWinRate = paperPnls.Count(pnl => pnl > 0) * 100.0 / paperTrades.Count;
+        var liveWinRate = livePnls.Count(pnl => pnl > 0) * 100.0 / liveTrades.Count;
+        var paperProfitFactor = ComputeProfitFactorFromPnls(paperPnls);
+        var liveProfitFactor = ComputeProfitFactorFromPnls(livePnls);
+        var paperExpectedValue = paperPnls.Average();
+        var liveExpectedValue = livePnls.Average();
+        var driftScore = ComputeExitPolicyDriftScore(paperWinRate, liveWinRate, paperProfitFactor, liveProfitFactor, paperExpectedValue, liveExpectedValue);
+
+        return new ExitPolicyDriftRow
+        {
+            Symbol = group.Key.Symbol,
+            StrategyTag = group.Key.Strategy,
+            RegimeTag = group.Key.Regime,
+            SessionTag = group.Key.Session,
+            ExitPolicyTag = group.Key.ExitPolicy,
+            PaperTrades = paperTrades.Count,
+            LiveTrades = liveTrades.Count,
+            DriftScore = driftScore,
+            PaperWinRate = paperWinRate,
+            LiveWinRate = liveWinRate,
+            PaperProfitFactor = paperProfitFactor,
+            LiveProfitFactor = liveProfitFactor,
+            PaperExpectedValue = paperExpectedValue,
+            LiveExpectedValue = liveExpectedValue,
+            Summary = ResolveStoredExitPolicyDriftSummary(group, group.Key.Symbol, group.Key.Strategy, group.Key.Regime, group.Key.Session, group.Key.ExitPolicy, driftScore, paperExpectedValue, liveExpectedValue, paperProfitFactor, liveProfitFactor),
+            SeverityColor = ResolveDriftSeverityColor(driftScore)
+        };
+    }
+
     private static double ComputeProfitFactorFromPnls(IReadOnlyCollection<decimal> pnls)
     {
         var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
         var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-        return grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+        return (double)CalculateProfitFactor(grossProfit, grossLoss);
     }
 
     private static double ComputeExitPolicyDriftScore(
@@ -1161,6 +1163,42 @@ public partial class MainViewModel : ObservableObject
                $"Stored drift lead: {BuildTradeJournalEdgeSummary(trade)}; {BuildTradeJournalStageExplanation(trade)}; {ResolveAllocatorImpactFromTrade(trade)}; {(string.IsNullOrWhiteSpace(trade.VenueImpactLabel) ? ResolveVenueImpactFromTrade(trade) : trade.VenueImpactLabel)}.";
     }
 
+    private FinalAllocatorBiasRow CreateFinalAllocatorBiasRow(IGrouping<dynamic, Trade> group)
+    {
+        var pnls = group.Select(CalculateTradePnL).ToList();
+        var averageBias = group.Average(trade => trade.FinalAllocatorBias);
+        var totalPnl = pnls.Sum();
+        var biasDirection = ResolveBiasDirection(averageBias, "pushed higher", "trimmed lower");
+        var storedAllocatorSummary = ResolveStoredAllocatorSummary(
+            group,
+            averageBias,
+            group.Key.Symbol,
+            group.Key.Strategy,
+            group.Key.Regime,
+            group.Key.Session,
+            group.Key.Scope,
+            group.Key.ExecutionMode,
+            group.Key.PromotionStage,
+            totalPnl,
+            biasDirection);
+        return new FinalAllocatorBiasRow
+        {
+            Symbol = group.Key.Symbol,
+            StrategyTag = group.Key.Strategy,
+            RegimeTag = group.Key.Regime,
+            SessionTag = group.Key.Session,
+            AllocatorScope = group.Key.Scope,
+            ExecutionMode = group.Key.ExecutionMode,
+            PromotionStage = group.Key.PromotionStage,
+            Trades = group.Count(),
+            AverageBias = averageBias,
+            TotalPnL = totalPnl,
+            Summary = storedAllocatorSummary,
+            BiasColor = ResolveBiasColor(averageBias, GreenBrush, OrangeBrush),
+            PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
+        };
+    }
+
     private void PopulateFinalAllocatorBias(IReadOnlyList<Trade> closedTrades)
     {
         var rows = closedTrades
@@ -1175,41 +1213,7 @@ public partial class MainViewModel : ObservableObject
                 ExecutionMode = NormalizeExecutionMode(trade.ExecutionMode),
                 PromotionStage = string.IsNullOrWhiteSpace(trade.PromotionStage) ? "UNKNOWN" : trade.PromotionStage
             })
-            .Select(group =>
-            {
-                var pnls = group.Select(CalculateTradePnL).ToList();
-                var averageBias = group.Average(trade => trade.FinalAllocatorBias);
-                var totalPnl = pnls.Sum();
-                var biasDirection = averageBias >= 1.01m ? "pushed higher" : averageBias <= 0.99m ? "trimmed lower" : "kept neutral";
-                var storedAllocatorSummary = ResolveStoredAllocatorSummary(
-                    group,
-                    averageBias,
-                    group.Key.Symbol,
-                    group.Key.Strategy,
-                    group.Key.Regime,
-                    group.Key.Session,
-                    group.Key.Scope,
-                    group.Key.ExecutionMode,
-                    group.Key.PromotionStage,
-                    totalPnl,
-                    biasDirection);
-                return new FinalAllocatorBiasRow
-                {
-                    Symbol = group.Key.Symbol,
-                    StrategyTag = group.Key.Strategy,
-                    RegimeTag = group.Key.Regime,
-                    SessionTag = group.Key.Session,
-                    AllocatorScope = group.Key.Scope,
-                    ExecutionMode = group.Key.ExecutionMode,
-                    PromotionStage = group.Key.PromotionStage,
-                    Trades = group.Count(),
-                    AverageBias = averageBias,
-                    TotalPnL = totalPnl,
-                    Summary = storedAllocatorSummary,
-                    BiasColor = averageBias >= 1.01m ? GreenBrush : averageBias <= 0.99m ? OrangeBrush : GrayBrush,
-                    PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
-                };
-            })
+            .Select(CreateFinalAllocatorBiasRow)
             .OrderByDescending(row => Math.Abs(row.AverageBias - 1.0m))
             .ThenByDescending(row => Math.Abs(row.TotalPnL))
             .Take(6)
@@ -1231,19 +1235,6 @@ public partial class MainViewModel : ObservableObject
         string session,
         string scope,
         string executionMode,
-        string promotionStage,
-        decimal averageBias,
-        decimal totalPnl,
-        string biasDirection)
-    {
-        var pnlDirection = totalPnl >= 0 ? "positive" : "negative";
-        return $"{symbol} {strategy}/{regime} in {session} was {biasDirection} by the final allocator ({averageBias:F2}x) from {scope}. " +
-               $"Outcome stayed {pnlDirection} in {executionMode} / {promotionStage}.";
-    }
-
-    private string ResolveStoredAllocatorSummary(
-        IEnumerable<Trade> trades,
-        decimal averageBias,
         string symbol,
         string strategy,
         string regime,
@@ -1310,7 +1301,7 @@ public partial class MainViewModel : ObservableObject
         var pnls = group.Select(CalculateTradePnL).ToList();
         var averageBias = group.Average(trade => trade.VenueExecutionBias);
         var totalPnl = pnls.Sum();
-        var biasDirection = averageBias >= 1.01m ? "helped size" : averageBias <= 0.99m ? "poisoned size" : "stayed neutral";
+        var biasDirection = ResolveBiasDirection(averageBias, "helped size", "poisoned size");
         
         var storedVenueDisplay = ResolveStoredVenueDisplay(
             group,
@@ -1342,7 +1333,7 @@ public partial class MainViewModel : ObservableObject
             Summary = storedVenueDisplay.Summary,
             ConcordanceImpact = concImpact,
             ConcordanceSummary = concSummary,
-            BiasColor = averageBias >= 1.01m ? GreenBrush : averageBias <= 0.99m ? RedBrush : GrayBrush,
+            BiasColor = ResolveBiasColor(averageBias, GreenBrush, RedBrush),
             PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush,
             PromotionImpactColor = storedVenueDisplay.ImpactColor,
             ConcordanceImpactColor = concColor
@@ -1536,7 +1527,7 @@ public partial class MainViewModel : ObservableObject
         return new PerformanceMetrics(
             pnls.Count,
             wins * 100.0 / pnls.Count,
-            grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
+            (double)CalculateProfitFactor(grossProfit, grossLoss),
             pnls.Average(),
             pnls.Sum());
     }
@@ -1716,7 +1707,7 @@ public partial class MainViewModel : ObservableObject
         var impactLabel = string.IsNullOrWhiteSpace(storedTrade.VenueImpactLabel) ? "Venue neutral" : storedTrade.VenueImpactLabel;
         var scope = string.IsNullOrWhiteSpace(storedTrade.VenueExecutionScope) ? "stored venue scope unavailable" : storedTrade.VenueExecutionScope;
         var summary = $"{impactLabel}. Stored venue scope: {scope}. {symbol} {strategy}/{regime} in {session} stayed {biasDirection} in {executionMode} / {promotionStage}.";
-        var impactColor = averageBias <= 0.93m ? RedBrush : averageBias <= 0.98m ? OrangeBrush : averageBias >= 1.02m ? GreenBrush : GrayBrush;
+        var impactColor = ResolveVenueImpactColor(averageBias);
         return (impact, summary, impactColor, true);
     }
 
@@ -1836,7 +1827,7 @@ public partial class MainViewModel : ObservableObject
             AverageSlippagePercent = Math.Round(avgSlippage, 3),
             AverageLatencyMs = Math.Round(avgLatency, 0),
             Summary = $"{summary} {trades.Count} recent failures/losers, {failureRate:F1}% of the observed window. Scope: {executionModeScope} / {promotionStageScope}.",
-            SeverityColor = failureRate >= 35 ? RedBrush : failureRate >= 20 ? OrangeBrush : GrayBrush
+            SeverityColor = ResolveRateSeverityColor(failureRate)
         });
     }
 
@@ -2183,73 +2174,74 @@ public partial class MainViewModel : ObservableObject
         };
     }
 
-    private Brush ResolveVenueColor(decimal averageBias)
+    private Brush ResolveVenueImpactColor(decimal bias)
     {
-        if (averageBias <= 0.93m) return RedBrush;
-        if (averageBias <= 0.98m) return OrangeBrush;
-        if (averageBias >= 1.02m) return GreenBrush;
+        if (bias <= 0.93m) return RedBrush;
+        if (bias <= 0.98m) return OrangeBrush;
+        if (bias >= 1.02m) return GreenBrush;
+        return GrayBrush;
+    }
+
+    private Brush ResolveRateSeverityColor(double rate)
+    {
+        if (rate >= 35) return RedBrush;
+        if (rate >= 20) return OrangeBrush;
         return GrayBrush;
     }
 
     private (string Impact, string Summary, Brush Color) BuildExactBucketPressureDisplay(IEnumerable<Trade> trades)
     {
         var tradeList = trades.ToList();
-        var storedExactBucketTrade = tradeList
+        var stored = ResolveStoredExactBucketPressure(tradeList);
+        if (stored != null) return stored.Value;
+
+        var stats = CalculateTradeStats(tradeList);
+        var highEdgeStats = CalculateHighEdgeStats(tradeList);
+
+        if (ShouldCapForHighEdgeFail(highEdgeStats, out var highEdgeReason))
+        {
+            return ("Exact bucket is capping near Paper", highEdgeReason, RedBrush);
+        }
+
+        return ResolveDynamicPressure(stats);
+    }
+
+    private (string Impact, string Summary, Brush Color)? ResolveStoredExactBucketPressure(List<Trade> tradeList)
+    {
+        var storedTrade = tradeList
             .Where(trade => !string.IsNullOrWhiteSpace(trade.ExactBucketImpactLabel) || !string.IsNullOrWhiteSpace(trade.ExactBucketSummary))
             .OrderByDescending(trade => trade.ExitTime ?? trade.EntryTime)
             .FirstOrDefault();
 
-        if (storedExactBucketTrade is not null)
-        {
-            var storedImpact = string.IsNullOrWhiteSpace(storedExactBucketTrade.ExactBucketImpactLabel)
-                ? "Exact bucket pressure unconfirmed"
-                : storedExactBucketTrade.ExactBucketImpactLabel;
-            var storedSummary = string.IsNullOrWhiteSpace(storedExactBucketTrade.ExactBucketSummary)
-                ? "No exact bucket pressure signal has enough stored depth yet."
-                : storedExactBucketTrade.ExactBucketSummary;
+        if (storedTrade == null) return null;
 
-            return (storedImpact, storedSummary, ResolveExactBucketPressureColor(storedImpact));
-        }
+        var impact = string.IsNullOrWhiteSpace(storedTrade.ExactBucketImpactLabel) ? "Exact bucket pressure unconfirmed" : storedTrade.ExactBucketImpactLabel;
+        var summary = string.IsNullOrWhiteSpace(storedTrade.ExactBucketSummary) ? "No exact bucket pressure signal has enough stored depth yet." : storedTrade.ExactBucketSummary;
+        return (impact, summary, ResolveExactBucketPressureColor(impact));
+    }
 
+    private TradeStats CalculateTradeStats(List<Trade> tradeList)
+    {
         var pnls = tradeList.Select(CalculateTradePnL).ToList();
-        var wins = pnls.Count(pnl => pnl > 0);
         var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
         var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-        var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
-        var expectedValue = pnls.Count == 0 ? 0m : pnls.Average();
-        var winRate = tradeList.Count == 0 ? 0 : wins * 100.0 / tradeList.Count;
+
+        return new TradeStats
+        {
+            Count = tradeList.Count,
+            PnLs = pnls,
+            WinRate = tradeList.Count == 0 ? 0 : pnls.Count(pnl => pnl > 0) * 100.0 / tradeList.Count,
+            ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss),
+            ExpectedValue = pnls.Count == 0 ? 0m : pnls.Average()
+        };
+    }
+
+    private TradeStats CalculateHighEdgeStats(List<Trade> tradeList)
+    {
         var highEdgePnls = tradeList
-            .Where(trade => string.Equals(trade.EdgeBand, "Full", StringComparison.OrdinalIgnoreCase) ||
-                            string.Equals(trade.EdgeBand, "Reduced", StringComparison.OrdinalIgnoreCase) ||
-                            trade.EdgeScore >= 70m)
+            .Where(t => string.Equals(t.EdgeBand, "Full", StringComparison.OrdinalIgnoreCase) || string.Equals(t.EdgeBand, "Reduced", StringComparison.OrdinalIgnoreCase) || t.EdgeScore >= 70m)
             .Select(CalculateTradePnL)
             .ToList();
-        var highEdgeWinRate = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Count(value => value > 0) * 100.0 / highEdgePnls.Count;
-        var highEdgeProfitFactor = ComputeProfitFactorFromPnls(highEdgePnls);
-        var highEdgeExpectedValue = highEdgePnls.Count == 0 ? 0m : highEdgePnls.Average();
-
-        if (highEdgePnls.Count >= 3 &&
-            (highEdgeExpectedValue <= 0m || highEdgeProfitFactor < 1.05 || highEdgeWinRate < 46))
-        {
-            return ("Exact bucket is capping near Paper", $"High-edge exact outcomes are failing: PF {highEdgeProfitFactor:F2}, WR {highEdgeWinRate:F1}%, EV {highEdgeExpectedValue:F2}.", RedBrush);
-        }
-
-        if (expectedValue <= 0m || profitFactor < 0.95 || winRate < 42)
-        {
-            return ("Exact bucket is capping near Paper", $"Exact bucket is underperforming: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.", RedBrush);
-        }
-
-        if (profitFactor < 1.12 || winRate < 49 || expectedValue <= 0m)
-        {
-            return ("Exact bucket is holding LiveProbe", $"Exact bucket is still soft: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.", OrangeBrush);
-        }
-
-        if (highEdgePnls.Count >= 4 && highEdgeExpectedValue > 0m && highEdgeProfitFactor >= 1.35 && highEdgeWinRate >= 56)
-        {
-            return ("Exact bucket supports scaling", $"High-edge exact outcomes support scale: PF {highEdgeProfitFactor:F2}, WR {highEdgeWinRate:F1}%, EV {highEdgeExpectedValue:F2}.", GreenBrush);
-        }
-
-        if (expectedValue > 0m && profitFactor >= 1.22 && winRate >= 52)
         {
             return ("Exact bucket supports scaling", $"Exact bucket is healthy: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.", GreenBrush);
         }
@@ -3969,21 +3961,39 @@ public partial class MainViewModel : ObservableObject
     private void RefreshIndicatorProperties(IndicatorSnapshot ind)
     {
         CurrentPrice = ind.CurrentPrice;
-        RSI = ind.RSI ?? 50;
-        RSIColor = RSI < 30 ? GreenBrush : RSI > 70 ? RedBrush : GrayBrush;
+        UpdateRsiUi(ind.RSI);
+        UpdateMacdUi(ind.MACDHistogram);
+        UpdateEmaUi(ind.EMA20, ind.EMA50);
+        UpdateVitalsUi(ind.BollingerUpper, ind.BollingerLower, ind.ATR, ind.VolumeRatio);
+        UpdateAlphaTrendUi(ind.AlphaTrend);
 
-        if (ind.MACDHistogram > 0)
+        NearestSupport = ind.NearestSupport?.Price ?? 0;
+        NearestResistance = ind.NearestResistance?.Price ?? 0;
+    }
+
+    private void UpdateRsiUi(double? rsi)
+    {
+        RSI = rsi ?? 50;
+        RSIColor = RSI < 30 ? GreenBrush : RSI > 70 ? RedBrush : GrayBrush;
+    }
+
+    private void UpdateMacdUi(double macdHistogram)
+    {
+        if (macdHistogram > 0)
         {
-            MACDStatus = $"▲ Bullish ({ind.MACDHistogram:F4})";
+            MACDStatus = $"▲ Bullish ({macdHistogram:F4})";
             MACDColor = GreenBrush;
         }
         else
         {
-            MACDStatus = $"▼ Bearish ({ind.MACDHistogram:F4})";
+            MACDStatus = $"▼ Bearish ({macdHistogram:F4})";
             MACDColor = RedBrush;
         }
+    }
 
-        if (ind.EMA20 > ind.EMA50)
+    private void UpdateEmaUi(double ema20, double ema50)
+    {
+        if (ema20 > ema50)
         {
             EMAStatus = "Golden Cross ▲";
             EMAColor = GreenBrush;
@@ -3993,27 +4003,29 @@ public partial class MainViewModel : ObservableObject
             EMAStatus = "Death Cross ▼";
             EMAColor = RedBrush;
         }
+    }
 
-        BBUpper = ind.BollingerUpper ?? 0;
-        BBLower = ind.BollingerLower ?? 0;
-        ATR = ind.ATR ?? 0;
-        VolumeRatio = ind.VolumeRatio ?? 1.0;
+    private void UpdateVitalsUi(double? bbUpper, double? bbLower, double? atr, double? volRatio)
+    {
+        BBUpper = bbUpper ?? 0;
+        BBLower = bbLower ?? 0;
+        ATR = atr ?? 0;
+        VolumeRatio = volRatio ?? 1.0;
         VolumeColor = VolumeRatio >= 1.5 ? GreenBrush : GrayBrush;
+    }
 
-        if (ind.AlphaTrend != null)
+    private void UpdateAlphaTrendUi(AlphaTrendSnapshot? alpha)
+    {
+        if (alpha == null) return;
+
+        AlphaTrendValue = alpha.Value;
+        AlphaTrendStatus = alpha.IsBullish ? "▲ BULLISH" : "▼ BEARISH";
+        AlphaTrendColor = alpha.IsBullish ? GreenBrush : RedBrush;
+
+        if (alpha.Signal != null && alpha.IsConfirmed)
         {
-            AlphaTrendValue = ind.AlphaTrend.Value;
-            AlphaTrendStatus = ind.AlphaTrend.IsBullish ? "▲ BULLISH" : "▼ BEARISH";
-            AlphaTrendColor = ind.AlphaTrend.IsBullish ? GreenBrush : RedBrush;
-
-            if (ind.AlphaTrend.Signal != null && ind.AlphaTrend.IsConfirmed)
-            {
-                AddSystemLog($"⚡ AlphaTrend CONFIRMED {ind.AlphaTrend.Signal} signal!");
-            }
+            AddSystemLog($"⚡ AlphaTrend CONFIRMED {alpha.Signal} signal!");
         }
-
-        NearestSupport = ind.NearestSupport?.Price ?? 0;
-        NearestResistance = ind.NearestResistance?.Price ?? 0;
     }
 
     private void RefreshDecisionProperties(TradeDecision decision)
@@ -4358,7 +4370,7 @@ public partial class MainViewModel : ObservableObject
     {
         var normalizedAtr = ATR <= 0 ? 0.25m : Convert.ToDecimal(ATR);
         var referencePrice = CurrentPrice <= 0 ? 1m : CurrentPrice;
-        var queueMultiplier = QueueHealth == "Optimal" ? 0.65m : QueueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase) ? 1.8m : 1.1m;
+        var queueMultiplier = GetQueueMultiplier(QueueHealth);
         var readinessMultiplier = ExecutionReadiness >= 70 ? 0.75m : ExecutionReadiness >= 55 ? 1.0m : 1.25m;
         var volumeMultiplier = VolumeRatio >= 1.2 ? 0.8m : 1.15m;
         return Math.Round((normalizedAtr / referencePrice) * 10000m * queueMultiplier * readinessMultiplier * volumeMultiplier, 1);
@@ -4449,11 +4461,7 @@ public partial class MainViewModel : ObservableObject
     {
         if (ExecutionReadiness >= 70 && QueueHealth == "Optimal" && VolumeRatio >= 1.2)
         {
-            var summary = concordance?.Impact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase) == true
-                ? $"Concordance supports scaling. {concordance.Value.Summary}"
-                : pressure?.Impact.Contains("supports scaled deployment", StringComparison.OrdinalIgnoreCase) == true
-                    ? $"Bucket pressure supports scaling. {pressure.Value.Summary} {cText}"
-                    : $"Conditions supportive for faster workflows. {pText} {cText}";
+            var summary = ResolveHftReadySummary(pressure, concordance, pText, cText);
             SetHftBias("Ready", GreenBrush, summary);
             return true;
         }
@@ -4477,6 +4485,28 @@ public partial class MainViewModel : ObservableObject
             IsPassing = isPassing,
             Color = isPassing ? GreenBrush : OrangeBrush
         });
+    }
+
+    private decimal GetQueueMultiplier(string queueHealth)
+    {
+        if (queueHealth == "Optimal") return 0.65m;
+        if (queueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase)) return 1.8m;
+        return 1.1m;
+    }
+
+    private string ResolveHftReadySummary((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pText, string cText)
+    {
+        if (concordance?.Impact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase) == true)
+            return $"Concordance supports scaling. {concordance.Value.Summary}";
+        if (pressure?.Impact.Contains("supports scaled deployment", StringComparison.OrdinalIgnoreCase) == true)
+            return $"Bucket pressure supports scaling. {pressure.Value.Summary} {cText}";
+        return $"Conditions supportive for faster workflows. {pText} {cText}";
+    }
+
+    private static decimal CalculateProfitFactor(decimal grossProfit, decimal grossLoss)
+    {
+        if (grossLoss > 0) return grossProfit / grossLoss;
+        return grossProfit > 0 ? 99m : 0m;
     }
 
     private void UpdateSessionSummary()
@@ -5080,9 +5110,9 @@ public partial class MainViewModel : ObservableObject
                 $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Daily equity curve | {storedStageContext}"),
             "Weekly" => (now.Date.AddDays(-6), d => d.ToString("ddd"), 
                 $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Weekly growth | {storedStageContext}"),
-            "Yearly" => (new DateTime(now.Year, 1, 1), d => $"Q{((d.Month - 1) / 3) + 1}", 
+            "Yearly" => (new DateTime(now.Year, 1, 1, 0, 0, 0, DateTimeKind.Local), d => $"Q{((d.Month - 1) / 3) + 1}", 
                 $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Yearly growth | {storedStageContext}"),
-            _ => (new DateTime(now.Year, now.Month, 1), d => $"W{((d.Day - 1) / 7) + 1}", 
+            _ => (new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Local), d => $"W{((d.Day - 1) / 7) + 1}", 
                 $"{PortfolioExecutionModeLabel} | Stage {PortfolioPromotionStageLabel} | Monthly growth | {storedStageContext}")
         };
     }
@@ -5099,7 +5129,7 @@ public partial class MainViewModel : ObservableObject
         ApplyPortfolioSeries(labels, values);
     }
 
-    private void SetEmptyWindowGrowthState(double baseline, string summary)
+    private void SetEmptyWindowGrowthState(double baseline)
     {
         var labels = new List<string>();
         var values = new List<double>();

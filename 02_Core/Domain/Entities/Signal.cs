@@ -22,6 +22,7 @@ public class Signal : INotification
     public decimal Price { get; set; }
     public TradeStatus Status { get; set; } = TradeStatus.Pending;
     public int RetryCount { get; set; } = 0;
+    public decimal Quantity { get; set; } = 0m;
 
     /// <summary>Strategy confidence score 0-100. Higher = stronger indicator confluence.</summary>
     public int Confidence { get; set; }

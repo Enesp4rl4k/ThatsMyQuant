@@ -43,7 +43,7 @@ public sealed class CircularBuffer<T> : IEnumerable<T>
     {
         get
         {
-            if (index < 0 || index >= _count) throw new IndexOutOfRangeException();
+            if (index < 0 || index >= _count) throw new ArgumentOutOfRangeException(nameof(index), "Index was out of range.");
             return _buffer[(_tail + index) % _buffer.Length];
         }
     }

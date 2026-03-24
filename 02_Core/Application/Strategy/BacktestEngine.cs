@@ -67,10 +67,17 @@ public class BacktestEngineApp
             ExitReason = reason,
             EntryPrice = pos.EntryPrice,
             ExitPrice = exitPrice,
-            PnLPercent = pos.EntryPrice > 0 ? (exitPrice - pos.EntryPrice) / pos.EntryPrice * 100 * (pos.Side == TradeSide.Sell ? -1 : 1) : 0
+            PnLPercent = CalculatePnLPercent(pos.EntryPrice, exitPrice, pos.Side)
         });
 
         return null;
+    }
+
+    private decimal CalculatePnLPercent(decimal entryPrice, decimal exitPrice, TradeSide side)
+    {
+        if (entryPrice <= 0) return 0;
+        var rawPercent = (exitPrice - entryPrice) / entryPrice * 100;
+        return side == TradeSide.Sell ? -rawPercent : rawPercent;
     }
 
     private async Task<PaperPosition?> TryEntry(string symbol, List<Candle> candles, int index, decimal currentEquity)

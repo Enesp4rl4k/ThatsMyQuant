@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Domain.Enums;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -47,7 +48,7 @@ public sealed class BinanceExecutionService : IExchangeService
         {
             var error = await response.Content.ReadAsStringAsync();
             _logger.LogError("Binance execution failed: {Error}", error);
-            throw new Exception($"Binance execution failed: {error}");
+            throw new InvalidOperationException($"Binance execution failed: {error}");
         }
 
         var json = await response.Content.ReadAsStringAsync();
@@ -76,7 +77,7 @@ public sealed class BinanceExecutionService : IExchangeService
         if (!response.IsSuccessStatusCode)
         {
             var error = await response.Content.ReadAsStringAsync();
-            throw new Exception($"Failed to fetch Binance account status: {error}");
+            throw new InvalidOperationException($"Failed to fetch Binance account status: {error}");
         }
 
         var json = await response.Content.ReadAsStringAsync();

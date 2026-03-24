@@ -174,8 +174,13 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         };
         signal.ExecutionAction = swarmResult.ExecutionAction;
 
-        _logger.LogInformation("✅ SWARM APPROVED: Confidence={Confidence}/100 | SL={SL:F2} | TP={TP:F2} | Size={Size:P1} | Action={Action}",
-            adjustedDecision.Confidence, adjustedDecision.StopLoss, adjustedDecision.TakeProfit, adjustedDecision.PositionSizePercent, signal.ExecutionAction);
+        if (signal.Price > 0)
+        {
+            signal.Quantity = Math.Round((riskParams.StartingEquity * adjustedDecision.PositionSizePercent) / signal.Price, 4);
+        }
+
+        _logger.LogInformation("✅ SWARM APPROVED: Confidence={Confidence}/100 | SL={SL:F2} | TP={TP:F2} | Size={Size:P1} | Action={Action} | Qty={Qty}",
+            adjustedDecision.Confidence, adjustedDecision.StopLoss, adjustedDecision.TakeProfit, adjustedDecision.PositionSizePercent, signal.ExecutionAction, signal.Quantity);
 
         return (adjustedDecision, true);
     }
