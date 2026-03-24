@@ -37,60 +37,72 @@ public sealed class StrategyPromotionService
             var paperMatch = FindBestBucketMatch(_state.PaperBuckets, signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag);
             var liveMatch = FindBestBucketMatch(_state.LiveBuckets, signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag);
             
-            var backtestBucket = backtestMatch.Bucket;
-            var paperBucket = paperMatch.Bucket;
-            var liveBucket = liveMatch.Bucket;
-            var executionProfile = _executionProfiles.ResolveForSymbol(signal.Symbol, signal.Metadata);
             var capitalBiasMultiplier = ComputeCapitalBiasMultiplier(backtestMatch, paperMatch, liveMatch);
             var capitalBiasLabel = BuildCapitalBiasLabel(backtestMatch, paperMatch, liveMatch, capitalBiasMultiplier);
             
-            var res = CheckLadderGates(signal, decision, backtestBucket, paperBucket);
+            var res = PerformPromotionGuardChecks(signal, decision, backtestMatch, paperMatch, liveMatch, capitalBiasMultiplier, capitalBiasLabel);
             if (res != null) return res.Value;
 
-            res = CheckLiveSampleDepth(liveBucket, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
-
-            var exactBucketSizingBias = ComputeExactBucketSizingBias(signal, decision, liveMatch);
-            var venueExecutionBias = ComputeVenueExecutionBias(signal, liveMatch);
-            var concordancePromotionBias = ComputeExactVenueConcordancePromotionBias(signal, decision, exactBucketSizingBias, venueExecutionBias);
-            
-            res = CheckConcordanceBias(concordancePromotionBias, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
-
-            var venuePromotionBias = ComputeVenuePromotionBias(signal, liveMatch);
-            res = CheckVenuePromotionBias(venuePromotionBias, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
-
-            if (liveBucket != null)
+            var driftScoreValue = (paperMatch.Bucket != null && liveMatch.Bucket != null) ? ComputeDriftScore(paperMatch.Bucket, liveMatch.Bucket) : 0;
+            if (paperMatch.Bucket != null && liveMatch.Bucket != null)
             {
-                res = CheckEdgeQuality(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
-                if (res != null) return res.Value;
-
-                res = CheckHighEdgeOutcomes(signal, decision, liveBucket, capitalBiasMultiplier, capitalBiasLabel);
-                if (res != null) return res.Value;
-
-                res = CheckHftLatency(decision, liveBucket, executionProfile, capitalBiasMultiplier, capitalBiasLabel);
+                res = CheckPaperLiveDrift(sessionTag, liveMatch.Bucket, driftScoreValue, capitalBiasMultiplier, capitalBiasLabel);
                 if (res != null) return res.Value;
             }
 
-            var exactBucketPromotionBias = ComputeExactBucketPromotionBias(signal, decision, liveMatch);
-            res = CheckExactBucketPromotionBias(exactBucketPromotionBias, capitalBiasLabel);
-            if (res != null) return res.Value;
-
-            var exitPolicyDrift = EvaluateExitPolicyDrift(signal.Symbol, decision.StrategyTag, decision.RegimeTag, sessionTag, decision.ExitPolicyTag);
-            res = CheckExitPolicyDrift(decision, sessionTag, exitPolicyDrift, capitalBiasMultiplier, capitalBiasLabel);
-            if (res != null) return res.Value;
-
-            double driftScoreValue = 0;
-            if (paperBucket != null && liveBucket != null)
-            {
-                driftScoreValue = ComputeDriftScore(paperBucket, liveBucket);
-                res = CheckPaperLiveDrift(sessionTag, liveBucket, driftScoreValue, capitalBiasMultiplier, capitalBiasLabel);
-                if (res != null) return res.Value;
-            }
-
-            return CreateFinalPromotionResult(liveBucket ?? new StrategyBucketPerformanceSnapshot(), concordancePromotionBias, capitalBiasMultiplier, capitalBiasLabel, driftScoreValue);
+            return CreateFinalPromotionResult(liveMatch.Bucket ?? new StrategyBucketPerformanceSnapshot(), null, capitalBiasMultiplier, capitalBiasLabel, driftScoreValue);
         }
+    }
+
+    private PromotionGuardResult? PerformPromotionGuardChecks(
+        Signal signal, TradeDecision decision, 
+        BucketMatch backtest, BucketMatch paper, BucketMatch live, 
+        decimal capitalBias, string biasLabel)
+    {
+        var res = CheckLadderGates(signal, decision, backtest.Bucket, paper.Bucket);
+        if (res != null) return res;
+
+        res = CheckLiveSampleDepth(live.Bucket, capitalBias, biasLabel);
+        if (res != null) return res;
+
+        var exactBucketSizingBias = ComputeExactBucketSizingBias(signal, decision, live);
+        var venueExecutionBias = ComputeVenueExecutionBias(signal, live);
+        var concordancePromotionBias = ComputeExactVenueConcordancePromotionBias(signal, decision, exactBucketSizingBias, venueExecutionBias);
+        
+        res = CheckConcordanceBias(concordancePromotionBias, capitalBias, biasLabel);
+        if (res != null) return res;
+
+        var venuePromotionBias = ComputeVenuePromotionBias(signal, live);
+        res = CheckVenuePromotionBias(venuePromotionBias, capitalBias, biasLabel);
+        if (res != null) return res;
+
+        if (live.Bucket != null)
+        {
+            res = PerformLiveBucketQualityChecks(signal, decision, live.Bucket, capitalBias, biasLabel);
+            if (res != null) return res;
+        }
+
+        var exactBucketPromotionBias = ComputeExactBucketPromotionBias(signal, decision, live);
+        res = CheckExactBucketPromotionBias(exactBucketPromotionBias, biasLabel);
+        if (res != null) return res;
+
+        var exitPolicyDrift = EvaluateExitPolicyDrift(signal.Symbol, decision.StrategyTag, decision.RegimeTag, ResolveSessionBucket(signal.Timestamp), decision.ExitPolicyTag);
+        return CheckExitPolicyDrift(decision, ResolveSessionBucket(signal.Timestamp), exitPolicyDrift, capitalBias, biasLabel);
+    }
+
+    private PromotionGuardResult? PerformLiveBucketQualityChecks(
+        Signal signal, TradeDecision decision, 
+        StrategyBucketPerformanceSnapshot bucket, 
+        decimal capitalBias, string biasLabel)
+    {
+        var profile = _executionProfiles.ResolveForSymbol(signal.Symbol, signal.Metadata);
+        var res = CheckEdgeQuality(signal, decision, bucket, capitalBias, biasLabel);
+        if (res != null) return res;
+
+        res = CheckHighEdgeOutcomes(signal, decision, bucket, capitalBias, biasLabel);
+        if (res != null) return res;
+
+        return CheckHftLatency(decision, bucket, profile, capitalBias, biasLabel);
     }
 
     private static PromotionGuardResult? CheckLadderGates(Signal signal, TradeDecision decision, StrategyBucketPerformanceSnapshot? backtestBucket, StrategyBucketPerformanceSnapshot? paperBucket)
@@ -444,84 +456,24 @@ public sealed class StrategyPromotionService
 
     public async Task RecordBacktestState(BacktestResult result)
     {
-        // ... (preserving logic)
-        // Note: keeping lock for state modification, but calling persist after
-        List<StrategyBucketPerformanceSnapshot> snapshots;
-        List<ExitPolicyPerformanceSnapshot> exitPolicySnapshots;
-
         lock (_sync)
         {
-            snapshots = result.Trades
+            var tradeEntities = result.Trades.Select(MapToTrade).ToList();
+
+            var snapshots = tradeEntities
                 .GroupBy(trade => new
                 {
                     result.Symbol,
                     StrategyTag = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "TrendConfluence" : trade.StrategyTag,
                     RegimeTag = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                    SessionTag = ResolveSessionBucket(trade.ExitTime)
+                    SessionTag = ResolveSessionBucket(trade.ExitTime ?? DateTime.UtcNow)
                 })
-                .Select(group =>
-                {
-                    var pnlValues = group.Select(trade => trade.PnL).ToList();
-                    var backtestPass = pnlValues.Count >= 6 &&
-                                       ComputeProfitFactor(pnlValues) >= 1.15 &&
-                                       pnlValues.Average() > 0 &&
-                                       group.Count(trade => trade.PnL > 0) * 1.0 / Math.Max(1, group.Count()) >= 0.42;
-
-                    return new StrategyBucketPerformanceSnapshot
-                    {
-                        Symbol = group.Key.Symbol,
-                        StrategyTag = group.Key.StrategyTag,
-                        RegimeTag = group.Key.RegimeTag,
-                        SessionTag = group.Key.SessionTag,
-                        Trades = pnlValues.Count,
-                        WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(value => value > 0) * 100.0 / pnlValues.Count,
-                        ProfitFactor = ComputeProfitFactor(pnlValues),
-                        ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
-                        TotalPnL = pnlValues.Sum(),
-                        BacktestPass = backtestPass,
-                        RecordedAtUtc = DateTime.UtcNow,
-                        PromotionReady = backtestPass,
-                        PromotionStage = "Backtest"
-                    };
-                })
+                .Select(group => CreateBacktestBucketSnapshot(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, group.ToList()))
                 .ToList();
 
-            exitPolicySnapshots = result.Trades
-                .GroupBy(trade => new
-                {
-                    result.Symbol,
-                    StrategyTag = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "TrendConfluence" : trade.StrategyTag,
-                    RegimeTag = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                    SessionTag = ResolveSessionBucket(trade.ExitTime),
-                    ExitPolicyTag = string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "TrendRunner" : trade.ExitPolicyTag,
-                    ExecutionMode = string.IsNullOrWhiteSpace(trade.ExecutionMode) ? "SIMULATED" : trade.ExecutionMode
-                })
-                .Select(group => new ExitPolicyPerformanceSnapshot
-                {
-                    Symbol = group.Key.Symbol,
-                    StrategyTag = group.Key.StrategyTag,
-                    RegimeTag = group.Key.RegimeTag,
-                    SessionTag = group.Key.SessionTag,
-                    ExitPolicyTag = group.Key.ExitPolicyTag,
-                    ExecutionMode = group.Key.ExecutionMode,
-                    Trades = group.Count(),
-                    WinRate = group.Count() == 0 ? 0 : group.Count(item => item.PnL > 0) * 100.0 / group.Count(),
-                    ProfitFactor = ComputeProfitFactor(group.Select(item => item.PnL)),
-                    ExpectedValue = group.Any() ? group.Average(item => item.PnL) : 0m,
-                    TotalPnL = group.Sum(item => item.PnL),
-                    RecordedAtUtc = DateTime.UtcNow
-                })
-                .ToList();
+            var exitPolicySnapshots = RefreshExitPolicySnapshots(tradeEntities, result.Symbol, "SIMULATED");
 
-            foreach (var snapshot in snapshots)
-            {
-                _state.BacktestBuckets.RemoveAll(existing =>
-                    string.Equals(existing.Symbol, snapshot.Symbol, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(existing.StrategyTag, snapshot.StrategyTag, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(existing.RegimeTag, snapshot.RegimeTag, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(existing.SessionTag, snapshot.SessionTag, StringComparison.OrdinalIgnoreCase));
-                _state.BacktestBuckets.Add(snapshot);
-            }
+            UpdateBuckets(_state.BacktestBuckets, snapshots);
             UpsertExitPolicySnapshots(exitPolicySnapshots);
         }
 
@@ -530,95 +482,82 @@ public sealed class StrategyPromotionService
 
     public async Task RecordPaperState(IEnumerable<PaperPosition> closedPositions)
     {
-        List<StrategyBucketPerformanceSnapshot> paperSnapshots;
-        List<ExitPolicyPerformanceSnapshot> exitPolicySnapshots;
-
-        var closedList = closedPositions
-            .Where(position => position.ExitTime.HasValue)
-            .ToList();
+        var closedList = closedPositions.Where(p => p.ExitTime.HasValue).ToList();
 
         lock (_sync)
         {
-            paperSnapshots = closedList
-                .GroupBy(position => new
-                {
-                    position.Symbol,
-                    position.StrategyTag,
-                    position.RegimeTag,
-                    SessionTag = ResolveSessionBucket(position.ExitTime!.Value)
-                })
-                .Select(group =>
-                {
-                    var pnlValues = group.Select(GetPaperPnl).ToList();
-                    var backtestBucket = FindBestBucketMatch(_state.BacktestBuckets, group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag).Bucket;
-                    var backtestPass = backtestBucket?.BacktestPass == true;
-                    var paperPass = backtestPass &&
-                                    pnlValues.Count >= 8 &&
-                                    ComputeProfitFactor(pnlValues) >= 1.20 &&
-                                    pnlValues.Average() > 0 &&
-                                    pnlValues.Count(value => value > 0) * 1.0 / pnlValues.Count >= 0.45;
-
-                    return new StrategyBucketPerformanceSnapshot
-                    {
-                        Symbol = group.Key.Symbol,
-                        StrategyTag = group.Key.StrategyTag,
-                        RegimeTag = group.Key.RegimeTag,
-                        SessionTag = group.Key.SessionTag,
-                        Trades = pnlValues.Count,
-                        WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(value => value > 0) * 100.0 / pnlValues.Count,
-                        ProfitFactor = ComputeProfitFactor(pnlValues),
-                        ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
-                        TotalPnL = pnlValues.Sum(),
-                        BacktestPass = backtestPass,
-                        PaperPass = paperPass,
-                        PromotionReady = paperPass,
-                        PromotionStage = paperPass ? "Paper" : "Backtest",
-                        RecordedAtUtc = DateTime.UtcNow
-                    };
-                })
+            var paperSnapshots = closedList
+                .GroupBy(p => new { p.Symbol, p.StrategyTag, p.RegimeTag, SessionTag = ResolveSessionBucket(p.ExitTime!.Value) })
+                .Select(group => CreatePaperBucketSnapshot(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, group.ToList()))
                 .ToList();
 
-            exitPolicySnapshots = closedList
-                .GroupBy(position => new
-                {
-                    position.Symbol,
-                    position.StrategyTag,
-                    position.RegimeTag,
-                    SessionTag = ResolveSessionBucket(position.ExitTime!.Value),
-                    ExitPolicyTag = string.IsNullOrWhiteSpace(position.ExitPolicyTag) ? "TrendRunner" : position.ExitPolicyTag,
-                    ExecutionMode = string.IsNullOrWhiteSpace(position.ExecutionMode) ? "PAPER" : position.ExecutionMode
-                })
-                .Select(group => new ExitPolicyPerformanceSnapshot
-                {
-                    Symbol = group.Key.Symbol,
-                    StrategyTag = group.Key.StrategyTag,
-                    RegimeTag = group.Key.RegimeTag,
-                    SessionTag = group.Key.SessionTag,
-                    ExitPolicyTag = group.Key.ExitPolicyTag,
-                    ExecutionMode = group.Key.ExecutionMode,
-                    Trades = group.Count(),
-                    WinRate = group.Count() == 0 ? 0 : group.Count(item => item.RealizedPnL > 0) * 100.0 / group.Count(),
-                    ProfitFactor = ComputeProfitFactor(group.Select(item => item.RealizedPnL)),
-                    ExpectedValue = group.Any() ? group.Average(item => item.RealizedPnL) : 0m,
-                    TotalPnL = group.Sum(item => item.RealizedPnL),
-                    RecordedAtUtc = DateTime.UtcNow
-                })
-                .ToList();
+            var exitPolicySnapshots = RefreshExitPolicySnapshotsFromPaper(closedList);
 
-            foreach (var snapshot in paperSnapshots)
-            {
-                _state.PaperBuckets.RemoveAll(existing =>
-                    string.Equals(existing.Symbol, snapshot.Symbol, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(existing.StrategyTag, snapshot.StrategyTag, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(existing.RegimeTag, snapshot.RegimeTag, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(existing.SessionTag, snapshot.SessionTag, StringComparison.OrdinalIgnoreCase));
-                _state.PaperBuckets.Add(snapshot);
-            }
+            UpdateBuckets(_state.PaperBuckets, paperSnapshots);
             UpsertExitPolicySnapshots(exitPolicySnapshots);
         }
 
         await PersistAsync();
     }
+
+    private static StrategyBucketPerformanceSnapshot CreateBacktestBucketSnapshot(string symbol, string strategy, string regime, string session, List<Trade> trades)
+    {
+        var pnlValues = trades.Select(GetLivePnl).ToList();
+        var pass = pnlValues.Count >= 6 && ComputeProfitFactor(pnlValues) >= 1.15 && pnlValues.Average() > 0 && trades.Count(t => GetLivePnl(t) > 0) * 1.0 / Math.Max(1, trades.Count) >= 0.42;
+        return new StrategyBucketPerformanceSnapshot
+        {
+            Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session,
+            Trades = pnlValues.Count, WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(v => v > 0) * 100.0 / pnlValues.Count,
+            ProfitFactor = ComputeProfitFactor(pnlValues), ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
+            TotalPnL = pnlValues.Sum(), BacktestPass = pass, RecordedAtUtc = DateTime.UtcNow, PromotionReady = pass, PromotionStage = "Backtest"
+        };
+    }
+
+    private StrategyBucketPerformanceSnapshot CreatePaperBucketSnapshot(string symbol, string strategy, string regime, string session, List<PaperPosition> positions)
+    {
+        var pnlValues = positions.Select(GetPaperPnl).ToList();
+        var backtestMatch = FindBestBucketMatch(_state.BacktestBuckets, symbol, strategy, regime, session).Bucket;
+        var backtestPass = backtestMatch?.BacktestPass == true;
+        var paperPass = backtestPass && pnlValues.Count >= 8 && ComputeProfitFactor(pnlValues) >= 1.20 && pnlValues.Average() > 0 && pnlValues.Count(v => v > 0) * 1.0 / pnlValues.Count >= 0.45;
+        return new StrategyBucketPerformanceSnapshot
+        {
+            Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session,
+            Trades = pnlValues.Count, WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(v => v > 0) * 100.0 / pnlValues.Count,
+            ProfitFactor = ComputeProfitFactor(pnlValues), ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
+            TotalPnL = pnlValues.Sum(), BacktestPass = backtestPass, PaperPass = paperPass,
+            PromotionReady = paperPass, PromotionStage = paperPass ? "Paper" : "Backtest", RecordedAtUtc = DateTime.UtcNow
+        };
+    }
+
+    private List<ExitPolicyPerformanceSnapshot> RefreshExitPolicySnapshots(IEnumerable<Trade> trades, string symbol, string fallbackMode)
+    {
+        return trades
+            .GroupBy(t => new { symbol, StrategyTag = string.IsNullOrWhiteSpace(t.StrategyTag) ? "TrendConfluence" : t.StrategyTag, RegimeTag = string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag, SessionTag = ResolveSessionBucket(t.ExitTime ?? DateTime.UtcNow), ExitPolicyTag = string.IsNullOrWhiteSpace(t.ExitPolicyTag) ? "TrendRunner" : t.ExitPolicyTag, ExecutionMode = string.IsNullOrWhiteSpace(t.ExecutionMode) ? fallbackMode : t.ExecutionMode })
+            .Select(g => new ExitPolicyPerformanceSnapshot { Symbol = g.Key.symbol, StrategyTag = g.Key.StrategyTag, RegimeTag = g.Key.RegimeTag, SessionTag = g.Key.SessionTag, ExitPolicyTag = g.Key.ExitPolicyTag, ExecutionMode = g.Key.ExecutionMode, Trades = g.Count(), WinRate = g.Count() == 0 ? 0 : g.Count(item => GetLivePnl(item) > 0) * 100.0 / g.Count(), ProfitFactor = ComputeProfitFactor(g.Select(GetLivePnl)), ExpectedValue = g.Any() ? g.Average(GetLivePnl) : 0m, TotalPnL = g.Sum(GetLivePnl), RecordedAtUtc = DateTime.UtcNow })
+            .ToList();
+    }
+
+    private List<ExitPolicyPerformanceSnapshot> RefreshExitPolicySnapshotsFromPaper(List<PaperPosition> positions)
+    {
+        return positions
+            .GroupBy(p => new { p.Symbol, p.StrategyTag, p.RegimeTag, SessionTag = ResolveSessionBucket(p.ExitTime!.Value), ExitPolicyTag = string.IsNullOrWhiteSpace(p.ExitPolicyTag) ? "TrendRunner" : p.ExitPolicyTag, ExecutionMode = string.IsNullOrWhiteSpace(p.ExecutionMode) ? "PAPER" : p.ExecutionMode })
+            .Select(g => new ExitPolicyPerformanceSnapshot { Symbol = g.Key.Symbol, StrategyTag = g.Key.StrategyTag, RegimeTag = g.Key.RegimeTag, SessionTag = g.Key.SessionTag, ExitPolicyTag = g.Key.ExitPolicyTag, ExecutionMode = g.Key.ExecutionMode, Trades = g.Count(), WinRate = g.Count() == 0 ? 0 : g.Count(item => item.RealizedPnL > 0) * 100.0 / g.Count(), ProfitFactor = ComputeProfitFactor(g.Select(item => item.RealizedPnL)), ExpectedValue = g.Any() ? g.Average(item => item.RealizedPnL) : 0m, TotalPnL = g.Sum(item => item.RealizedPnL), RecordedAtUtc = DateTime.UtcNow })
+            .ToList();
+    }
+
+    private static void UpdateBuckets(List<StrategyBucketPerformanceSnapshot> target, List<StrategyBucketPerformanceSnapshot> source)
+    {
+        foreach (var snapshot in source)
+        {
+            target.RemoveAll(existing =>
+                string.Equals(existing.Symbol, snapshot.Symbol, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.StrategyTag, snapshot.StrategyTag, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.RegimeTag, snapshot.RegimeTag, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.SessionTag, snapshot.SessionTag, StringComparison.OrdinalIgnoreCase));
+            target.Add(snapshot);
+        }
+    }
+
 
     public StrategyPerformanceState GetState()
     {
@@ -662,40 +601,33 @@ public sealed class StrategyPromotionService
     private StrategyBucketPerformanceSnapshot CreateBucketSnapshot(string symbol, string strategyTag, string regimeTag, string sessionTag, List<Trade> trades)
     {
         var pnlValues = trades.Select(GetLivePnl).ToList();
-        var highEdgePnls = trades
-            .Where(trade => IsHighEdgeBand(trade.EdgeBand, trade.EdgeScore))
-            .Select(GetLivePnl)
-            .ToList();
+        var backtestMatch = FindBestBucketMatch(_state.BacktestBuckets, symbol, strategyTag, regimeTag, sessionTag).Bucket;
+        var paperMatch = FindBestBucketMatch(_state.PaperBuckets, symbol, strategyTag, regimeTag, sessionTag).Bucket;
         
-        var boostedAllocatorPnls = trades.Where(t => t.FinalAllocatorBias > 1.01m).Select(GetLivePnl).ToList();
-        var trimmedAllocatorPnls = trades.Where(t => t.FinalAllocatorBias > 0m && t.FinalAllocatorBias < 0.99m).Select(GetLivePnl).ToList();
-        
-        var boostedVenuePnls = trades.Where(t => t.VenueExecutionBias > 1.01m).Select(GetLivePnl).ToList();
-        var trimmedVenuePnls = trades.Where(t => t.VenueExecutionBias > 0m && t.VenueExecutionBias < 0.99m).Select(GetLivePnl).ToList();
+        var backtestPass = backtestMatch?.BacktestPass == true;
+        var paperPass = paperMatch?.PaperPass == true;
 
-        var backtestBucket = FindBestBucketMatch(_state.BacktestBuckets, symbol, strategyTag, regimeTag, sessionTag).Bucket;
-        var paperBucket = FindBestBucketMatch(_state.PaperBuckets, symbol, strategyTag, regimeTag, sessionTag).Bucket;
-        
-        var backtestPass = backtestBucket?.BacktestPass == true;
-        var paperPass = paperBucket?.PaperPass == true;
+        var edgeMetrics = CalculateEdgePerformance(trades);
+        var allocatorMetrics = CalculateAllocatorPerformance(trades);
+        var executionMetrics = CalculateExecutionPerformance(trades);
         
         var liveProbePass = pnlValues.Count >= 4 &&
                             backtestPass &&
                             paperPass &&
                             ComputeProfitFactor(pnlValues) >= 1.0 &&
                             pnlValues.Average() >= 0 &&
-                            (highEdgePnls.Count < 3 || (ComputeProfitFactor(highEdgePnls) >= 1.0 && highEdgePnls.Average() >= 0));
+                            (edgeMetrics.HighEdgeTrades < 3 || (edgeMetrics.HighEdgeProfitFactor >= 1.0 && edgeMetrics.HighEdgeExpectedValue >= 0));
                             
         var scaledLiveEligible = pnlValues.Count >= 8 &&
                                  backtestPass &&
                                  paperPass &&
                                  ComputeProfitFactor(pnlValues) >= 1.20 &&
                                  pnlValues.Average() > 0 &&
-                                 pnlValues.Count(v => v > 0) * 1.0 / pnlValues.Count >= 0.45 &&
-                                 (!trades.Any(t => t.EdgeScore > 0m) || trades.Where(t => t.EdgeScore > 0m).Average(t => t.EdgeScore) >= 70m) &&
-                                 (highEdgePnls.Count < 3 || (ComputeProfitFactor(highEdgePnls) >= 1.10 && highEdgePnls.Average() > 0 && highEdgePnls.Count(v => v > 0) * 1.0 / highEdgePnls.Count >= 0.45));
+                                 (pnlValues.Count == 0 ? 0 : pnlValues.Count(v => v > 0) * 1.0 / pnlValues.Count) >= 0.45 &&
+                                 (edgeMetrics.AverageEdgeScore == 0m || edgeMetrics.AverageEdgeScore >= 70m) &&
+                                 (edgeMetrics.HighEdgeTrades < 3 || (edgeMetrics.HighEdgeProfitFactor >= 1.10 && edgeMetrics.HighEdgeExpectedValue > 0 && edgeMetrics.HighEdgeWinRate >= 45));
 
-        return new StrategyBucketPerformanceSnapshot
+        var snapshot = new StrategyBucketPerformanceSnapshot
         {
             Symbol = symbol,
             StrategyTag = strategyTag,
@@ -706,32 +638,12 @@ public sealed class StrategyPromotionService
             ProfitFactor = ComputeProfitFactor(pnlValues),
             ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
             TotalPnL = pnlValues.Sum(),
-            AverageEdgeScore = trades.Any(t => t.EdgeScore > 0m) ? trades.Where(t => t.EdgeScore > 0m).Average(t => t.EdgeScore) : 0m,
-            HighEdgeTrades = highEdgePnls.Count,
-            HighEdgeWinRate = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Count(v => v > 0) * 100.0 / highEdgePnls.Count,
-            HighEdgeProfitFactor = ComputeProfitFactor(highEdgePnls),
-            HighEdgeExpectedValue = highEdgePnls.Count == 0 ? 0 : highEdgePnls.Average(),
-            HighEdgeTotalPnL = highEdgePnls.Sum(),
-            AverageFinalAllocatorBias = trades.Any(t => t.FinalAllocatorBias > 0m) ? trades.Where(t => t.FinalAllocatorBias > 0m).Average(t => t.FinalAllocatorBias) : 0m,
-            BoostedAllocatorTrades = boostedAllocatorPnls.Count,
-            BoostedAllocatorWinRate = boostedAllocatorPnls.Count == 0 ? 0 : boostedAllocatorPnls.Count(v => v > 0) * 100.0 / boostedAllocatorPnls.Count,
-            BoostedAllocatorProfitFactor = ComputeProfitFactor(boostedAllocatorPnls),
-            BoostedAllocatorExpectedValue = boostedAllocatorPnls.Count == 0 ? 0 : boostedAllocatorPnls.Average(),
-            TrimmedAllocatorTrades = trimmedAllocatorPnls.Count,
-            TrimmedAllocatorWinRate = trimmedAllocatorPnls.Count == 0 ? 0 : trimmedAllocatorPnls.Count(v => v > 0) * 100.0 / trimmedAllocatorPnls.Count,
-            TrimmedAllocatorProfitFactor = ComputeProfitFactor(trimmedAllocatorPnls),
-            TrimmedAllocatorExpectedValue = trimmedAllocatorPnls.Count == 0 ? 0 : trimmedAllocatorPnls.Average(),
-            AverageVenueExecutionBias = trades.Any(t => t.VenueExecutionBias > 0m) ? trades.Where(t => t.VenueExecutionBias > 0m).Average(t => t.VenueExecutionBias) : 0m,
-            BoostedVenueExecutionTrades = boostedVenuePnls.Count,
-            BoostedVenueExecutionWinRate = boostedVenuePnls.Count == 0 ? 0 : boostedVenuePnls.Count(v => v > 0) * 100.0 / boostedVenuePnls.Count,
-            BoostedVenueExecutionProfitFactor = ComputeProfitFactor(boostedVenuePnls),
-            BoostedVenueExecutionExpectedValue = boostedVenuePnls.Count == 0 ? 0 : boostedVenuePnls.Average(),
-            TrimmedVenueExecutionTrades = trimmedVenuePnls.Count,
-            TrimmedVenueExecutionWinRate = trimmedVenuePnls.Count == 0 ? 0 : trimmedVenuePnls.Count(v => v > 0) * 100.0 / trimmedVenuePnls.Count,
-            TrimmedVenueExecutionProfitFactor = ComputeProfitFactor(trimmedVenuePnls),
-            TrimmedVenueExecutionExpectedValue = trimmedVenuePnls.Count == 0 ? 0 : trimmedVenuePnls.Average(),
-            AverageEntrySlippagePercent = trades.Any() ? trades.Average(t => t.EntrySlippagePercent) : 0m,
-            AverageExecutionLatencyMs = trades.Any() ? trades.Average(t => (double)t.ExecutionLatencyMs) : 0,
+            AverageEdgeScore = edgeMetrics.AverageEdgeScore,
+            HighEdgeTrades = edgeMetrics.HighEdgeTrades,
+            HighEdgeWinRate = edgeMetrics.HighEdgeWinRate,
+            HighEdgeProfitFactor = edgeMetrics.HighEdgeProfitFactor,
+            HighEdgeExpectedValue = edgeMetrics.HighEdgeExpectedValue,
+            HighEdgeTotalPnL = edgeMetrics.HighEdgeTotalPnL,
             BacktestPass = backtestPass,
             PaperPass = paperPass,
             LiveProbePass = liveProbePass,
@@ -740,7 +652,107 @@ public sealed class StrategyPromotionService
             PromotionStage = DetermineLivePromotionStage(pnlValues.Count, scaledLiveEligible, liveProbePass),
             RecordedAtUtc = DateTime.UtcNow
         };
+
+        PopulateAllocatorMetrics(snapshot, allocatorMetrics);
+        PopulateExecutionMetrics(snapshot, executionMetrics);
+        
+        return snapshot;
     }
+
+    private static (decimal AverageEdgeScore, int HighEdgeTrades, double HighEdgeWinRate, double HighEdgeProfitFactor, decimal HighEdgeExpectedValue, decimal HighEdgeTotalPnL) CalculateEdgePerformance(List<Trade> trades)
+    {
+        var highEdgePnls = trades
+            .Where(trade => IsHighEdgeBand(trade.EdgeBand, trade.EdgeScore))
+            .Select(GetLivePnl)
+            .ToList();
+
+        return (
+            trades.Any(t => t.EdgeScore > 0m) ? trades.Where(t => t.EdgeScore > 0m).Average(t => t.EdgeScore) : 0m,
+            highEdgePnls.Count,
+            highEdgePnls.Count == 0 ? 0 : highEdgePnls.Count(v => v > 0) * 100.0 / highEdgePnls.Count,
+            ComputeProfitFactor(highEdgePnls),
+            highEdgePnls.Count == 0 ? 0 : highEdgePnls.Average(),
+            highEdgePnls.Sum()
+        );
+    }
+
+    private record AllocatorPerformance(
+        decimal AverageBias,
+        int BoostedTrades, double BoostedWinRate, double BoostedProfitFactor, decimal BoostedExpectedValue,
+        int TrimmedTrades, double TrimmedWinRate, double TrimmedProfitFactor, decimal TrimmedExpectedValue);
+
+    private static AllocatorPerformance CalculateAllocatorPerformance(List<Trade> trades)
+    {
+        var boostedPnls = trades.Where(t => t.FinalAllocatorBias > 1.01m).Select(GetLivePnl).ToList();
+        var trimmedPnls = trades.Where(t => t.FinalAllocatorBias > 0m && t.FinalAllocatorBias < 0.99m).Select(GetLivePnl).ToList();
+
+        return new AllocatorPerformance(
+            trades.Any(t => t.FinalAllocatorBias > 0m) ? trades.Where(t => t.FinalAllocatorBias > 0m).Average(t => t.FinalAllocatorBias) : 0m,
+            boostedPnls.Count,
+            boostedPnls.Count == 0 ? 0 : boostedPnls.Count(v => v > 0) * 100.0 / boostedPnls.Count,
+            ComputeProfitFactor(boostedPnls),
+            boostedPnls.Count == 0 ? 0 : boostedPnls.Average(),
+            trimmedPnls.Count,
+            trimmedPnls.Count == 0 ? 0 : trimmedPnls.Count(v => v > 0) * 100.0 / trimmedPnls.Count,
+            ComputeProfitFactor(trimmedPnls),
+            trimmedPnls.Count == 0 ? 0 : trimmedPnls.Average()
+        );
+    }
+
+    private record ExecutionPerformance(
+        decimal AverageBias,
+        int BoostedTrades, double BoostedWinRate, double BoostedProfitFactor, decimal BoostedExpectedValue,
+        int TrimmedTrades, double TrimmedWinRate, double TrimmedProfitFactor, decimal TrimmedExpectedValue,
+        decimal AverageSlippage, double AverageLatency);
+
+    private static ExecutionPerformance CalculateExecutionPerformance(List<Trade> trades)
+    {
+        var boostedPnls = trades.Where(t => t.VenueExecutionBias > 1.01m).Select(GetLivePnl).ToList();
+        var trimmedPnls = trades.Where(t => t.VenueExecutionBias > 0m && t.VenueExecutionBias < 0.99m).Select(GetLivePnl).ToList();
+
+        return new ExecutionPerformance(
+            trades.Any(t => t.VenueExecutionBias > 0m) ? trades.Where(t => t.VenueExecutionBias > 0m).Average(t => t.VenueExecutionBias) : 0m,
+            boostedPnls.Count,
+            boostedPnls.Count == 0 ? 0 : boostedPnls.Count(v => v > 0) * 100.0 / boostedPnls.Count,
+            ComputeProfitFactor(boostedPnls),
+            boostedPnls.Count == 0 ? 0 : boostedPnls.Average(),
+            trimmedPnls.Count,
+            trimmedPnls.Count == 0 ? 0 : trimmedPnls.Count(v => v > 0) * 100.0 / trimmedPnls.Count,
+            ComputeProfitFactor(trimmedPnls),
+            trimmedPnls.Count == 0 ? 0 : trimmedPnls.Average(),
+            trades.Any() ? trades.Average(t => t.EntrySlippagePercent) : 0m,
+            trades.Any() ? trades.Average(t => (double)t.ExecutionLatencyMs) : 0
+        );
+    }
+
+    private static void PopulateAllocatorMetrics(StrategyBucketPerformanceSnapshot snapshot, AllocatorPerformance metrics)
+    {
+        snapshot.AverageFinalAllocatorBias = metrics.AverageBias;
+        snapshot.BoostedAllocatorTrades = metrics.BoostedTrades;
+        snapshot.BoostedAllocatorWinRate = metrics.BoostedWinRate;
+        snapshot.BoostedAllocatorProfitFactor = metrics.BoostedProfitFactor;
+        snapshot.BoostedAllocatorExpectedValue = metrics.BoostedExpectedValue;
+        snapshot.TrimmedAllocatorTrades = metrics.TrimmedTrades;
+        snapshot.TrimmedAllocatorWinRate = metrics.TrimmedWinRate;
+        snapshot.TrimmedAllocatorProfitFactor = metrics.TrimmedProfitFactor;
+        snapshot.TrimmedAllocatorExpectedValue = metrics.TrimmedExpectedValue;
+    }
+
+    private static void PopulateExecutionMetrics(StrategyBucketPerformanceSnapshot snapshot, ExecutionPerformance metrics)
+    {
+        snapshot.AverageVenueExecutionBias = metrics.AverageBias;
+        snapshot.BoostedVenueExecutionTrades = metrics.BoostedTrades;
+        snapshot.BoostedVenueExecutionWinRate = metrics.BoostedWinRate;
+        snapshot.BoostedVenueExecutionProfitFactor = metrics.BoostedProfitFactor;
+        snapshot.BoostedVenueExecutionExpectedValue = metrics.BoostedExpectedValue;
+        snapshot.TrimmedVenueExecutionTrades = metrics.TrimmedTrades;
+        snapshot.TrimmedVenueExecutionWinRate = metrics.TrimmedWinRate;
+        snapshot.TrimmedVenueExecutionProfitFactor = metrics.TrimmedProfitFactor;
+        snapshot.TrimmedVenueExecutionExpectedValue = metrics.TrimmedExpectedValue;
+        snapshot.AverageEntrySlippagePercent = metrics.AverageSlippage;
+        snapshot.AverageExecutionLatencyMs = metrics.AverageLatency;
+    }
+
 
     private ExitPolicyPerformanceSnapshot CreateExitPolicySnapshot(string symbol, string strategyTag, string regimeTag, string sessionTag, string policy, string mode, List<Trade> trades)
     {
@@ -845,8 +857,25 @@ public sealed class StrategyPromotionService
     private static decimal ComputeCapitalBiasMultiplier(BucketMatch backtestMatch, BucketMatch paperMatch, BucketMatch liveMatch)
     {
         decimal multiplier = 1.00m;
-        var highestSpecificity = Math.Max(liveMatch.Specificity, Math.Max(paperMatch.Specificity, backtestMatch.Specificity));
-        multiplier *= highestSpecificity switch
+        
+        multiplier *= ResolveSpecificityMultiplier(backtestMatch, paperMatch, liveMatch);
+        multiplier *= ResolveBacktestBias(backtestMatch);
+        multiplier *= ResolvePaperBias(paperMatch);
+        
+        if (liveMatch.Bucket is not null)
+        {
+            multiplier *= ResolveLiveStageBias(liveMatch.Bucket);
+            multiplier *= ResolveLiveTradeCountBias(liveMatch.Bucket);
+            multiplier *= ResolveLivePerformanceBias(liveMatch.Bucket);
+        }
+
+        return Math.Clamp(multiplier, 0.75m, 1.20m);
+    }
+
+    private static decimal ResolveSpecificityMultiplier(BucketMatch backtest, BucketMatch paper, BucketMatch live)
+    {
+        var highestSpecificity = Math.Max(live.Specificity, Math.Max(paper.Specificity, backtest.Specificity));
+        return highestSpecificity switch
         {
             4 => 1.08m,
             3 => 1.04m,
@@ -854,52 +883,51 @@ public sealed class StrategyPromotionService
             1 => 0.90m,
             _ => 0.85m
         };
+    }
 
-        if (backtestMatch.Bucket?.BacktestPass == true && backtestMatch.Bucket.ProfitFactor >= 1.20)
+    private static decimal ResolveBacktestBias(BucketMatch backtest)
+    {
+        return (backtest.Bucket?.BacktestPass == true && backtest.Bucket.ProfitFactor >= 1.20) ? 1.02m : 1.00m;
+    }
+
+    private static decimal ResolvePaperBias(BucketMatch paper)
+    {
+        if (paper.Bucket?.PaperPass != true) return 1.00m;
+        return (paper.Bucket.ProfitFactor >= 1.25 && paper.Bucket.ExpectedValue > 0) ? 1.04m : 0.97m;
+    }
+
+    private static decimal ResolveLiveStageBias(StrategyBucketPerformanceSnapshot bucket)
+    {
+        return bucket.PromotionStage switch
         {
-            multiplier *= 1.02m;
+            "ScaledLive" => 1.08m,
+            "LiveProbe" => 1.00m,
+            "Paper" => 0.90m,
+            _ => 0.85m
+        };
+    }
+
+    private static decimal ResolveLiveTradeCountBias(StrategyBucketPerformanceSnapshot bucket)
+    {
+        return bucket.Trades switch
+        {
+            >= 12 => 1.08m,
+            >= 8 => 1.04m,
+            >= 4 => 1.00m,
+            _ => 0.90m
+        };
+    }
+
+    private static decimal ResolveLivePerformanceBias(StrategyBucketPerformanceSnapshot bucket)
+    {
+        if (bucket.HighEdgeTrades >= 3)
+        {
+            return bucket.HighEdgeProfitFactor >= 1.35 && bucket.HighEdgeWinRate >= 55
+                ? 1.06m
+                : (bucket.HighEdgeProfitFactor < 1.10 || bucket.HighEdgeWinRate < 48) ? 0.88m : 0.97m;
         }
 
-        if (paperMatch.Bucket?.PaperPass == true)
-        {
-            multiplier *= paperMatch.Bucket.ProfitFactor >= 1.25 && paperMatch.Bucket.ExpectedValue > 0
-                ? 1.04m
-                : 0.97m;
-        }
-
-        if (liveMatch.Bucket is not null)
-        {
-            multiplier *= liveMatch.Bucket.PromotionStage switch
-            {
-                "ScaledLive" => 1.08m,
-                "LiveProbe" => 1.00m,
-                "Paper" => 0.90m,
-                _ => 0.85m
-            };
-
-            multiplier *= liveMatch.Bucket.Trades switch
-            {
-                >= 12 => 1.08m,
-                >= 8 => 1.04m,
-                >= 4 => 1.00m,
-                _ => 0.90m
-            };
-
-            if (liveMatch.Bucket.HighEdgeTrades >= 3)
-            {
-                multiplier *= liveMatch.Bucket.HighEdgeProfitFactor >= 1.35 && liveMatch.Bucket.HighEdgeWinRate >= 55
-                    ? 1.06m
-                    : liveMatch.Bucket.HighEdgeProfitFactor < 1.10 || liveMatch.Bucket.HighEdgeWinRate < 48
-                        ? 0.88m
-                        : 0.97m;
-            }
-            else if (liveMatch.Bucket.ProfitFactor < 1.05 || liveMatch.Bucket.WinRate < 45)
-            {
-                multiplier *= 0.90m;
-            }
-        }
-
-        return Math.Clamp(multiplier, 0.75m, 1.20m);
+        return (bucket.ProfitFactor < 1.05 || bucket.WinRate < 45) ? 0.90m : 1.00m;
     }
 
     private static decimal ApplyCapitalBiasToStage(decimal baseMultiplier, string stage, decimal capitalBiasMultiplier)
@@ -1079,7 +1107,23 @@ public sealed class StrategyPromotionService
 
         var drift = EvaluateExitPolicyDrift(symbol, strategyTag, regimeTag, sessionTag, policy);
         var live = liveMatch.Snapshot;
-        var scope = liveMatch.Specificity switch
+        var scope = ResolveExitPolicyScope(liveMatch.Specificity);
+
+        if (drift is not null && drift.Value.Score >= 0.65)
+            return new FinalAllocatorBiasResult(0.88m, $"{policy} is drifting live vs paper ({drift.Value.Score:F2}) in {scope}.", scope);
+
+        if (live.ExpectedValue <= 0m || live.ProfitFactor < 0.95 || live.WinRate < 40)
+            return new FinalAllocatorBiasResult(0.92m, $"{policy} is underperforming live in {scope} (PF {live.ProfitFactor:F2}, WR {live.WinRate:F1}%, EV {live.ExpectedValue:F2}).", scope);
+
+        if (drift is not null && drift.Value.Score >= 0.45)
+            return new FinalAllocatorBiasResult(0.96m, $"{policy} has elevated live drift ({drift.Value.Score:F2}) in {scope}.", scope);
+
+        return ResolveLivePerformanceTier(live, liveMatch.Specificity, policy, scope);
+    }
+
+    private static string ResolveExitPolicyScope(int specificity)
+    {
+        return specificity switch
         {
             4 => "exact exit bucket",
             3 => "symbol exit bucket",
@@ -1087,35 +1131,14 @@ public sealed class StrategyPromotionService
             1 => "broad exit bucket",
             _ => "unproven exit bucket"
         };
+    }
 
-        if (drift is not null && drift.Value.Score >= 0.65)
-        {
-            return new FinalAllocatorBiasResult(
-                0.88m,
-                $"{policy} is drifting live vs paper ({drift.Value.Score:F2}) in {scope}.",
-                scope);
-        }
-
-        if (live.ExpectedValue <= 0m || live.ProfitFactor < 0.95 || live.WinRate < 40)
-        {
-            return new FinalAllocatorBiasResult(
-                0.92m,
-                $"{policy} is underperforming live in {scope} (PF {live.ProfitFactor:F2}, WR {live.WinRate:F1}%, EV {live.ExpectedValue:F2}).",
-                scope);
-        }
-
-        if (drift is not null && drift.Value.Score >= 0.45)
-        {
-            return new FinalAllocatorBiasResult(
-                0.96m,
-                $"{policy} has elevated live drift ({drift.Value.Score:F2}) in {scope}.",
-                scope);
-        }
-
+    private static FinalAllocatorBiasResult ResolveLivePerformanceTier(ExitPolicyPerformanceSnapshot live, int specificity, string policy, string scope)
+    {
         if (live.ExpectedValue > 0m && live.ProfitFactor >= 1.40 && live.WinRate >= 58)
         {
             return new FinalAllocatorBiasResult(
-                liveMatch.Specificity >= 3 ? 1.08m : 1.05m,
+                specificity >= 3 ? 1.08m : 1.05m,
                 $"{policy} is winning live in {scope} (PF {live.ProfitFactor:F2}, WR {live.WinRate:F1}%, EV {live.ExpectedValue:F2}).",
                 scope);
         }
@@ -1123,7 +1146,7 @@ public sealed class StrategyPromotionService
         if (live.ExpectedValue > 0m && live.ProfitFactor >= 1.20 && live.WinRate >= 50)
         {
             return new FinalAllocatorBiasResult(
-                liveMatch.Specificity >= 3 ? 1.04m : 1.02m,
+                specificity >= 3 ? 1.04m : 1.02m,
                 $"{policy} is healthy live in {scope} (PF {live.ProfitFactor:F2}, WR {live.WinRate:F1}%, EV {live.ExpectedValue:F2}).",
                 scope);
         }
@@ -1502,6 +1525,22 @@ public sealed class StrategyPromotionService
 
     private static decimal GetLivePnl(Trade trade)
         => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == TradeSide.Sell ? -1 : 1);
+
+    private static Trade MapToTrade(BacktestTradeResult br) => new Trade
+    {
+        Symbol = "", // Will be grouped by result.Symbol
+        Side = br.Side.Equals("Sell", StringComparison.OrdinalIgnoreCase) ? TradeSide.Sell : TradeSide.Buy,
+        EntryPrice = br.EntryPrice,
+        ExitPrice = br.ExitPrice,
+        Quantity = 1.0m, // Quantity isn't always in backtest result, default to 1 for PnL per unit
+        StrategyTag = br.StrategyTag,
+        RegimeTag = br.RegimeTag,
+        ExitPolicyTag = br.ExitPolicyTag,
+        ExecutionMode = br.ExecutionMode,
+        PromotionStage = br.PromotionStage,
+        EntryTime = br.EntryTime,
+        ExitTime = br.ExitTime
+    };
 
     private static decimal GetPaperPnl(PaperPosition position) => position.RealizedPnL;
 

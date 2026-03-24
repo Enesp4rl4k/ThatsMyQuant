@@ -449,15 +449,7 @@ public partial class MainViewModel : ObservableObject
 
                 if (tradeRows.Count == 0)
                 {
-                    StrategyLeaderboardStatus = "No executed trades yet.";
-                    _tradeCache.Clear();
-                    RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
-                    UpdatePortfolioGrowth();
-                    RefreshEdgeAnalytics(Array.Empty<Trade>());
-                    StrategyThrottleStatus = "Unrated";
-                    StrategyThrottleReason = "No strategy bucket has enough trade history yet.";
-                    StrategyThrottleColor = GrayBrush;
-                    RefreshCapitalAllocation();
+                    HandleEmptyLeaderboard();
                     return;
                 }
 
@@ -468,114 +460,24 @@ public partial class MainViewModel : ObservableObject
                 UpdatePortfolioGrowth();
 
                 var rows = tradeRows
-                    .GroupBy(t => new
-                    {
-                        Strategy = string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                        Regime = string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag
-                    })
-                    .Select(g =>
-                    {
-                        var pnls = g.Select(CalculateTradePnL).ToList();
-                        var wins = pnls.Count(p => p > 0);
-                        var grossProfit = pnls.Where(p => p > 0).Sum();
-                        var grossLoss = Math.Abs(pnls.Where(p => p < 0).Sum());
-                        var (averageVenueBias, venueImpact, venueSummary, venueImpactColor) = BuildStrategyVenueImpact(g);
-                        var (exactBucketImpact, exactBucketSummary, exactBucketImpactColor) = BuildExactBucketPressureDisplay(g);
-                        var (concordanceImpact, concordanceSummary, concordanceImpactColor) = BuildConcordanceDisplay(
-                            exactBucketImpact,
-                            exactBucketSummary,
-                            averageVenueBias,
-                            venueSummary);
-
-                        return new StrategyLeaderboardRow
-                        {
-                            StrategyTag = g.Key.Strategy,
-                            RegimeTag = g.Key.Regime,
-                            ExecutionMode = ResolveExecutionModeScope(g),
-                            PromotionStage = ResolvePromotionStageScope(g),
-                            Trades = g.Count(),
-                            WinRate = g.Count() > 0 ? wins * 100.0 / g.Count() : 0,
-                            TotalPnL = pnls.Sum(),
-                            ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
-                            AverageVenueExecutionBias = averageVenueBias,
-                            VenuePromotionImpact = venueImpact,
-                            VenueExecutionSummary = venueSummary,
-                            ExactBucketPromotionImpact = exactBucketImpact,
-                            ExactBucketSummary = exactBucketSummary,
-                            ConcordanceImpact = concordanceImpact,
-                            ConcordanceSummary = concordanceSummary,
-                            ExactBucketPromotionImpactColor = exactBucketImpactColor,
-                            VenuePromotionImpactColor = venueImpactColor,
-                            ConcordanceImpactColor = concordanceImpactColor,
-                            PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
-                        };
-                    })
+                    .GroupBy(t => new { Strategy = string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag, Regime = string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag })
+                    .Select(g => ProjectLeaderboardRow(g))
                     .OrderByDescending(r => r.ProfitFactor)
                     .ThenByDescending(r => r.TotalPnL)
                     .Take(6)
                     .ToList();
 
-                foreach (var row in rows)
-                {
-                    StrategyLeaderboard.Add(row);
-                }
+                foreach (var row in rows) StrategyLeaderboard.Add(row);
 
-                var strategyOverrides = _persistedStrategyHealth
-                    .GroupBy(snapshot => NormalizeStrategyKey(snapshot.StrategyTag))
-                    .ToDictionary(
-                        group => group.Key,
-                        group => new
-                        {
-                            ManualDisabled = group.Any(item => item.ManuallyDisabled),
-                            ForceEnabled = group.Any(item => item.ForceEnabled)
-                        });
-
-                _persistedStrategyHealth.Clear();
-                foreach (var row in rows)
-                {
-                    strategyOverrides.TryGetValue(NormalizeStrategyKey(row.StrategyTag), out var flags);
-                    _persistedStrategyHealth.Add(new StrategyHealthSnapshot
-                    {
-                        StrategyTag = row.StrategyTag,
-                        RegimeTag = row.RegimeTag,
-                        Trades = row.Trades,
-                        WinRate = row.WinRate,
-                        ProfitFactor = row.ProfitFactor,
-                        TotalPnL = row.TotalPnL,
-                        ManuallyDisabled = flags?.ManualDisabled ?? false,
-                        ForceEnabled = flags?.ForceEnabled ?? false,
-                        RecordedAtUtc = DateTime.UtcNow
-                    });
-                }
-
-                foreach (var manualOnly in strategyOverrides
-                             .Where(pair => pair.Value.ManualDisabled || pair.Value.ForceEnabled)
-                             .Where(pair => _persistedStrategyHealth.All(snapshot => NormalizeStrategyKey(snapshot.StrategyTag) != pair.Key)))
-                {
-                    _persistedStrategyHealth.Add(new StrategyHealthSnapshot
-                    {
-                        StrategyTag = manualOnly.Key,
-                        RegimeTag = "ManualOverride",
-                        ManuallyDisabled = manualOnly.Value.ManualDisabled,
-                        ForceEnabled = manualOnly.Value.ForceEnabled,
-                        RecordedAtUtc = DateTime.UtcNow
-                    });
-                }
+                UpdateStrategyHealthSnapshots(rows);
                 
-                // Fire and forget save is okay here as it doesn't affect UI
                 _ = PersistStrategyHealth();
 
                 RefreshSessionPerformance(tradeRows);
                 RefreshEdgeAnalytics(tradeRows);
                 RefreshCapitalAllocation();
 
-                var dominantStage = rows
-                    .GroupBy(row => string.IsNullOrWhiteSpace(row.PromotionStage) ? "UNKNOWN" : row.PromotionStage)
-                    .OrderByDescending(group => group.Count())
-                    .Select(group => group.Key)
-                    .FirstOrDefault() ?? "UNKNOWN";
-
-                StrategyLeaderboardStatus = $"Tracking {rows.Count} strategy buckets from {tradeRows.Count} trades. Dominant ladder stage: {dominantStage}. {ResolveStoredPromotionStageContext(tradeRows, dominantStage)}.";
+                UpdateLeaderboardOverallStatus(rows, tradeRows);
                 EvaluateStrategyThrottle();
                 UpdateBotLaunchSummary();
                 UpdateSessionSummary();
@@ -583,22 +485,93 @@ public partial class MainViewModel : ObservableObject
         }
         catch (Exception ex)
         {
-            InvokeOnUi(() => 
+            HandleLeaderboardError(ex);
+        }
+    }
+
+    private void HandleEmptyLeaderboard()
+    {
+        StrategyLeaderboardStatus = "No executed trades yet.";
+        _tradeCache.Clear();
+        RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
+        UpdatePortfolioGrowth();
+        RefreshEdgeAnalytics(Array.Empty<Trade>());
+        StrategyThrottleStatus = "Unrated";
+        StrategyThrottleReason = "No strategy bucket has enough trade history yet.";
+        StrategyThrottleColor = GrayBrush;
+        RefreshCapitalAllocation();
+    }
+
+    private void HandleLeaderboardError(Exception ex)
+    {
+        InvokeOnUi(() => 
+        {
+            StrategyLeaderboardStatus = "Strategy analytics unavailable.";
+            RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
+            UpdatePortfolioGrowth();
+            RefreshSessionPerformance(Array.Empty<Trade>());
+            RefreshEdgeAnalytics(Array.Empty<Trade>());
+            RefreshDisabledStrategiesFromHealth();
+            RefreshCapitalAllocation();
+            StrategyThrottleStatus = "Unavailable";
+            StrategyThrottleReason = "Strategy throttling is waiting for analytics to recover.";
+            StrategyThrottleColor = OrangeBrush;
+            UpdateBotLaunchSummary();
+            AddSystemLog($"Strategy analytics error: {ex.Message}");
+        });
+    }
+
+    private StrategyLeaderboardRow ProjectLeaderboardRow(IGrouping<dynamic, Trade> group)
+    {
+        var pnls = group.Select(CalculateTradePnL).ToList();
+        var wins = pnls.Count(p => p > 0);
+        var grossProfit = pnls.Where(p => p > 0).Sum();
+        var grossLoss = Math.Abs(pnls.Where(p => p < 0).Sum());
+        var (averageVenueBias, venueImpact, venueSummary, venueImpactColor) = BuildStrategyVenueImpact(group);
+        var (exactBucketImpact, exactBucketSummary, exactBucketImpactColor) = BuildExactBucketPressureDisplay(group);
+        var (concordanceImpact, concordanceSummary, concordanceImpactColor) = BuildConcordanceDisplay(exactBucketImpact, exactBucketSummary, averageVenueBias, venueSummary);
+
+        return new StrategyLeaderboardRow
+        {
+            StrategyTag = group.Key.Strategy, RegimeTag = group.Key.Regime,
+            ExecutionMode = ResolveExecutionModeScope(group), PromotionStage = ResolvePromotionStageScope(group),
+            Trades = group.Count(), WinRate = group.Count() > 0 ? wins * 100.0 / group.Count() : 0,
+            TotalPnL = pnls.Sum(), ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
+            AverageVenueExecutionBias = averageVenueBias, VenuePromotionImpact = venueImpact, VenueExecutionSummary = venueSummary,
+            ExactBucketPromotionImpact = exactBucketImpact, ExactBucketSummary = exactBucketSummary,
+            ConcordanceImpact = concordanceImpact, ConcordanceSummary = concordanceSummary,
+            ExactBucketPromotionImpactColor = exactBucketImpactColor, VenuePromotionImpactColor = venueImpactColor,
+            ConcordanceImpactColor = concordanceImpactColor, PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
+        };
+    }
+
+    private void UpdateStrategyHealthSnapshots(List<StrategyLeaderboardRow> rows)
+    {
+        var strategyOverrides = _persistedStrategyHealth
+            .GroupBy(snapshot => NormalizeStrategyKey(snapshot.StrategyTag))
+            .ToDictionary(group => group.Key, group => new { ManualDisabled = group.Any(item => item.ManuallyDisabled), ForceEnabled = group.Any(item => item.ForceEnabled) });
+
+        _persistedStrategyHealth.Clear();
+        foreach (var row in rows)
+        {
+            strategyOverrides.TryGetValue(NormalizeStrategyKey(row.StrategyTag), out var flags);
+            _persistedStrategyHealth.Add(new StrategyHealthSnapshot
             {
-                StrategyLeaderboardStatus = "Strategy analytics unavailable.";
-                RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
-                UpdatePortfolioGrowth();
-                RefreshSessionPerformance(Array.Empty<Trade>());
-                RefreshEdgeAnalytics(Array.Empty<Trade>());
-                RefreshDisabledStrategiesFromHealth();
-                RefreshCapitalAllocation();
-                StrategyThrottleStatus = "Unavailable";
-                StrategyThrottleReason = "Strategy throttling is waiting for analytics to recover.";
-                StrategyThrottleColor = OrangeBrush;
-                UpdateBotLaunchSummary();
-                AddSystemLog($"Strategy analytics error: {ex.Message}");
+                StrategyTag = row.StrategyTag, RegimeTag = row.RegimeTag, Trades = row.Trades, WinRate = row.WinRate, ProfitFactor = row.ProfitFactor, TotalPnL = row.TotalPnL,
+                ManuallyDisabled = flags?.ManualDisabled ?? false, ForceEnabled = flags?.ForceEnabled ?? false, RecordedAtUtc = DateTime.UtcNow
             });
         }
+
+        foreach (var manualOnly in strategyOverrides.Where(pair => pair.Value.ManualDisabled || pair.Value.ForceEnabled).Where(pair => _persistedStrategyHealth.All(s => NormalizeStrategyKey(s.StrategyTag) != pair.Key)))
+        {
+            _persistedStrategyHealth.Add(new StrategyHealthSnapshot { StrategyTag = manualOnly.Key, RegimeTag = "ManualOverride", ManuallyDisabled = manualOnly.Value.ManualDisabled, ForceEnabled = manualOnly.Value.ForceEnabled, RecordedAtUtc = DateTime.UtcNow });
+        }
+    }
+
+    private void UpdateLeaderboardOverallStatus(List<StrategyLeaderboardRow> rows, List<Trade> tradeRows)
+    {
+        var dominantStage = rows.GroupBy(row => string.IsNullOrWhiteSpace(row.PromotionStage) ? "UNKNOWN" : row.PromotionStage).OrderByDescending(group => group.Count()).Select(group => group.Key).FirstOrDefault() ?? "UNKNOWN";
+        StrategyLeaderboardStatus = $"Tracking {rows.Count} strategy buckets from {tradeRows.Count} trades. Dominant ladder stage: {dominantStage}. {ResolveStoredPromotionStageContext(tradeRows, dominantStage)}.";
     }
 
     private void RefreshSessionPerformance(IEnumerable<Trade> trades)
@@ -698,105 +671,70 @@ public partial class MainViewModel : ObservableObject
         IReadOnlyList<ParsedEdgeJournalEntry> fallbackJournaledEdgeSignals,
         IReadOnlyList<Trade> closedTrades)
     {
-        var persistedBandRows = persistedEdgeSignals
-            .Join(
-                closedTrades,
-                signal => new { signal.Symbol, signal.Time },
-                trade => new { trade.Symbol, Time = trade.ExitTime ?? trade.EntryTime },
-                (signal, trade) => new { Signal = signal, Trade = trade })
-            .GroupBy(item => NormalizeEdgeBand(item.Signal.Band, item.Signal.Score))
-            .Select(group =>
-            {
-                var pnls = group.Select(item => CalculateTradePnL(item.Trade)).ToList();
-                var wins = pnls.Count(pnl => pnl > 0);
-                var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
-                var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-                var averageScore = group.Average(item => item.Signal.Score);
-                return new EdgeScoreBandRow
-                {
-                    Band = group.Key,
-                    ExecutionMode = ResolveExecutionModeScope(group.Select(item => item.Trade)),
-                    PromotionStage = ResolvePromotionStageScope(group.Select(item => item.Trade)),
-                    Trades = group.Count(),
-                    WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
-                    ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
-                    TotalPnL = pnls.Sum(),
-                    Summary = $"Avg score {averageScore:F1}. {wins}/{group.Count()} winners from {ResolveExecutionModeScope(group.Select(item => item.Trade))} / {ResolvePromotionStageScope(group.Select(item => item.Trade))} trades.",
-                    PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
-                };
-            })
-            .OrderByDescending(row => row.ProfitFactor)
-            .ThenByDescending(row => row.TotalPnL)
-            .ToList();
+        var persistedBandRows = ProjectPersistedEdgeBands(persistedEdgeSignals, closedTrades);
 
         if (persistedBandRows.Count > 0)
         {
-            foreach (var row in persistedBandRows)
-            {
-                EdgeScoreBands.Add(row);
-            }
-
+            foreach (var row in persistedBandRows) EdgeScoreBands.Add(row);
             return;
         }
 
-        if (fallbackJournaledEdgeSignals.Count == 0)
+        if (fallbackJournaledEdgeSignals.Count > 0)
         {
-            return;
+            PopulateFallbackJournaledBands(fallbackJournaledEdgeSignals, closedTrades);
         }
+    }
 
+    private List<EdgeScoreBandRow> ProjectPersistedEdgeBands(IReadOnlyList<ParsedEdgeJournalEntry> signals, IReadOnlyList<Trade> closedTrades)
+    {
+        return signals
+            .Join(closedTrades, signal => new { signal.Symbol, signal.Time }, trade => new { trade.Symbol, Time = trade.ExitTime ?? trade.EntryTime }, (signal, trade) => new { Signal = signal, Trade = trade })
+            .GroupBy(item => NormalizeEdgeBand(item.Signal.Band, item.Signal.Score))
+            .Select(group => CreateEdgeScoreBandRowFromGroup(group, ResolveExecutionModeScope(group.Select(item => item.Trade)), ResolvePromotionStageScope(group.Select(item => item.Trade)), "winners from " + ResolveExecutionModeScope(group.Select(item => item.Trade)) + " / " + ResolvePromotionStageScope(group.Select(item => item.Trade)) + " trades"))
+            .OrderByDescending(row => row.ProfitFactor)
+            .ThenByDescending(row => row.TotalPnL)
+            .ToList();
+    }
+
+    private void PopulateFallbackJournaledBands(IReadOnlyList<ParsedEdgeJournalEntry> journalSignals, IReadOnlyList<Trade> closedTrades)
+    {
         var matchedTradeIds = new HashSet<Guid>();
         var matched = new List<(ParsedEdgeJournalEntry Journal, Trade Trade)>();
 
-        foreach (var entry in fallbackJournaledEdgeSignals)
+        foreach (var entry in journalSignals)
         {
-            var nearestTrade = closedTrades
-                .Where(trade => trade.Symbol.Equals(entry.Symbol, StringComparison.OrdinalIgnoreCase))
-                .Where(trade => !matchedTradeIds.Contains(trade.Id))
-                .Select(trade => new
-                {
-                    Trade = trade,
-                    Distance = Math.Abs(((trade.ExitTime ?? trade.EntryTime) - entry.Time).TotalHours)
-                })
-                .Where(item => item.Distance <= 36)
-                .OrderBy(item => item.Distance)
-                .FirstOrDefault();
+            var nearestTrade = closedTrades.Where(t => t.Symbol.Equals(entry.Symbol, StringComparison.OrdinalIgnoreCase)).Where(t => !matchedTradeIds.Contains(t.Id)).Select(t => new { Trade = t, Distance = Math.Abs(((t.ExitTime ?? t.EntryTime) - entry.Time).TotalHours) }).Where(item => item.Distance <= 36).OrderBy(item => item.Distance).FirstOrDefault();
 
-            if (nearestTrade == null)
+            if (nearestTrade != null)
             {
-                continue;
+                matchedTradeIds.Add(nearestTrade.Trade.Id);
+                matched.Add((entry, nearestTrade.Trade));
             }
-
-            matchedTradeIds.Add(nearestTrade.Trade.Id);
-            matched.Add((entry, nearestTrade.Trade));
         }
 
         foreach (var row in matched
                      .GroupBy(item => NormalizeEdgeBand(item.Journal.Band, item.Journal.Score))
-                     .Select(group =>
-                     {
-                         var pnls = group.Select(item => CalculateTradePnL(item.Trade)).ToList();
-                         var wins = pnls.Count(pnl => pnl > 0);
-                         var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
-                         var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-                         var averageScore = group.Average(item => item.Journal.Score);
-                         return new EdgeScoreBandRow
-                         {
-                             Band = group.Key,
-                             ExecutionMode = "JOURNAL-LINKED",
-                             PromotionStage = "UNKNOWN",
-                             Trades = group.Count(),
-                             WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
-                             ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0,
-                             TotalPnL = pnls.Sum(),
-                             Summary = $"Avg score {averageScore:F1}. {wins}/{group.Count()} winners linked from edge-scored journal entries.",
-                             PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
-                         };
-                     })
+                     .Select(group => CreateEdgeScoreBandRowFromGroup(group, "JOURNAL-LINKED", "UNKNOWN", "winners linked from edge-scored journal entries."))
                      .OrderByDescending(row => row.ProfitFactor)
                      .ThenByDescending(row => row.TotalPnL))
         {
             EdgeScoreBands.Add(row);
         }
+    }
+
+    private EdgeScoreBandRow CreateEdgeScoreBandRowFromGroup(IGrouping<string, dynamic> group, string executionMode, string promotionStage, string summaryContext)
+    {
+        var pnls = group.Select(item => CalculateTradePnL(item.Trade)).ToList();
+        var wins = pnls.Count(pnl => pnl > 0);
+        var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+        var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+        var averageScore = group.Average(item => (double)(item.Signal?.Score ?? item.Journal?.Score ?? 0));
+        return new EdgeScoreBandRow
+        {
+            Band = group.Key, ExecutionMode = executionMode, PromotionStage = promotionStage, Trades = group.Count(), WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
+            ProfitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0, TotalPnL = pnls.Sum(),
+            Summary = $"Avg score {averageScore:F1}. {wins}/{group.Count()} {summaryContext}.", PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
+        };
     }
 
     private void PopulateEdgeFailureConditions(IReadOnlyList<Trade> closedTrades)
@@ -994,63 +932,8 @@ public partial class MainViewModel : ObservableObject
     {
         var winners = closedTrades
             .Where(trade => !string.IsNullOrWhiteSpace(trade.ExitPolicyTag))
-            .GroupBy(trade => new
-            {
-                trade.Symbol,
-                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
-                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                Session = ResolveSessionBucketForTrade(trade)
-            })
-            .Select(bucket =>
-            {
-                var winningPolicy = bucket
-                    .GroupBy(trade => string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "Unlabeled" : trade.ExitPolicyTag)
-                    .Select(policyGroup =>
-                    {
-                        var pnls = policyGroup.Select(CalculateTradePnL).ToList();
-                        var wins = pnls.Count(pnl => pnl > 0);
-                        var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
-                        var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-                        var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
-                        var totalPnl = pnls.Sum();
-                        var executionMode = ResolveExecutionModeScope(policyGroup);
-                        var promotionStage = ResolvePromotionStageScope(policyGroup);
-
-                        return new ExitPolicyWinnerRow
-                        {
-                            Symbol = bucket.Key.Symbol,
-                            StrategyTag = bucket.Key.Strategy,
-                            RegimeTag = bucket.Key.Regime,
-                            SessionTag = bucket.Key.Session,
-                            ExitPolicyTag = policyGroup.Key,
-                            ExecutionMode = executionMode,
-                            PromotionStage = promotionStage,
-                            Trades = policyGroup.Count(),
-                            WinRate = policyGroup.Count() == 0 ? 0 : wins * 100.0 / policyGroup.Count(),
-                            ProfitFactor = profitFactor,
-                            TotalPnL = totalPnl,
-                            Summary = ResolveStoredExitPolicyWinnerSummary(
-                                policyGroup,
-                                bucket.Key.Symbol,
-                                bucket.Key.Strategy,
-                                bucket.Key.Regime,
-                                bucket.Key.Session,
-                                policyGroup.Key,
-                                policyGroup.Count(),
-                                profitFactor,
-                                totalPnl,
-                                executionMode,
-                                promotionStage),
-                            PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
-                        };
-                    })
-                    .OrderByDescending(row => row.ProfitFactor)
-                    .ThenByDescending(row => row.TotalPnL)
-                    .ThenByDescending(row => row.WinRate)
-                    .FirstOrDefault();
-
-                return winningPolicy;
-            })
+            .GroupBy(trade => new { trade.Symbol, Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag, Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag, Session = ResolveSessionBucketForTrade(trade) })
+            .Select(bucket => ProjectWinningExitPolicyRow(bucket))
             .Where(row => row is not null && (row.TotalPnL > 0 || row.ProfitFactor >= 1.1))
             .Cast<ExitPolicyWinnerRow>()
             .OrderByDescending(row => row.ProfitFactor)
@@ -1058,13 +941,39 @@ public partial class MainViewModel : ObservableObject
             .Take(6)
             .ToList();
 
-        foreach (var row in winners)
-        {
-            ExitPolicyWinners.Add(row);
-        }
+        foreach (var row in winners) ExitPolicyWinners.Add(row);
 
-        ExitPolicyAnalyticsSummary = ExitPolicyWinners.FirstOrDefault()?.Summary
-            ?? "No exit policy stands out yet at the exact-bucket level. Keep collecting closed trades.";
+        ExitPolicyAnalyticsSummary = ExitPolicyWinners.FirstOrDefault()?.Summary ?? "No exit policy stands out yet at the exact-bucket level. Keep collecting closed trades.";
+    }
+
+    private ExitPolicyWinnerRow? ProjectWinningExitPolicyRow(IGrouping<dynamic, Trade> bucket)
+    {
+        return bucket
+            .GroupBy(t => string.IsNullOrWhiteSpace(t.ExitPolicyTag) ? "Unlabeled" : t.ExitPolicyTag)
+            .Select(g => CreateExitPolicyWinnerRow(bucket.Key.Symbol, bucket.Key.Strategy, bucket.Key.Regime, bucket.Key.Session, g))
+            .OrderByDescending(r => r.ProfitFactor)
+            .ThenByDescending(r => r.TotalPnL)
+            .ThenByDescending(r => r.WinRate)
+            .FirstOrDefault();
+    }
+
+    private ExitPolicyWinnerRow CreateExitPolicyWinnerRow(string symbol, string strategy, string regime, string session, IGrouping<string, Trade> policyGroup)
+    {
+        var pnls = policyGroup.Select(CalculateTradePnL).ToList();
+        var wins = pnls.Count(pnl => pnl > 0);
+        var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
+        var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
+        var profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+        var totalPnl = pnls.Sum();
+        var mode = ResolveExecutionModeScope(policyGroup);
+        var stage = ResolvePromotionStageScope(policyGroup);
+
+        return new ExitPolicyWinnerRow
+        {
+            Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session, ExitPolicyTag = policyGroup.Key, ExecutionMode = mode, PromotionStage = stage, Trades = policyGroup.Count(), WinRate = policyGroup.Count() == 0 ? 0 : wins * 100.0 / policyGroup.Count(), ProfitFactor = profitFactor, TotalPnL = totalPnl,
+            Summary = ResolveStoredExitPolicyWinnerSummary(policyGroup, symbol, strategy, regime, session, policyGroup.Key, policyGroup.Count(), profitFactor, totalPnl, mode, stage),
+            PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
+        };
     }
 
     private static string BuildExitPolicyWinnerSummary(
@@ -2020,7 +1929,7 @@ public partial class MainViewModel : ObservableObject
             return null;
         }
 
-        var match = Regex.Match(entry.Reasoning, @"Edge Score:\s*(?<score>\d+(?:\.\d+)?)\/100\s*\[(?<band>[^\]]+)\]", RegexOptions.IgnoreCase);
+        var match = Regex.Match(entry.Reasoning, @"Edge Score:\s*(?<score>\d+(?:\.\d+)?)\/100\s*\[(?<band>[^\]]+)\]", RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(500));
         if (!match.Success)
         {
             return null;
@@ -2145,50 +2054,9 @@ public partial class MainViewModel : ObservableObject
     {
         var allocatableCapital = BotRecommendedFunding > 0 ? BotRecommendedFunding : Math.Round(BotFundingAmount * 0.25m, 0);
         var candidateRows = _tradeCache
-            .Where(trade =>
-                trade.Status == TradeStatus.Executed &&
-                trade.IsClosed &&
-                trade.ExitTime.HasValue &&
-                !DisabledStrategies.Any(disabled => disabled.Equals(trade.StrategyTag, StringComparison.OrdinalIgnoreCase)))
-            .GroupBy(trade => new
-            {
-                Symbol = string.IsNullOrWhiteSpace(trade.Symbol) ? "UNKNOWN" : trade.Symbol,
-                StrategyTag = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
-                RegimeTag = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                SessionTag = ResolveSessionBucketForTrade(trade)
-            })
-            .Select(group =>
-            {
-                var averageVenueBias = group.Where(trade => trade.VenueExecutionBias > 0m).Select(trade => trade.VenueExecutionBias).DefaultIfEmpty(1.00m).Average();
-                var executionMode = ResolveExecutionModeScope(group);
-                var promotionStage = ResolvePromotionStageScope(group);
-                var effectiveStage = ResolveEffectiveStage(promotionStage, executionMode);
-                
-                var (exactImpact, exactSummary, exactColor) = BuildExactBucketPressureDisplay(group);
-                var venueSummary = BuildCapitalAllocatorVenueSummary(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, averageVenueBias, promotionStage);
-                var (concImpact, concSummary, concColor) = BuildConcordanceDisplay(exactImpact, exactSummary, averageVenueBias, venueSummary);
-
-                var score = CalculateStrategyScore(group, effectiveStage);
-
-                return new
-                {
-                    group.Key.Symbol,
-                    group.Key.StrategyTag,
-                    group.Key.RegimeTag,
-                    group.Key.SessionTag,
-                    EffectiveStage = effectiveStage,
-                    Score = score,
-                    AverageVenueBias = averageVenueBias,
-                    VenueImpact = ResolveVenuePromotionImpact(averageVenueBias),
-                    VenueSummary = venueSummary,
-                    ExactBucketImpact = exactImpact,
-                    ExactBucketSummary = exactSummary,
-                    ExactBucketImpactColor = exactColor,
-                    ConcordanceImpact = concImpact,
-                    ConcordanceSummary = concSummary,
-                    ConcordanceImpactColor = concColor
-                };
-            })
+            .Where(t => t.Status == TradeStatus.Executed && t.IsClosed && t.ExitTime.HasValue && !DisabledStrategies.Any(d => d.Equals(t.StrategyTag, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(t => new { Symbol = string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol, StrategyTag = string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag, RegimeTag = string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag, SessionTag = ResolveSessionBucketForTrade(t) })
+            .Select(g => ProjectCapitalAllocationCandidate(g))
             .Where(item => item.Score > 0.05 && item.EffectiveStage != "Backtest")
             .OrderByDescending(item => item.Score)
             .Take(4)
@@ -2204,29 +2072,50 @@ public partial class MainViewModel : ObservableObject
                 return;
             }
 
-            var totalScore = (double)candidateRows.Sum(item => item.Score);
+            var totalScore = candidateRows.Sum(item => item.Score);
             foreach (var item in candidateRows)
             {
                 var allocationPercent = item.Score / totalScore * 100.0;
                 var capital = Math.Round(allocatableCapital * (decimal)(allocationPercent / 100.0), 0);
-                
                 CapitalAllocationRows.Add(CreateStrategyAllocationRow(item, allocationPercent, capital));
             }
 
-            var leadAllocatorTrade = _tradeCache
-                .Where(trade => trade.Status == TradeStatus.Executed && trade.IsClosed && trade.ExitTime.HasValue)
-                .Where(trade => trade.FinalAllocatorBias > 0m || !string.IsNullOrWhiteSpace(trade.FinalAllocatorScope))
-                .OrderByDescending(trade => trade.ExitTime ?? trade.EntryTime)
-                .FirstOrDefault();
-
-            var allocatorStoredTruth = leadAllocatorTrade is null
-                ? "Heavier weights go to exact symbol + session edge, sample depth, promotion stage, and exact bucket pressure."
-                : $"{ResolveAllocatorImpactFromTrade(leadAllocatorTrade)} via {leadAllocatorTrade.FinalAllocatorScope}.";
-
-            CapitalAllocatorSummary =
-                $"Allocator is distributing up to {allocatableCapital:N0} {SelectedBotQuoteAsset} across {CapitalAllocationRows.Count} symbol-session ladder buckets. " +
-                allocatorStoredTruth;
+            UpdateCapitalAllocatorSummary(allocatableCapital);
         });
+    }
+
+    private dynamic ProjectCapitalAllocationCandidate(IGrouping<dynamic, Trade> group)
+    {
+        var averageVenueBias = group.Where(t => t.VenueExecutionBias > 0m).Select(t => t.VenueExecutionBias).DefaultIfEmpty(1.00m).Average();
+        var executionMode = ResolveExecutionModeScope(group);
+        var promotionStage = ResolvePromotionStageScope(group);
+        var effectiveStage = ResolveEffectiveStage(promotionStage, executionMode);
+        var (exactImpact, exactSummary, exactColor) = BuildExactBucketPressureDisplay(group);
+        var venueSummary = BuildCapitalAllocatorVenueSummary(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, averageVenueBias, promotionStage);
+        var (concImpact, concSummary, concColor) = BuildConcordanceDisplay(exactImpact, exactSummary, averageVenueBias, venueSummary);
+
+        return new
+        {
+            group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, EffectiveStage = effectiveStage,
+            Score = CalculateStrategyScore(group, effectiveStage), AverageVenueBias = averageVenueBias, VenueImpact = ResolveVenuePromotionImpact(averageVenueBias),
+            VenueSummary = venueSummary, ExactBucketImpact = exactImpact, ExactBucketSummary = exactSummary, ExactBucketImpactColor = exactColor,
+            ConcordanceImpact = concImpact, ConcordanceSummary = concSummary, ConcordanceImpactColor = concColor
+        };
+    }
+
+    private void UpdateCapitalAllocatorSummary(decimal allocatableCapital)
+    {
+        var leadTrade = _tradeCache
+            .Where(t => t.Status == TradeStatus.Executed && t.IsClosed && t.ExitTime.HasValue)
+            .Where(t => t.FinalAllocatorBias > 0m || !string.IsNullOrWhiteSpace(t.FinalAllocatorScope))
+            .OrderByDescending(t => t.ExitTime ?? t.EntryTime)
+            .FirstOrDefault();
+
+        var truthText = leadTrade is null
+            ? "Heavier weights go to exact symbol + session edge, sample depth, promotion stage, and exact bucket pressure."
+            : $"{ResolveAllocatorImpactFromTrade(leadTrade)} via {leadTrade.FinalAllocatorScope}.";
+
+        CapitalAllocatorSummary = $"Allocator is distributing up to {allocatableCapital:N0} {SelectedBotQuoteAsset} across {CapitalAllocationRows.Count} symbol-session ladder buckets. {truthText}";
     }
 
     private static string ResolveEffectiveStage(string promotionStage, string executionMode) =>
@@ -2996,25 +2885,18 @@ public partial class MainViewModel : ObservableObject
 
     private void UpdateBotProductivityInsights()
     {
+        var score = CalculateBotProductivityScore();
+        BotProductivityScore = $"Setup score {score}/100";
+        BotProductivityColor = ResolveBotProductivityColor(score);
+        BotSetupVelocity = ResolveBotSetupVelocity(score);
+        BotWorkflowAdvice = ResolveBotWorkflowAdvice();
+    }
+
+    private int CalculateBotProductivityScore()
+    {
         var score = 40;
-
-        score += BotLaunchGuardStatus switch
-        {
-            "Ready" => 30,
-            "Reduced" => 18,
-            "Caution" => 10,
-            "Disabled" => -10,
-            "Blocked" => -15,
-            _ => 0
-        };
-
-        score += StrategyThrottleStatus switch
-        {
-            "Normal" => 15,
-            "Reduced" => 5,
-            "Learning" => 3,
-            _ => 0
-        };
+        score += BotLaunchGuardStatus switch { "Ready" => 30, "Reduced" => 18, "Caution" => 10, "Disabled" => -10, "Blocked" => -15, _ => 0 };
+        score += StrategyThrottleStatus switch { "Normal" => 15, "Reduced" => 5, "Learning" => 3, _ => 0 };
 
         if (BotFundingAmount > 0 && BotRecommendedFunding > 0)
         {
@@ -3022,180 +2904,41 @@ public partial class MainViewModel : ObservableObject
             score += alignment >= 0.9 ? 10 : alignment >= 0.6 ? 5 : 0;
         }
 
-        if (GridDensity is >= 8 and <= 16)
-        {
-            score += 5;
-        }
-
-        if (GridUpperLimit > GridLowerLimit && (GridUpperLimit - GridLowerLimit) >= 4)
-        {
-            score += 5;
-        }
-
-        score = Math.Clamp(score, 0, 100);
-        BotProductivityScore = $"Setup score {score}/100";
-        BotProductivityColor = score >= 75 ? GreenBrush : score >= 55 ? OrangeBrush : RedBrush;
-
-        BotSetupVelocity = score >= 75
-            ? "Fast lane. This configuration is clean enough for quick deployment."
-            : score >= 55
-                ? "Medium friction. Use auto-tune to tighten capital and grid settings."
-                : "Slow lane. Too much launch drag or weak edge is hurting deployment quality.";
-
-        BotWorkflowAdvice = BotLaunchGuardStatus switch
-        {
-            "Disabled" => "Recovery first: re-enable only after paper validation and start with reduced size.",
-            "Blocked" => "Do not deploy. Backtest or change strategy before spending more operator time here.",
-            "Caution" => "Session is weak. Save time by waiting for a better killzone instead of tweaking endlessly.",
-            "Reduced" => "Lean into smaller funding and narrower decision scope. Productivity comes from disciplined repetition.",
-            "Ready" => "This bot is launch-efficient. Paper it once, then promote if execution quality holds.",
-            _ => "Use presets or auto-tune to reduce launch friction."
-        };
+        if (GridDensity is >= 8 and <= 16) score += 5;
+        if (GridUpperLimit > GridLowerLimit && (GridUpperLimit - GridLowerLimit) >= 4) score += 5;
+        
+        return Math.Clamp(score, 0, 100);
     }
+
+    private Brush ResolveBotProductivityColor(int score) => score >= 75 ? GreenBrush : score >= 55 ? OrangeBrush : RedBrush;
+
+    private string ResolveBotSetupVelocity(int score)
+    {
+        if (score >= 75) return "Fast lane. This configuration is clean enough for quick deployment.";
+        if (score >= 55) return "Medium friction. Use auto-tune to tighten capital and grid settings.";
+        return "Slow lane. Too much launch drag or weak edge is hurting deployment quality.";
+    }
+
+    private string ResolveBotWorkflowAdvice() => BotLaunchGuardStatus switch
+    {
+        "Disabled" => "Recovery first: re-enable only after paper validation and start with reduced size.",
+        "Blocked" => "Do not deploy. Backtest or change strategy before spending more operator time here.",
+        "Caution" => "Session is weak. Save time by waiting for a better killzone instead of tweaking endlessly.",
+        "Reduced" => "Lean into smaller funding and narrower decision scope. Productivity comes from disciplined repetition.",
+        "Ready" => "This bot is launch-efficient. Paper it once, then promote if execution quality holds.",
+        _ => "Use presets or auto-tune to reduce launch friction."
+    };
 
     private void UpdateBotLaunchRecommendation()
     {
         var activeSession = SessionContexts.FirstOrDefault(context => context.IsActive)?.Name ?? "Unknown";
-        var strategyDisabled = DisabledStrategies.Any(s => s.Equals(SelectedBotStrategy, StringComparison.OrdinalIgnoreCase) ||
-                                                           s.Equals(SelectedBotStrategy.Replace(" ", string.Empty), StringComparison.OrdinalIgnoreCase));
-        var strategyForceEnabled = IsForceEnabledStrategy(SelectedBotStrategy);
+        var strategyDisabled = DisabledStrategies.Any(s => s.Equals(SelectedBotStrategy, StringComparison.OrdinalIgnoreCase) || s.Equals(SelectedBotStrategy.Replace(" ", string.Empty), StringComparison.OrdinalIgnoreCase));
+        
+        var multipliers = CalculateLaunchMultipliers(activeSession);
+        BotRecommendedFunding = Math.Round(BotFundingAmount * multipliers.Throttle * multipliers.Risk * multipliers.Objective * multipliers.Session, 0);
 
-        decimal throttleMultiplier = StrategyThrottleStatus switch
+        if (EvaluateLaunchGuards(activeSession, strategyDisabled))
         {
-            "Blocked" => 0m,
-            "Reduced" => 0.5m,
-            "Normal" => 1m,
-            "Learning" => 0.35m,
-            "Unavailable" => 0.25m,
-            _ => 0.25m
-        };
-
-        decimal riskMultiplier = SelectedRiskProfile switch
-        {
-            "Low" => 0.55m,
-            "Aggressive" => 1m,
-            _ => 0.8m
-        };
-
-        decimal objectiveMultiplier = SelectedBotObjective switch
-        {
-            "Low Drawdown" => 0.6m,
-            "Income Flow" => 0.8m,
-            "Fast Rotation" => 0.9m,
-            _ => 1m
-        };
-
-        decimal sessionMultiplier = activeSession switch
-        {
-            "London Killzone" => 1m,
-            "NY Killzone" => 0.95m,
-            "Asia" => 0.65m,
-            "Close / Dead Zone" => 0.45m,
-            _ => 0.6m
-        };
-        var exactBucketPressure = ResolveSelectedExactBucketPressure();
-        var concordanceSignal = ResolveSelectedConcordanceSignal();
-
-        BotRecommendedFunding = Math.Round(BotFundingAmount * throttleMultiplier * riskMultiplier * objectiveMultiplier * sessionMultiplier, 0);
-
-        if (strategyDisabled)
-        {
-            BotLaunchGuardStatus = "Disabled";
-            BotLaunchGuardColor = RedBrush;
-            BotLaunchGuardReason = $"{SelectedBotStrategy} is on the disabled list because its recent bucket performance is unacceptable.";
-            BotProfitabilityFocus = "Do not deploy disabled strategies. Repair the edge in backtest or paper before re-enabling.";
-            BotRecommendedFunding = 0;
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        if (StrategyThrottleStatus == "Blocked")
-        {
-            BotLaunchGuardStatus = "Blocked";
-            BotLaunchGuardColor = RedBrush;
-            BotLaunchGuardReason = "This strategy bucket is underperforming. Keep capital at zero until the bucket recovers.";
-            BotProfitabilityFocus = "Focus on research, backtesting, and bucket recovery instead of new deployment.";
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        if (exactBucketPressure is { } exactPressure &&
-            exactPressure.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase))
-        {
-            BotLaunchGuardStatus = "Blocked";
-            BotLaunchGuardColor = RedBrush;
-            BotLaunchGuardReason = exactPressure.Summary;
-            BotProfitabilityFocus = "Exact bucket learning is rejecting this deployment. Stay in research, paper, or bucket recovery mode until the exact setup heals.";
-            BotRecommendedFunding = 0;
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        if (concordanceSignal is { } cappedConcordance &&
-            (cappedConcordance.Impact.Contains("capping near Paper", StringComparison.OrdinalIgnoreCase) ||
-             cappedConcordance.Impact.Contains("capping real edge", StringComparison.OrdinalIgnoreCase)))
-        {
-            BotLaunchGuardStatus = "Blocked";
-            BotLaunchGuardColor = RedBrush;
-            BotLaunchGuardReason = cappedConcordance.Summary;
-            BotProfitabilityFocus = "Edge and execution are out of sync here. Stay in research or paper mode until venue quality stops undermining the bucket.";
-            BotRecommendedFunding = 0;
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        if (activeSession == "Close / Dead Zone" || activeSession == "Asia")
-        {
-            BotLaunchGuardStatus = "Caution";
-            BotLaunchGuardColor = OrangeBrush;
-            BotLaunchGuardReason = $"Current session is {activeSession}. Reduce deployment size and favor stronger confirmation.";
-            BotProfitabilityFocus = "Best profitability usually comes from higher-quality session windows, not constant exposure.";
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        if (concordanceSignal is { } liveProbeConcordance &&
-            (liveProbeConcordance.Impact.Contains("holding LiveProbe", StringComparison.OrdinalIgnoreCase) ||
-             liveProbeConcordance.Impact.Contains("unproven despite clean venue", StringComparison.OrdinalIgnoreCase)))
-        {
-            BotLaunchGuardStatus = "Reduced";
-            BotLaunchGuardColor = OrangeBrush;
-            BotLaunchGuardReason = liveProbeConcordance.Summary;
-            BotProfitabilityFocus = "Execution and edge are not fully aligned yet. Keep this setup in probe-size mode until both layers agree.";
-            BotRecommendedFunding = Math.Round(Math.Min(BotRecommendedFunding, BotFundingAmount * 0.25m), 0);
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        if (exactBucketPressure is { } liveProbePressure &&
-            liveProbePressure.Impact.Contains("LiveProbe", StringComparison.OrdinalIgnoreCase))
-        {
-            BotLaunchGuardStatus = "Reduced";
-            BotLaunchGuardColor = OrangeBrush;
-            BotLaunchGuardReason = liveProbePressure.Summary;
-            BotProfitabilityFocus = "Exact bucket learning is still holding this setup in probe mode. Keep size small until the precise bucket proves it can scale.";
-            BotRecommendedFunding = Math.Round(Math.Min(BotRecommendedFunding, BotFundingAmount * 0.25m), 0);
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        if (StrategyThrottleStatus == "Reduced" || BotRecommendedFunding < BotFundingAmount * 0.6m)
-        {
-            BotLaunchGuardStatus = "Reduced";
-            BotLaunchGuardColor = OrangeBrush;
-            BotLaunchGuardReason = strategyForceEnabled
-                ? "Manual recovery override is active. The bot can trade, but size stays reduced until live quality improves."
-                : "The bot can trade, but size should stay reduced until bucket quality or session edge improves.";
-            BotProfitabilityFocus = strategyForceEnabled
-                ? "Recovery mode is active: prove the edge with smaller size before restoring normal deployment."
-                : "Protect capital first: smaller size with better timing usually outperforms forcing full exposure.";
             UpdateDeploymentChecklist(activeSession, strategyDisabled);
             RefreshCapitalAllocation();
             return;
@@ -3203,18 +2946,49 @@ public partial class MainViewModel : ObservableObject
 
         BotLaunchGuardStatus = "Ready";
         BotLaunchGuardColor = GreenBrush;
-        BotLaunchGuardReason = concordanceSignal is { } scalingConcordance && scalingConcordance.Impact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase)
-            ? $"{scalingConcordance.Summary} Deploy up to {BotRecommendedFunding:N0} {SelectedBotQuoteAsset}."
-            : exactBucketPressure is { } scalingPressure && scalingPressure.Impact.Contains("supports scaled deployment", StringComparison.OrdinalIgnoreCase)
-                ? $"{scalingPressure.Summary} Deploy up to {BotRecommendedFunding:N0} {SelectedBotQuoteAsset}."
-                : $"Session, throttle, and risk profile support deploying {BotRecommendedFunding:N0} {SelectedBotQuoteAsset}.";
-        BotProfitabilityFocus = concordanceSignal is { } concordanceFocus && concordanceFocus.Impact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase)
-            ? "Edge and execution are aligned here. Let proven buckets carry more capital while venue quality stays clean."
-            : exactBucketPressure is { } scalingFocus && scalingFocus.Impact.Contains("supports scaled deployment", StringComparison.OrdinalIgnoreCase)
-                ? "Exact bucket learning supports scaling here. Prioritize disciplined execution and let proven buckets carry more capital."
-                : "This is a healthier launch environment. Prioritize disciplined execution and let winners scale.";
+        BotLaunchGuardReason = "All core signals and session context are aligned.";
+        BotProfitabilityFocus = "Deployment is recommended. Start in paper mode or with small live probe size.";
+        
         UpdateDeploymentChecklist(activeSession, strategyDisabled);
         RefreshCapitalAllocation();
+    }
+
+    private (decimal Throttle, decimal Risk, decimal Objective, decimal Session) CalculateLaunchMultipliers(string activeSession)
+    {
+        decimal throttle = StrategyThrottleStatus switch { "Blocked" => 0m, "Reduced" => 0.5m, "Normal" => 1m, "Learning" => 0.35m, "Unavailable" => 0.25m, _ => 0.25m };
+        decimal risk = SelectedRiskProfile switch { "Low" => 0.55m, "Aggressive" => 1m, _ => 0.8m };
+        decimal objective = SelectedBotObjective switch { "Low Drawdown" => 0.6m, "Income Flow" => 0.8m, "Fast Rotation" => 0.9m, _ => 1m };
+        decimal session = activeSession switch { "London Killzone" => 1m, "NY Killzone" => 0.95m, "Asia" => 0.65m, "Close / Dead Zone" => 0.45m, _ => 0.6m };
+        return (throttle, risk, objective, session);
+    }
+
+    private bool EvaluateLaunchGuards(string activeSession, bool strategyDisabled)
+    {
+        if (strategyDisabled) return UpdateLaunchGuard("Disabled", RedBrush, $"{SelectedBotStrategy} is on the disabled list.", "Do not deploy disabled strategies.", 0);
+        if (StrategyThrottleStatus == "Blocked") return UpdateLaunchGuard("Blocked", RedBrush, "Strategy bucket is underperforming.", "Focus on research and backtesting.", null);
+
+        var pressure = ResolveSelectedExactBucketPressure();
+        if (pressure is { } p && p.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase))
+            return UpdateLaunchGuard("Blocked", RedBrush, p.Summary, "Exact bucket learning is rejecting this deployment.", 0);
+
+        var concordance = ResolveSelectedConcordanceSignal();
+        if (concordance is { } c && (c.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase) || c.Impact.Contains("capping real edge", StringComparison.OrdinalIgnoreCase)))
+            return UpdateLaunchGuard("Blocked", RedBrush, c.Summary, "Concordance logic is capping this deployment.", 0);
+
+        if (activeSession.Contains("Zone", StringComparison.OrdinalIgnoreCase))
+            return UpdateLaunchGuard("Caution", OrangeBrush, "Market is in a low-liquidity or transition zone.", "Deployment is possible but not recommended for new strategies.", null);
+
+        return false;
+    }
+
+    private bool UpdateLaunchGuard(string status, Brush color, string reason, string focus, decimal? funding)
+    {
+        BotLaunchGuardStatus = status;
+        BotLaunchGuardColor = color;
+        BotLaunchGuardReason = reason;
+        BotProfitabilityFocus = focus;
+        if (funding.HasValue) BotRecommendedFunding = funding.Value;
+        return true;
     }
 
     private void UpdateDeploymentChecklist(string activeSession, bool strategyDisabled)
@@ -4080,8 +3854,7 @@ public partial class MainViewModel : ObservableObject
             ListenerHealth = "Online";
             MarketDataHealth = "Online";
             var risk = ResolveRiskParameters(SelectedRiskProfile);
-            var rawDecision = await _technicalAnalysis.AnalyzeAsync(
-                new Signal { Symbol = symbol }, candles, risk);
+            var rawDecision = await _technicalAnalysis.AnalyzeAsync(new Signal { Symbol = symbol }, candles, risk);
 
             var ind = rawDecision.Indicators;
             if (ind == null) return;
@@ -4089,28 +3862,7 @@ public partial class MainViewModel : ObservableObject
             var decision = ApplyStrategyThrottle(rawDecision);
             UpdateBotLaunchSummary();
 
-            InvokeOnUi(() =>
-            {
-                // Update Watchlist Item
-                var watchlistItem = WatchlistItems.FirstOrDefault(w => w.Symbol == symbol);
-                if (watchlistItem != null)
-                {
-                    watchlistItem.Price = ind.CurrentPrice;
-                    var startPrice = candles.First().Close;
-                    watchlistItem.ChangePercent = (double)((ind.CurrentPrice - startPrice) / startPrice * 100);
-                }
-
-                // Update Chart
-                NormalizeChart(candles);
-                ClearChartInspection();
-
-                // Avoid fabricated telemetry values in the dashboard.
-                HftInferenceStatus = "Telemetry unavailable";
-                ZScoreStatus = "Waiting for engine feed";
-
-                // Update Indicators Agenda (Fintables style)
-                UpdateIndicatorAgenda(ind);
-            });
+            InvokeOnUi(() => UpdateWatchlistAndChart(symbol, ind, candles));
 
             var multiTimeframeTask = UpdateMultiTimeframeAsync(symbol, market);
             var aiAnalystTask = UpdateAiAnalyst(symbol, ind);
@@ -4118,100 +3870,12 @@ public partial class MainViewModel : ObservableObject
 
             InvokeOnUi(() =>
             {
-                // Update old indicator properties for backward compatibility if needed
-                CurrentPrice = ind.CurrentPrice;
-                RSI = ind.RSI ?? 50;
-                RSIColor = RSI < 30 ? GreenBrush : RSI > 70 ? RedBrush : GrayBrush;
-
-                if (ind.MACDHistogram > 0)
-                {
-                    MACDStatus = $"▲ Bullish ({ind.MACDHistogram:F4})";
-                    MACDColor = GreenBrush;
-                }
-                else
-                {
-                    MACDStatus = $"▼ Bearish ({ind.MACDHistogram:F4})";
-                    MACDColor = RedBrush;
-                }
-
-                if (ind.EMA20 > ind.EMA50)
-                {
-                    EMAStatus = "Golden Cross ▲";
-                    EMAColor = GreenBrush;
-                }
-                else
-                {
-                    EMAStatus = "Death Cross ▼";
-                    EMAColor = RedBrush;
-                }
-
-                BBUpper = ind.BollingerUpper ?? 0;
-                BBLower = ind.BollingerLower ?? 0;
-                ATR = ind.ATR ?? 0;
-                VolumeRatio = ind.VolumeRatio ?? 1.0;
-                VolumeColor = VolumeRatio >= 1.5 ? GreenBrush : GrayBrush;
-
-                // AlphaTrend
-                if (ind.AlphaTrend != null)
-                {
-                    AlphaTrendValue = ind.AlphaTrend.Value;
-                    AlphaTrendStatus = ind.AlphaTrend.IsBullish ? "▲ BULLISH" : "▼ BEARISH";
-                    AlphaTrendColor = ind.AlphaTrend.IsBullish ? GreenBrush : RedBrush;
-
-                    if (ind.AlphaTrend.Signal != null && ind.AlphaTrend.IsConfirmed)
-                    {
-                        AddSystemLog($"⚡ AlphaTrend CONFIRMED {ind.AlphaTrend.Signal} signal!");
-                    }
-                }
-
-                // S/R Levels
-                NearestSupport = ind.NearestSupport?.Price ?? 0;
-                NearestResistance = ind.NearestResistance?.Price ?? 0;
-
-                // Decision
-                ConfluenceScore = decision.Confidence;
-                ConfluenceColor = decision.Confidence >= 60 ? GreenBrush
-                                : decision.Confidence >= 40 ? OrangeBrush : RedBrush;
-
-                StopLoss = decision.StopLoss;
-                TakeProfit = decision.TakeProfit;
-                PositionSize = decision.PositionSizePercent;
-                AnalysisTimestamp = $"Updated {DateTime.Now:HH:mm:ss}";
+                RefreshIndicatorProperties(ind);
+                RefreshDecisionProperties(decision);
 
                 if (decision.ShouldTrade)
                 {
-                    var alertAudit = BuildAlertAuditContext(symbol, decision, ind);
-
-                    TradeJournal.Insert(0, new TradeJournalEntry
-                    {
-                        Time = DateTime.Now,
-                        Symbol = symbol,
-                        Side = decision.Side.ToString(),
-                        Price = ind.CurrentPrice,
-                        Confidence = decision.Confidence,
-                        Status = "Signal Approved",
-                        ExecutionMode = alertAudit.ExecutionMode,
-                        PromotionStage = alertAudit.PromotionStage,
-                        StageExplanation = alertAudit.StageExplanation,
-                        ExactBucketImpact = alertAudit.ExactBucketImpact,
-                        ExactBucketSummary = alertAudit.ExactBucketSummary,
-                        VenueImpact = alertAudit.VenueImpact,
-                        AllocatorImpact = alertAudit.AllocatorImpact,
-                        EdgeSummary = alertAudit.EdgeSummary,
-                        ExitSummary = alertAudit.ExitSummary,
-                        VenueImpactColor = ResolveJournalVenueImpactColor(decision, ind),
-                        ExecutionModeColor = GetCurrentExecutionModeColor(),
-                        SideColor = decision.Side == TradeSide.Buy ? GreenBrush : RedBrush,
-                        PnL = 0m,
-                        Reasoning = decision.Reasoning.Length > 60
-                            ? decision.Reasoning[..60] + "..."
-                            : decision.Reasoning
-                    });
-
-                    RefreshOperatorAuditAlerts();
-
-                    string currency = market == "BIST" ? "TRY" : "$";
-                    AddSystemLog($"Signal approved: {decision.Side} {symbol} @ {currency}{ind.CurrentPrice:F2} (Score: {decision.Confidence}/100)");
+                    LogAnalysisResults(symbol, decision, ind, market);
                 }
             });
 
@@ -4243,6 +3907,123 @@ public partial class MainViewModel : ObservableObject
             MarketDataHealth = "Degraded";
             AddSystemLog($"ERROR: {ex.Message}");
         }
+    }
+
+    private void UpdateWatchlistAndChart(string symbol, IndicatorSnapshot ind, List<Candle> candles)
+    {
+        var watchlistItem = WatchlistItems.FirstOrDefault(w => w.Symbol == symbol);
+        if (watchlistItem != null)
+        {
+            watchlistItem.Price = ind.CurrentPrice;
+            var startPrice = candles.First().Close;
+            watchlistItem.ChangePercent = (double)((ind.CurrentPrice - startPrice) / startPrice * 100);
+        }
+
+        NormalizeChart(candles);
+        ClearChartInspection();
+
+        HftInferenceStatus = "Telemetry unavailable";
+        ZScoreStatus = "Waiting for engine feed";
+
+        UpdateIndicatorAgenda(ind);
+    }
+
+    private void RefreshIndicatorProperties(IndicatorSnapshot ind)
+    {
+        CurrentPrice = ind.CurrentPrice;
+        RSI = ind.RSI ?? 50;
+        RSIColor = RSI < 30 ? GreenBrush : RSI > 70 ? RedBrush : GrayBrush;
+
+        if (ind.MACDHistogram > 0)
+        {
+            MACDStatus = $"▲ Bullish ({ind.MACDHistogram:F4})";
+            MACDColor = GreenBrush;
+        }
+        else
+        {
+            MACDStatus = $"▼ Bearish ({ind.MACDHistogram:F4})";
+            MACDColor = RedBrush;
+        }
+
+        if (ind.EMA20 > ind.EMA50)
+        {
+            EMAStatus = "Golden Cross ▲";
+            EMAColor = GreenBrush;
+        }
+        else
+        {
+            EMAStatus = "Death Cross ▼";
+            EMAColor = RedBrush;
+        }
+
+        BBUpper = ind.BollingerUpper ?? 0;
+        BBLower = ind.BollingerLower ?? 0;
+        ATR = ind.ATR ?? 0;
+        VolumeRatio = ind.VolumeRatio ?? 1.0;
+        VolumeColor = VolumeRatio >= 1.5 ? GreenBrush : GrayBrush;
+
+        if (ind.AlphaTrend != null)
+        {
+            AlphaTrendValue = ind.AlphaTrend.Value;
+            AlphaTrendStatus = ind.AlphaTrend.IsBullish ? "▲ BULLISH" : "▼ BEARISH";
+            AlphaTrendColor = ind.AlphaTrend.IsBullish ? GreenBrush : RedBrush;
+
+            if (ind.AlphaTrend.Signal != null && ind.AlphaTrend.IsConfirmed)
+            {
+                AddSystemLog($"⚡ AlphaTrend CONFIRMED {ind.AlphaTrend.Signal} signal!");
+            }
+        }
+
+        NearestSupport = ind.NearestSupport?.Price ?? 0;
+        NearestResistance = ind.NearestResistance?.Price ?? 0;
+    }
+
+    private void RefreshDecisionProperties(TradeDecision decision)
+    {
+        ConfluenceScore = decision.Confidence;
+        ConfluenceColor = decision.Confidence >= 60 ? GreenBrush
+                        : decision.Confidence >= 40 ? OrangeBrush : RedBrush;
+
+        StopLoss = decision.StopLoss;
+        TakeProfit = decision.TakeProfit;
+        PositionSize = decision.PositionSizePercent;
+        AnalysisTimestamp = $"Updated {DateTime.Now:HH:mm:ss}";
+    }
+
+    private void LogAnalysisResults(string symbol, TradeDecision decision, IndicatorSnapshot ind, string market)
+    {
+        var alertAudit = BuildAlertAuditContext(symbol, decision, ind);
+
+        TradeJournal.Insert(0, new TradeJournalEntry
+        {
+            Time = DateTime.Now,
+            Symbol = symbol,
+            Side = decision.Side.ToString(),
+            Price = ind.CurrentPrice,
+            Confidence = decision.Confidence,
+            Status = "Signal Approved",
+            ExecutionMode = alertAudit.ExecutionMode,
+            PromotionStage = alertAudit.PromotionStage,
+            StageExplanation = alertAudit.StageExplanation,
+            ExactBucketImpact = alertAudit.ExactBucketImpact,
+            ExactBucketSummary = alertAudit.ExactBucketSummary,
+            VenueImpact = alertAudit.VenueImpact,
+            AllocatorImpact = alertAudit.AllocatorImpact,
+            EdgeSummary = alertAudit.EdgeSummary,
+            ExitSummary = alertAudit.ExitSummary,
+            VenueImpactColor = ResolveJournalVenueImpactColor(decision, ind),
+            ExecutionModeColor = GetCurrentExecutionModeColor(),
+            SideColor = decision.Side == TradeSide.Buy ? GreenBrush : RedBrush,
+            PnL = 0m,
+            Reasoning = decision.Reasoning.Length > 60
+                ? decision.Reasoning[..60] + "..."
+                : decision.Reasoning
+        });
+
+        RefreshOperatorAuditAlerts();
+
+        string currency = market == "BIST" ? "TRY" : "$";
+        AddSystemLog($"Signal approved: {decision.Side} {symbol} @ {currency}{ind.CurrentPrice:F2} (Score: {decision.Confidence}/100)");
     }
 
     private async Task UpdateAiAnalyst(string symbol, IndicatorSnapshot ind)
@@ -4360,119 +4141,10 @@ public partial class MainViewModel : ObservableObject
 
         InvokeOnUi(() =>
         {
-            EntryChecklist.Clear();
-            AddChecklistItem(
-                "Trend aligned",
-                (indicators.AlphaTrend?.IsBullish ?? false) && (indicators.PMax?.IsBullish ?? true) && (indicators.EMA20 ?? 0) >= (indicators.EMA50 ?? 0),
-                "AlphaTrend, PMax, and EMA stack are aligned.");
-            AddChecklistItem(
-                "Momentum confirmed",
-                (indicators.MACDHistogram ?? 0) > 0 && (indicators.RSI ?? 50) >= 45 && (indicators.RSI ?? 50) <= 70,
-                "Momentum is supportive without looking overheated.");
-            AddChecklistItem(
-                "Volume confirmed",
-                (indicators.VolumeRatio ?? 0) >= 1.2,
-                "Relative volume is strong enough to trust the move.");
-            AddChecklistItem(
-                "Structure room",
-                decision.Side == TradeSide.Sell ? supportRoom >= atr * 0.75m : resistanceRoom >= atr * 0.75m,
-                "There is enough room before the nearest support or resistance.");
-            AddChecklistItem(
-                "Risk acceptable",
-                !IsKillSwitchArmed && RiskRewardRatio >= 1.4m && decision.PositionSizePercent > 0,
-                "Risk, size, and kill-switch controls are inside tolerance.");
-            AddChecklistItem(
-                "Execution quality",
-                ExecutionReadiness >= 55 && QueueHealth != "Critical (Dead-Letter)" && MarketDataHealth == "Online",
-                "Execution conditions and system health are acceptable.");
-
-            var passedChecks = EntryChecklist.Count(item => item.IsPassing);
-            SignalConfidenceLabel = $"Signal confidence: {decision.Confidence}/100";
-            ExecutionQualityLabel = $"Execution quality: {ExecutionReadiness}/100";
-            var exactBucketPressure = ResolveSelectedExactBucketPressure();
-            var concordanceSignal = ResolveSelectedConcordanceSignal();
-            var exactBucketExecutionText = exactBucketPressure is null
-                ? "Exact bucket pressure is still unconfirmed."
-                : exactBucketPressure.Value.Summary;
-            var concordanceExecutionText = concordanceSignal is null
-                ? "Concordance between edge and venue execution is still unconfirmed."
-                : concordanceSignal.Value.Summary;
-            MarketPulse =
-                $"Price {indicators.CurrentPrice:F2} | RSI {(indicators.RSI ?? 0):F1} | Vol {(indicators.VolumeRatio ?? 0):F1}x | " +
-                $"ATR {(indicators.ATR ?? 0):F2} | {exactBucketExecutionText} {concordanceExecutionText}";
-            ExecutionPlan =
-                $"Entry {decision.Side} with stop {decision.StopLoss:F2}, target {decision.TakeProfit:F2}, " +
-                $"size {decision.PositionSizePercent:P1}, R/R 1:{RiskRewardRatio:F2}. {exactBucketExecutionText} {concordanceExecutionText}";
-
-            WhyThisTrade =
-                $"{decision.Side} bias via {strategyTag} in {regimeTag}. " +
-                $"{decision.Reasoning} Stop {decision.StopLoss:F2}, target {decision.TakeProfit:F2}, size {decision.PositionSizePercent:P1}.";
-            BotStatusSummary = decision.ShouldTrade
-                ? $"Scanning complete: {strategyTag} found a {decision.Side} candidate in {regimeTag}. Execution quality is {ExecutionReadiness}/100. Throttle {StrategyThrottleStatus.ToLowerInvariant()}. {exactBucketExecutionText} {concordanceExecutionText}"
-                : $"Bot is scanning but standing down. {decision.Reasoning}";
-            DailyMarketBriefing =
-                $"{SelectedMarket} briefing for {SelectedSymbol}: {regimeTag} backdrop with {strategyTag} bias. " +
-                $"Current price {indicators.CurrentPrice:F2}, support {NearestSupport:F2}, resistance {NearestResistance:F2}, " +
-                $"AI stance: {AiTradeRecommendation}. {exactBucketExecutionText} {concordanceExecutionText}";
-
-            SafetyBanners.Clear();
-            if (DeadLetterCount > 0)
-            {
-                SafetyBanners.Add("Execution queue has dead-letter traffic. New trades should stay blocked.");
-            }
-
-            if (IsKillSwitchArmed)
-            {
-                SafetyBanners.Add("Risk kill-switch is armed. Position taking should remain disabled.");
-            }
-
-            if (MarketDataHealth != "Online")
-            {
-                SafetyBanners.Add("Market data health is degraded. Confirm prices before acting.");
-            }
-
-            if (ExecutionReadiness < 55)
-            {
-                SafetyBanners.Add("Execution quality is weak. Slippage risk is elevated.");
-            }
-
-            if (StrategyThrottleStatus == "Blocked")
-            {
-                SafetyBanners.Add("Strategy auto-throttle is blocking this bucket until its performance improves.");
-            }
-            else if (StrategyThrottleStatus == "Reduced")
-            {
-                SafetyBanners.Add("Strategy auto-throttle is reducing size on this bucket.");
-            }
-
-            if ((indicators.VolumeRatio ?? 0) < 1.0)
-            {
-                SafetyBanners.Add("Volume is below baseline. Breakouts are less trustworthy.");
-            }
-
-            if (SafetyBanners.Count == 0)
-            {
-                SafetyBanners.Add("No active safety banners. Conditions are stable enough for review.");
-            }
-
-            if (decision.ShouldTrade && ExecutionReadiness >= 75 && passedChecks >= 5 && !IsKillSwitchArmed)
-            {
-                TradeReadiness = "Ready";
-                TradeReadinessColor = GreenBrush;
-                TradeReadinessReason = "Confluence, execution quality, and controls are all supportive.";
-            }
-            else if (ExecutionReadiness >= 55 && passedChecks >= 4 && !IsKillSwitchArmed)
-            {
-                TradeReadiness = "Caution";
-                TradeReadinessColor = OrangeBrush;
-                TradeReadinessReason = "The setup is tradable, but one or more filters still need respect.";
-            }
-            else
-            {
-                TradeReadiness = "Do Not Trade";
-                TradeReadinessColor = RedBrush;
-                TradeReadinessReason = "At least one critical filter is failing or execution quality is too weak.";
-            }
+            PopulateEntryChecklist(indicators, decision, supportRoom, resistanceRoom, atr);
+            UpdateTraderStatusLabels(decision, indicators, strategyTag, regimeTag);
+            PopulateSafetyBanners(indicators);
+            DetermineTradeReadiness(decision, indicators);
         });
 
         if (candles.Count > 0)
@@ -4483,124 +4155,263 @@ public partial class MainViewModel : ObservableObject
         UpdateHftWorkspace();
     }
 
+    private void PopulateEntryChecklist(IndicatorSnapshot indicators, TradeDecision decision, decimal supportRoom, decimal resistanceRoom, decimal atr)
+    {
+        EntryChecklist.Clear();
+        AddChecklistItem(
+            "Trend aligned",
+            (indicators.AlphaTrend?.IsBullish ?? false) && (indicators.PMax?.IsBullish ?? true) && (indicators.EMA20 ?? 0) >= (indicators.EMA50 ?? 0),
+            "AlphaTrend, PMax, and EMA stack are aligned.");
+        AddChecklistItem(
+            "Momentum confirmed",
+            (indicators.MACDHistogram ?? 0) > 0 && (indicators.RSI ?? 50) >= 45 && (indicators.RSI ?? 50) <= 70,
+            "Momentum is supportive without looking overheated.");
+        AddChecklistItem(
+            "Volume confirmed",
+            (indicators.VolumeRatio ?? 0) >= 1.2,
+            "Relative volume is strong enough to trust the move.");
+        AddChecklistItem(
+            "Structure room",
+            decision.Side == TradeSide.Sell ? supportRoom >= atr * 0.75m : resistanceRoom >= atr * 0.75m,
+            "There is enough room before the nearest support or resistance.");
+        AddChecklistItem(
+            "Risk acceptable",
+            !IsKillSwitchArmed && RiskRewardRatio >= 1.4m && decision.PositionSizePercent > 0,
+            "Risk, size, and kill-switch controls are inside tolerance.");
+        AddChecklistItem(
+            "Execution quality",
+            ExecutionReadiness >= 55 && QueueHealth != "Critical (Dead-Letter)" && MarketDataHealth == "Online",
+            "Execution conditions and system health are acceptable.");
+    }
+
+    private void UpdateTraderStatusLabels(TradeDecision decision, IndicatorSnapshot indicators, string strategyTag, string regimeTag)
+    {
+        SignalConfidenceLabel = $"Signal confidence: {decision.Confidence}/100";
+        ExecutionQualityLabel = $"Execution quality: {ExecutionReadiness}/100";
+        var exactBucketPressure = ResolveSelectedExactBucketPressure();
+        var concordanceSignal = ResolveSelectedConcordanceSignal();
+        var exactBucketExecutionText = exactBucketPressure is null
+            ? "Exact bucket pressure is still unconfirmed."
+            : exactBucketPressure.Value.Summary;
+        var concordanceExecutionText = concordanceSignal is null
+            ? "Concordance between edge and venue execution is still unconfirmed."
+            : concordanceSignal.Value.Summary;
+        MarketPulse =
+            $"Price {indicators.CurrentPrice:F2} | RSI {(indicators.RSI ?? 0):F1} | Vol {(indicators.VolumeRatio ?? 0):F1}x | " +
+            $"ATR {(indicators.ATR ?? 0):F2} | {exactBucketExecutionText} {concordanceExecutionText}";
+        ExecutionPlan =
+            $"Entry {decision.Side} with stop {decision.StopLoss:F2}, target {decision.TakeProfit:F2}, " +
+            $"size {decision.PositionSizePercent:P1}, R/R 1:{RiskRewardRatio:F2}. {exactBucketExecutionText} {concordanceExecutionText}";
+
+        WhyThisTrade =
+            $"{decision.Side} bias via {strategyTag} in {regimeTag}. " +
+            $"{decision.Reasoning} Stop {decision.StopLoss:F2}, target {decision.TakeProfit:F2}, size {decision.PositionSizePercent:P1}.";
+        BotStatusSummary = decision.ShouldTrade
+            ? $"Scanning complete: {strategyTag} found a {decision.Side} candidate in {regimeTag}. Execution quality is {ExecutionReadiness}/100. Throttle {StrategyThrottleStatus.ToLowerInvariant()}. {exactBucketExecutionText} {concordanceExecutionText}"
+            : $"Bot is scanning but standing down. {decision.Reasoning}";
+        DailyMarketBriefing =
+            $"{SelectedMarket} briefing for {SelectedSymbol}: {regimeTag} backdrop with {strategyTag} bias. " +
+            $"Current price {indicators.CurrentPrice:F2}, support {NearestSupport:F2}, resistance {NearestResistance:F2}, " +
+            $"AI stance: {AiTradeRecommendation}. {exactBucketExecutionText} {concordanceExecutionText}";
+    }
+
+    private void PopulateSafetyBanners(IndicatorSnapshot indicators)
+    {
+        SafetyBanners.Clear();
+        if (DeadLetterCount > 0)
+        {
+            SafetyBanners.Add("Execution queue has dead-letter traffic. New trades should stay blocked.");
+        }
+
+        if (IsKillSwitchArmed)
+        {
+            SafetyBanners.Add("Risk kill-switch is armed. Position taking should remain disabled.");
+        }
+
+        if (MarketDataHealth != "Online")
+        {
+            SafetyBanners.Add("Market data health is degraded. Confirm prices before acting.");
+        }
+
+        if (ExecutionReadiness < 55)
+        {
+            SafetyBanners.Add("Execution quality is weak. Slippage risk is elevated.");
+        }
+
+        if (StrategyThrottleStatus == "Blocked")
+        {
+            SafetyBanners.Add("Strategy auto-throttle is blocking this bucket until its performance improves.");
+        }
+        else if (StrategyThrottleStatus == "Reduced")
+        {
+            SafetyBanners.Add("Strategy auto-throttle is reducing size on this bucket.");
+        }
+
+        if ((indicators.VolumeRatio ?? 0) < 1.0)
+        {
+            SafetyBanners.Add("Volume is below baseline. Breakouts are less trustworthy.");
+        }
+
+        if (SafetyBanners.Count == 0)
+        {
+            SafetyBanners.Add("No active safety banners. Conditions are stable enough for review.");
+        }
+    }
+
+    private void DetermineTradeReadiness(TradeDecision decision, IndicatorSnapshot indicators)
+    {
+        var passedChecks = EntryChecklist.Count(item => item.IsPassing);
+
+        if (decision.ShouldTrade && ExecutionReadiness >= 75 && passedChecks >= 5 && !IsKillSwitchArmed)
+        {
+            TradeReadiness = "Ready";
+            TradeReadinessColor = GreenBrush;
+            TradeReadinessReason = "Confluence, execution quality, and controls are all supportive.";
+        }
+        else if (ExecutionReadiness >= 55 && passedChecks >= 4 && !IsKillSwitchArmed)
+        {
+            TradeReadiness = "Caution";
+            TradeReadinessColor = OrangeBrush;
+            TradeReadinessReason = "The setup is tradable, but one or more filters still need respect.";
+        }
+        else
+        {
+            TradeReadiness = "Do Not Trade";
+            TradeReadinessColor = RedBrush;
+            TradeReadinessReason = "At least one critical filter is failing or execution quality is too weak.";
+        }
+    }
+
     private void UpdateHftWorkspace()
     {
-        var sessionTrades = _tradeCache
+        var (exactBucketPressure, concordanceSignal, exactBucketHftText, concordanceHftText) = ResolveHftContext();
+        var (sessionTrades, sessionPnl, sessionWinRate) = CalculateHftPerformance();
+        var estimatedSlippageBps = CalculateEstimatedSlippage();
+
+        InvokeOnUi(() =>
+        {
+            UpdateHftLabels(sessionTrades.Count, sessionPnl, sessionWinRate, estimatedSlippageBps, exactBucketHftText, concordanceHftText);
+            ResolveHftBias(exactBucketPressure, concordanceSignal, exactBucketHftText, concordanceHftText, estimatedSlippageBps);
+        });
+    }
+
+    private ((string Impact, string Summary, Brush Color)? Pressure, (string Impact, string Summary, Brush Color)? Concordance, string PressureText, string ConcordanceText) ResolveHftContext()
+    {
+        var pressure = ResolveSelectedExactBucketPressure();
+        var concordance = ResolveSelectedConcordanceSignal();
+        var pressureText = pressure is null ? "Exact bucket pressure not confirmed yet." : pressure.Value.Summary;
+        var concordanceText = concordance is null ? "Concordance between exact bucket edge and venue execution is not confirmed yet." : concordance.Value.Summary;
+        return (pressure, concordance, pressureText, concordanceText);
+    }
+
+    private (List<Trade> Trades, decimal Pnl, double WinRate) CalculateHftPerformance()
+    {
+        var trades = _tradeCache
             .Where(trade => trade.Status == TradeStatus.Executed && trade.IsClosed && trade.ExitTime.HasValue)
             .Where(trade => trade.ExitTime!.Value.Date == DateTime.UtcNow.Date)
             .ToList();
-        var exactBucketPressure = ResolveSelectedExactBucketPressure();
-        var concordanceSignal = ResolveSelectedConcordanceSignal();
-        var exactBucketHftText = exactBucketPressure is null
-            ? "Exact bucket pressure not confirmed yet."
-            : exactBucketPressure.Value.Summary;
-        var concordanceHftText = concordanceSignal is null
-            ? "Concordance between exact bucket edge and venue execution is not confirmed yet."
-            : concordanceSignal.Value.Summary;
-        var sessionPnl = sessionTrades.Sum(CalculateTradePnL);
-        var sessionWins = sessionTrades.Count(trade => CalculateTradePnL(trade) > 0);
-        var sessionWinRate = sessionTrades.Count == 0 ? 0 : sessionWins * 100.0 / sessionTrades.Count;
+        var pnl = trades.Sum(CalculateTradePnL);
+        var wins = trades.Count(trade => CalculateTradePnL(trade) > 0);
+        var winRate = trades.Count == 0 ? 0 : wins * 100.0 / trades.Count;
+        return (trades, pnl, winRate);
+    }
+
+    private decimal CalculateEstimatedSlippage()
+    {
         var normalizedAtr = ATR <= 0 ? 0.25m : Convert.ToDecimal(ATR);
         var referencePrice = CurrentPrice <= 0 ? 1m : CurrentPrice;
         var queueMultiplier = QueueHealth == "Optimal" ? 0.65m : QueueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase) ? 1.8m : 1.1m;
         var readinessMultiplier = ExecutionReadiness >= 70 ? 0.75m : ExecutionReadiness >= 55 ? 1.0m : 1.25m;
         var volumeMultiplier = VolumeRatio >= 1.2 ? 0.8m : 1.15m;
-        var estimatedSlippageBps = Math.Round((normalizedAtr / referencePrice) * 10000m * queueMultiplier * readinessMultiplier * volumeMultiplier, 1);
+        return Math.Round((normalizedAtr / referencePrice) * 10000m * queueMultiplier * readinessMultiplier * volumeMultiplier, 1);
+    }
 
-        InvokeOnUi(() =>
+    private void UpdateHftLabels(int tradeCount, decimal sessionPnl, double sessionWinRate, decimal estimatedSlippageBps, string pressureText, string concordanceText)
+    {
+        HftWorkspaceHeadline = $"Execution mode {TradingModeLabel}. Queue {QueueHealth.ToLowerInvariant()}, market data {MarketDataHealth.ToLowerInvariant()}, AI {AiServiceHealth.ToLowerInvariant()}. {pressureText} {concordanceText}";
+        HftLatencySummary = $"API {ApiPing} | Server {ServerLatency} | Listener {ListenerHealth}";
+        HftMicrostructureSummary = $"OFI {HftInferenceStatus} | Z-score {ZScoreStatus} | Volume {(VolumeRatio):F1}x | ATR {ATR:F2}";
+        HftEstimatedSlippage = $"~{estimatedSlippageBps:N1} bps";
+        HftSessionPnl = sessionPnl >= 0 ? $"+{sessionPnl:N0}" : $"{sessionPnl:N0}";
+        HftSessionPnlColor = sessionPnl >= 0 ? GreenBrush : RedBrush;
+        HftSessionWinRate = tradeCount == 0 ? "WR --" : $"WR {sessionWinRate:F0}% / {tradeCount}";
+
+        if (estimatedSlippageBps <= 8 && ExecutionReadiness >= 70 && QueueHealth == "Optimal")
         {
-            HftWorkspaceHeadline =
-                $"Execution mode {TradingModeLabel}. Queue {QueueHealth.ToLowerInvariant()}, market data {MarketDataHealth.ToLowerInvariant()}, AI {AiServiceHealth.ToLowerInvariant()}. {exactBucketHftText} {concordanceHftText}";
-            HftLatencySummary = $"API {ApiPing} | Server {ServerLatency} | Listener {ListenerHealth}";
-            HftMicrostructureSummary =
-                $"OFI {HftInferenceStatus} | Z-score {ZScoreStatus} | Volume {(VolumeRatio):F1}x | ATR {ATR:F2}";
-            HftEstimatedSlippage = $"~{estimatedSlippageBps:N1} bps";
-            HftSessionPnl = sessionPnl >= 0 ? $"+{sessionPnl:N0}" : $"{sessionPnl:N0}";
-            HftSessionPnlColor = sessionPnl >= 0 ? GreenBrush : RedBrush;
-            HftSessionWinRate = sessionTrades.Count == 0 ? "WR --" : $"WR {sessionWinRate:F0}% / {sessionTrades.Count}";
+            HftFillQuality = "Institutional";
+            HftFillQualityColor = GreenBrush;
+        }
+        else if (estimatedSlippageBps <= 15 && ExecutionReadiness >= 55)
+        {
+            HftFillQuality = "Acceptable";
+            HftFillQualityColor = OrangeBrush;
+        }
+        else
+        {
+            HftFillQuality = "Fragile";
+            HftFillQualityColor = RedBrush;
+        }
+    }
 
-            if (estimatedSlippageBps <= 8 && ExecutionReadiness >= 70 && QueueHealth == "Optimal")
-            {
-                HftFillQuality = "Institutional";
-                HftFillQualityColor = GreenBrush;
-            }
-            else if (estimatedSlippageBps <= 15 && ExecutionReadiness >= 55)
-            {
-                HftFillQuality = "Acceptable";
-                HftFillQualityColor = OrangeBrush;
-            }
-            else
-            {
-                HftFillQuality = "Fragile";
-                HftFillQualityColor = RedBrush;
-            }
+    private void ResolveHftBias((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pressureText, string concordanceText, decimal estimatedSlippageBps)
+    {
+        if (DeadLetterCount > 0 || QueueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase))
+        {
+            HftExecutionBias = "Blocked";
+            HftExecutionBiasColor = RedBrush;
+            HftRiskSummary = $"Dead-letter traffic or queue stress is active. HFT execution should stay disabled. {pressureText} {concordanceText}";
+            return;
+        }
 
-            if (DeadLetterCount > 0 || QueueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase))
-            {
-                HftExecutionBias = "Blocked";
-                HftExecutionBiasColor = RedBrush;
-                HftRiskSummary = $"Dead-letter traffic or queue stress is active. HFT execution should stay disabled. {exactBucketHftText} {concordanceHftText}";
-                return;
-            }
+        if (MarketDataHealth != "Online" || StrategyThrottleStatus == "Blocked")
+        {
+            HftExecutionBias = "Caution";
+            HftExecutionBiasColor = OrangeBrush;
+            HftRiskSummary = $"Execution quality is degraded by data or strategy quality constraints. Reduce aggression. {pressureText} {concordanceText}";
+            return;
+        }
 
-            if (MarketDataHealth != "Online" || StrategyThrottleStatus == "Blocked")
-            {
-                HftExecutionBias = "Caution";
-                HftExecutionBiasColor = OrangeBrush;
-                HftRiskSummary = $"Execution quality is degraded by data or strategy quality constraints. Reduce aggression. {exactBucketHftText} {concordanceHftText}";
-                return;
-            }
+        if (concordance is { } blockedCon && (blockedCon.Impact.Contains("capping near Paper", StringComparison.OrdinalIgnoreCase) || blockedCon.Impact.Contains("capping real edge", StringComparison.OrdinalIgnoreCase)))
+        {
+            HftExecutionBias = "Blocked";
+            HftExecutionBiasColor = RedBrush;
+            HftRiskSummary = $"Concordance is blocking HFT-style aggression. {blockedCon.Summary}";
+            return;
+        }
 
-            if (concordanceSignal is { } blockedConcordance &&
-                (blockedConcordance.Impact.Contains("capping near Paper", StringComparison.OrdinalIgnoreCase) ||
-                 blockedConcordance.Impact.Contains("capping real edge", StringComparison.OrdinalIgnoreCase)))
-            {
-                HftExecutionBias = "Blocked";
-                HftExecutionBiasColor = RedBrush;
-                HftRiskSummary = $"Concordance is blocking HFT-style aggression. {blockedConcordance.Summary}";
-                return;
-            }
+        if (pressure is { } blockedPressure && blockedPressure.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase))
+        {
+            HftExecutionBias = "Blocked";
+            HftExecutionBiasColor = RedBrush;
+            HftRiskSummary = $"Exact bucket pressure is holding this setup near Paper. {blockedPressure.Summary}";
+            return;
+        }
 
-            if (exactBucketPressure is { } blockedPressure &&
-                blockedPressure.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase))
-            {
-                HftExecutionBias = "Blocked";
-                HftExecutionBiasColor = RedBrush;
-                HftRiskSummary = $"Exact bucket pressure is holding this setup near Paper. {blockedPressure.Summary}";
-                return;
-            }
+        if (pressure is { } probePressure && probePressure.Impact.Contains("LiveProbe", StringComparison.OrdinalIgnoreCase))
+        {
+            HftExecutionBias = "Caution";
+            HftExecutionBiasColor = OrangeBrush;
+            HftRiskSummary = concordance is { } probeConcordance && (probeConcordance.Impact.Contains("holding LiveProbe", StringComparison.OrdinalIgnoreCase) || probeConcordance.Impact.Contains("unproven despite clean venue", StringComparison.OrdinalIgnoreCase))
+                ? $"Concordance is holding this setup in LiveProbe. {probeConcordance.Summary}"
+                : $"Exact bucket pressure is holding this setup in LiveProbe. {probePressure.Summary} {concordanceText}";
+            return;
+        }
 
-            if (exactBucketPressure is { } probePressure &&
-                probePressure.Impact.Contains("LiveProbe", StringComparison.OrdinalIgnoreCase))
-            {
-                HftExecutionBias = "Caution";
-                HftExecutionBiasColor = OrangeBrush;
-                HftRiskSummary = concordanceSignal is { } probeConcordance &&
-                                 (probeConcordance.Impact.Contains("holding LiveProbe", StringComparison.OrdinalIgnoreCase) ||
-                                  probeConcordance.Impact.Contains("unproven despite clean venue", StringComparison.OrdinalIgnoreCase))
-                    ? $"Concordance is holding this setup in LiveProbe. {probeConcordance.Summary}"
-                    : $"Exact bucket pressure is holding this setup in LiveProbe. {probePressure.Summary} {concordanceHftText}";
-                return;
-            }
+        if (ExecutionReadiness >= 70 && QueueHealth == "Optimal" && VolumeRatio >= 1.2)
+        {
+            HftExecutionBias = "Ready";
+            HftExecutionBiasColor = GreenBrush;
+            HftRiskSummary = concordance is { } scalingCon && scalingCon.Impact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase)
+                ? $"Queue, volume, execution readiness, and concordance support faster workflows. {scalingCon.Summary}"
+                : pressure is { } scalingPressure && scalingPressure.Impact.Contains("supports scaled deployment", StringComparison.OrdinalIgnoreCase)
+                    ? $"Queue, volume, execution readiness, and exact bucket pressure support faster workflows. {scalingPressure.Summary} {concordanceText}"
+                : $"Queue, volume, and execution readiness are supportive for faster workflows. {pressureText} {concordanceText}";
+            return;
+        }
 
-            if (ExecutionReadiness >= 70 && QueueHealth == "Optimal" && VolumeRatio >= 1.2)
-            {
-                HftExecutionBias = "Ready";
-                HftExecutionBiasColor = GreenBrush;
-                HftRiskSummary = concordanceSignal is { } scalingConcordance &&
-                                 scalingConcordance.Impact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase)
-                    ? $"Queue, volume, execution readiness, and concordance support faster workflows. {scalingConcordance.Summary}"
-                    : exactBucketPressure is { } scalingPressure &&
-                      scalingPressure.Impact.Contains("supports scaled deployment", StringComparison.OrdinalIgnoreCase)
-                        ? $"Queue, volume, execution readiness, and exact bucket pressure support faster workflows. {scalingPressure.Summary} {concordanceHftText}"
-                    : $"Queue, volume, and execution readiness are supportive for faster workflows. {exactBucketHftText} {concordanceHftText}";
-                return;
-            }
-
-            HftExecutionBias = "Standby";
-            HftExecutionBiasColor = GrayBrush;
-            HftRiskSummary = $"Wait for stronger liquidity or better execution conditions before using HFT-style actions. {exactBucketHftText} {concordanceHftText}";
-        });
+        HftExecutionBias = "Standby";
+        HftExecutionBiasColor = GrayBrush;
+        HftRiskSummary = $"Wait for stronger liquidity or better execution conditions before using HFT-style actions. {pressureText} {concordanceText}";
     }
 
     private void AddChecklistItem(string title, bool isPassing, string detail)
@@ -4662,77 +4473,52 @@ public partial class MainViewModel : ObservableObject
 
     private void UpdateRuntimeIntegrityStatus()
     {
-        var simulationMode = string.Equals(
-            Environment.GetEnvironmentVariable("TMQ_SIMULATION_MODE"),
-            "true",
-            StringComparison.OrdinalIgnoreCase);
+        var simulationMode = string.Equals(Environment.GetEnvironmentVariable("TMQ_SIMULATION_MODE"), "true", StringComparison.OrdinalIgnoreCase);
         var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Disabled";
         var hasGeminiKey = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY"));
-        var hasBinanceKeys =
-            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_KEY")) &&
-            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_SECRET"));
+        var hasBinanceKeys = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_KEY")) && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_SECRET"));
 
-        if ((exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase) || simulationMode) && !hasBinanceKeys)
-        {
-            ExecutionServiceStatus = "SIMULATION BROKER";
-        }
-        else if ((exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
-                  exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)) && hasBinanceKeys)
-        {
-            ExecutionServiceStatus = exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)
-                ? "BINANCE TESTNET"
-                : "BINANCE LIVE";
-        }
-        else
-        {
-            ExecutionServiceStatus = "EXECUTION DISABLED";
-        }
+        ExecutionServiceStatus = ResolveExecutionServiceStatus(exchangeMode, simulationMode, hasBinanceKeys);
+        IsHftRuntimeAvailable = exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) || exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
+        AiProviderStatus = ResolveAiProviderStatus(hasGeminiKey, simulationMode);
 
-        IsHftRuntimeAvailable =
-            exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
-            exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
+        var configIssues = IdentifyConfigurationGaps(simulationMode);
+        UpdateConfigValidationStatus(configIssues, simulationMode);
+        UpdateIntegrityVisuals();
+    }
 
-        AiProviderStatus = hasGeminiKey
-            ? "GEMINI LIVE"
-            : simulationMode
-                ? "AI SIMULATION"
-                : "RULE-BASED FALLBACK";
+    private string ResolveExecutionServiceStatus(string exchangeMode, bool simulationMode, bool hasBinanceKeys)
+    {
+        if ((exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase) || simulationMode) && !hasBinanceKeys) return "SIMULATION BROKER";
+        if ((exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) || exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)) && hasBinanceKeys)
+            return exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) ? "BINANCE TESTNET" : "BINANCE LIVE";
+        return "EXECUTION DISABLED";
+    }
 
-        var configIssues = new List<string>();
-        if (!IsHftRuntimeAvailable)
-        {
-            configIssues.Add("HFT streaming disabled");
-        }
-        var telegramToken = Environment.GetEnvironmentVariable("TMQ_TELEGRAM_BOT_TOKEN");
-        var telegramChatId = Environment.GetEnvironmentVariable("TMQ_TELEGRAM_CHAT_ID");
-        var webhookUrl = Environment.GetEnvironmentVariable("TMQ_ALERT_WEBHOOK_URL");
-        if (string.IsNullOrWhiteSpace(telegramToken) || string.IsNullOrWhiteSpace(telegramChatId))
-        {
-            configIssues.Add("telegram alert not configured");
-        }
-        if (string.IsNullOrWhiteSpace(webhookUrl))
-        {
-            configIssues.Add("webhook alert not configured");
-        }
-        var modelPath = Path.Combine(AppContext.BaseDirectory, "models", "price_prediction.onnx");
-        if (!File.Exists(modelPath))
-        {
-            configIssues.Add("onnx model path missing");
-        }
-        if (ExecutionServiceStatus == "EXECUTION DISABLED")
-        {
-            configIssues.Add("no live exchange configured");
-        }
-        if (AiProviderStatus == "RULE-BASED FALLBACK")
-        {
-            configIssues.Add("no live AI provider configured");
-        }
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY")) && !simulationMode)
-        {
-            configIssues.Add("AI analyst running on deterministic fallback");
-        }
+    private string ResolveAiProviderStatus(bool hasGeminiKey, bool simulationMode)
+    {
+        if (hasGeminiKey) return "GEMINI LIVE";
+        if (simulationMode) return "AI SIMULATION";
+        return "RULE-BASED FALLBACK";
+    }
 
-        if (configIssues.Count == 0)
+    private List<string> IdentifyConfigurationGaps(bool simulationMode)
+    {
+        var issues = new List<string>();
+        if (!IsHftRuntimeAvailable) issues.Add("HFT streaming disabled");
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_TELEGRAM_BOT_TOKEN")) || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_TELEGRAM_CHAT_ID")))
+            issues.Add("telegram alert not configured");
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_ALERT_WEBHOOK_URL"))) issues.Add("webhook alert not configured");
+        if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "models", "price_prediction.onnx"))) issues.Add("onnx model path missing");
+        if (ExecutionServiceStatus == "EXECUTION DISABLED") issues.Add("no live exchange configured");
+        if (AiProviderStatus == "RULE-BASED FALLBACK") issues.Add("no live AI provider configured");
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY")) && !simulationMode) issues.Add("AI analyst running on deterministic fallback");
+        return issues;
+    }
+
+    private void UpdateConfigValidationStatus(List<string> issues, bool simulationMode)
+    {
+        if (issues.Count == 0)
         {
             ConfigValidationStatus = "CONFIG VALID";
             ConfigValidationSummary = "Runtime is configured for real services with no major startup gaps.";
@@ -4740,15 +4526,22 @@ public partial class MainViewModel : ObservableObject
         else
         {
             ConfigValidationStatus = simulationMode ? "SIMULATION CONFIG" : "CONFIG GAPS";
-            ConfigValidationSummary = string.Join(" | ", configIssues.Distinct(StringComparer.OrdinalIgnoreCase));
+            ConfigValidationSummary = string.Join(" | ", issues.Distinct(StringComparer.OrdinalIgnoreCase));
         }
+    }
 
+    private void UpdateIntegrityVisuals()
+    {
         if (ExecutionServiceStatus == "EXECUTION DISABLED")
         {
             PortfolioExecutionModeLabel = "SAFE / DISABLED EXECUTION";
             PortfolioExecutionModeColor = RedBrush;
+            RuntimeIntegrityStatus = "SAFE MODE";
+            RuntimeIntegrityColor = RedBrush;
+            return;
         }
-        else if (IsPaperMode || ExecutionServiceStatus == "SIMULATION BROKER")
+
+        if (IsPaperMode || ExecutionServiceStatus == "SIMULATION BROKER")
         {
             PortfolioExecutionModeLabel = "SIMULATED EXECUTION";
             PortfolioExecutionModeColor = OrangeBrush;
@@ -4757,13 +4550,6 @@ public partial class MainViewModel : ObservableObject
         {
             PortfolioExecutionModeLabel = "REAL EXECUTION";
             PortfolioExecutionModeColor = GreenBrush;
-        }
-
-        if (ExecutionServiceStatus == "EXECUTION DISABLED")
-        {
-            RuntimeIntegrityStatus = "SAFE MODE";
-            RuntimeIntegrityColor = RedBrush;
-            return;
         }
 
         if (ExecutionServiceStatus == "SIMULATION BROKER" || AiProviderStatus == "AI SIMULATION")

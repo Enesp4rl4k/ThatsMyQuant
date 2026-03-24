@@ -393,186 +393,215 @@ public class QuantIndicatorService : ITechnicalAnalysisService
     {
         int buyScore = 0, sellScore = 0;
         var reasons = new List<string>();
+
+        EvaluateRsi(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateMacd(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateEma(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateBollinger(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateVolume(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateAlphaTrend(ind, ref buyScore, ref sellScore, reasons);
+        EvaluatePMax(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateSupportResistance(ind, ref buyScore, ref sellScore, reasons);
+        EvaluatePattern(ind, ref buyScore, ref sellScore, reasons);
+        ApplyRegimeConfluenceAdjustments(ind, regime, ref buyScore, ref sellScore, reasons);
+
+        return (buyScore, sellScore, reasons);
+    }
+
+    private static void EvaluateRsi(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (!ind.RSI.HasValue) return;
+
+        if (ind.RSI < 30)
+        {
+            buyScore += 20;
+            reasons.Add($"RSI={ind.RSI:F1} (oversold ✅BUY)");
+        }
+        else if (ind.RSI <= 50)
+        {
+            buyScore += 15;
+            reasons.Add($"RSI={ind.RSI:F1} (recovering ✅BUY)");
+        }
+        else if (ind.RSI > 70)
+        {
+            sellScore += 20;
+            reasons.Add($"RSI={ind.RSI:F1} (overbought ✅SELL)");
+        }
+        else if (ind.RSI >= 50)
+        {
+            sellScore += 10;
+            reasons.Add($"RSI={ind.RSI:F1} (neutral-high)");
+        }
+    }
+
+    private static void EvaluateMacd(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (!ind.MACDHistogram.HasValue) return;
+
+        if (ind.MACDHistogram > 0 && ind.MACD > ind.MACDSignal)
+        {
+            buyScore += 25;
+            reasons.Add($"MACD histogram+ ({ind.MACDHistogram:F4} ✅BUY)");
+        }
+        else if (ind.MACDHistogram < 0 && ind.MACD < ind.MACDSignal)
+        {
+            sellScore += 25;
+            reasons.Add($"MACD histogram- ({ind.MACDHistogram:F4} ✅SELL)");
+        }
+    }
+
+    private static void EvaluateEma(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (!ind.EMA20.HasValue || !ind.EMA50.HasValue) return;
+
         double price = (double)ind.CurrentPrice;
-
-        // --- 1. RSI (20 points) ---
-        if (ind.RSI.HasValue)
+        if (price > ind.EMA20 && ind.EMA20 > ind.EMA50)
         {
-            if (ind.RSI < 30)
+            buyScore += 20;
+            reasons.Add("EMA golden trend ✅BUY");
+        }
+        else if (price < ind.EMA20 && ind.EMA20 < ind.EMA50)
+        {
+            sellScore += 20;
+            reasons.Add("EMA death trend ✅SELL");
+        }
+    }
+
+    private static void EvaluateBollinger(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (!ind.BollingerLower.HasValue || !ind.BollingerUpper.HasValue) return;
+
+        double price = (double)ind.CurrentPrice;
+        double bbWidth = ind.BollingerUpper.Value - ind.BollingerLower.Value;
+        double lowerThreshold = ind.BollingerLower.Value + bbWidth * 0.1;
+        double upperThreshold = ind.BollingerUpper.Value - bbWidth * 0.1;
+
+        if (price <= lowerThreshold)
+        {
+            buyScore += 15;
+            reasons.Add($"BB lower bounce ({ind.BollingerLower:F2} ✅BUY)");
+        }
+        else if (price >= upperThreshold)
+        {
+            sellScore += 15;
+            reasons.Add($"BB upper touch ({ind.BollingerUpper:F2} ✅SELL)");
+        }
+    }
+
+    private static void EvaluateVolume(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (!ind.VolumeRatio.HasValue) return;
+
+        if (ind.VolumeRatio >= 1.5)
+        {
+            if (buyScore >= sellScore)
             {
                 buyScore += 20;
-                reasons.Add($"RSI={ind.RSI:F1} (oversold ✅BUY)");
+                reasons.Add($"Volume {ind.VolumeRatio:F1}x ✅BUY confirmed");
             }
-            else if (ind.RSI >= 30 && ind.RSI <= 50)
-            {
-                buyScore += 15;
-                reasons.Add($"RSI={ind.RSI:F1} (recovering ✅BUY)");
-            }
-            else if (ind.RSI > 70)
+            else
             {
                 sellScore += 20;
-                reasons.Add($"RSI={ind.RSI:F1} (overbought ✅SELL)");
-            }
-            else if (ind.RSI >= 50 && ind.RSI <= 70)
-            {
-                sellScore += 10;
-                reasons.Add($"RSI={ind.RSI:F1} (neutral-high)");
+                reasons.Add($"Volume {ind.VolumeRatio:F1}x ✅SELL confirmed");
             }
         }
-
-        // --- 2. MACD (25 points) ---
-        if (ind.MACDHistogram.HasValue)
+        else
         {
-            if (ind.MACDHistogram > 0 && ind.MACD > ind.MACDSignal)
-            {
-                buyScore += 25;
-                reasons.Add($"MACD histogram+ ({ind.MACDHistogram:F4} ✅BUY)");
-            }
-            else if (ind.MACDHistogram < 0 && ind.MACD < ind.MACDSignal)
-            {
-                sellScore += 25;
-                reasons.Add($"MACD histogram- ({ind.MACDHistogram:F4} ✅SELL)");
-            }
+            reasons.Add($"Volume {ind.VolumeRatio:F1}x (low)");
         }
+    }
 
-        // --- 3. EMA Crossover (20 points) ---
-        if (ind.EMA20.HasValue && ind.EMA50.HasValue)
+    private static void EvaluateAlphaTrend(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.AlphaTrend == null) return;
+
+        if (ind.AlphaTrend.Signal == TradeSide.Buy && ind.AlphaTrend.IsConfirmed)
         {
-            if (price > ind.EMA20 && ind.EMA20 > ind.EMA50)
-            {
-                buyScore += 20;
-                reasons.Add("EMA golden trend ✅BUY");
-            }
-            else if (price < ind.EMA20 && ind.EMA20 < ind.EMA50)
-            {
-                sellScore += 20;
-                reasons.Add("EMA death trend ✅SELL");
-            }
+            buyScore += 25;
+            reasons.Add("AlphaTrend BUY confirmed ✅BUY");
         }
-
-        // --- 4. Bollinger Bands (15 points) ---
-        if (ind.BollingerLower.HasValue && ind.BollingerUpper.HasValue)
+        else if (ind.AlphaTrend.Signal == TradeSide.Sell && ind.AlphaTrend.IsConfirmed)
         {
-            double bbWidth = ind.BollingerUpper.Value - ind.BollingerLower.Value;
-            double lowerThreshold = ind.BollingerLower.Value + bbWidth * 0.1;
-            double upperThreshold = ind.BollingerUpper.Value - bbWidth * 0.1;
+            sellScore += 25;
+            reasons.Add("AlphaTrend SELL confirmed ✅SELL");
+        }
+        else if (ind.AlphaTrend.IsBullish)
+        {
+            buyScore += 10;
+            reasons.Add("AlphaTrend bullish (no signal)");
+        }
+        else
+        {
+            sellScore += 10;
+            reasons.Add("AlphaTrend bearish (no signal)");
+        }
+    }
 
-            if (price <= lowerThreshold)
+    private static void EvaluatePMax(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.PMax == null) return;
+
+        if (ind.PMax.Signal == TradeSide.Buy || (ind.PMax.IsBullish && ind.CurrentPrice > (decimal)ind.PMax.Value))
+        {
+            buyScore += 15;
+            reasons.Add("PMax bullish filter confirmed");
+        }
+        else if (ind.PMax.Signal == TradeSide.Sell || (!ind.PMax.IsBullish && ind.CurrentPrice < (decimal)ind.PMax.Value))
+        {
+            sellScore += 15;
+            reasons.Add("PMax bearish filter confirmed");
+        }
+    }
+
+    private static void EvaluateSupportResistance(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.NearestSupport != null)
+        {
+            decimal distToSupport = Math.Abs(ind.CurrentPrice - ind.NearestSupport.Price) / ind.CurrentPrice;
+            if (distToSupport < 0.02m) // Within 2% of support
             {
                 buyScore += 15;
-                reasons.Add($"BB lower bounce ({ind.BollingerLower:F2} ✅BUY)");
+                reasons.Add($"Near S/R support {ind.NearestSupport.Price:F2} (tested {ind.NearestSupport.TestCount}x ✅BUY)");
             }
-            else if (price >= upperThreshold)
+        }
+        if (ind.NearestResistance != null)
+        {
+            decimal distToResistance = Math.Abs(ind.NearestResistance.Price - ind.CurrentPrice) / ind.CurrentPrice;
+            if (distToResistance < 0.02m) // Within 2% of resistance
             {
                 sellScore += 15;
-                reasons.Add($"BB upper touch ({ind.BollingerUpper:F2} ✅SELL)");
+                reasons.Add($"Near S/R resistance {ind.NearestResistance.Price:F2} (tested {ind.NearestResistance.TestCount}x ✅SELL)");
             }
         }
+    }
 
-        // --- 5. Volume Confirmation (20 points) ---
-        if (ind.VolumeRatio.HasValue)
+    private static void EvaluatePattern(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.DetectedPattern == "None") return;
+
+        if (ind.DetectedPattern.Contains("Bullish", StringComparison.OrdinalIgnoreCase))
         {
-            if (ind.VolumeRatio >= 1.5)
-            {
-                if (buyScore >= sellScore)
-                {
-                    buyScore += 20;
-                    reasons.Add($"Volume {ind.VolumeRatio:F1}x ✅BUY confirmed");
-                }
-                else
-                {
-                    sellScore += 20;
-                    reasons.Add($"Volume {ind.VolumeRatio:F1}x ✅SELL confirmed");
-                }
-            }
-            else
-            {
-                reasons.Add($"Volume {ind.VolumeRatio:F1}x (low)");
-            }
+            buyScore += 25;
+            reasons.Add($"Pattern: {ind.DetectedPattern} ✅BUY");
         }
-
-        // --- 6. AlphaTrend (25 points) ---
-        if (ind.AlphaTrend != null)
+        else if (ind.DetectedPattern.Contains("Bearish", StringComparison.OrdinalIgnoreCase))
         {
-            if (ind.AlphaTrend.Signal == TradeSide.Buy && ind.AlphaTrend.IsConfirmed)
-            {
-                buyScore += 25;
-                reasons.Add("AlphaTrend BUY confirmed ✅BUY");
-            }
-            else if (ind.AlphaTrend.Signal == TradeSide.Sell && ind.AlphaTrend.IsConfirmed)
-            {
-                sellScore += 25;
-                reasons.Add("AlphaTrend SELL confirmed ✅SELL");
-            }
-            else if (ind.AlphaTrend.IsBullish)
-            {
-                buyScore += 10;
-                reasons.Add("AlphaTrend bullish (no signal)");
-            }
-            else
-            {
-                sellScore += 10;
-                reasons.Add("AlphaTrend bearish (no signal)");
-            }
+            sellScore += 25;
+            reasons.Add($"Pattern: {ind.DetectedPattern} ✅SELL");
         }
-
-        if (ind.PMax != null)
+        else
         {
-            if (ind.PMax.Signal == TradeSide.Buy || (ind.PMax.IsBullish && ind.CurrentPrice > (decimal)ind.PMax.Value))
-            {
-                buyScore += 15;
-                reasons.Add("PMax bullish filter confirmed");
-            }
-            else if (ind.PMax.Signal == TradeSide.Sell || (!ind.PMax.IsBullish && ind.CurrentPrice < (decimal)ind.PMax.Value))
-            {
-                sellScore += 15;
-                reasons.Add("PMax bearish filter confirmed");
-            }
+            reasons.Add($"Pattern: {ind.DetectedPattern} (Neutral)");
         }
+    }
 
-        // --- 7. Support/Resistance Proximity (15 points) ---
-        if (ind.NearestSupport != null || ind.NearestResistance != null)
-        {
-            if (ind.NearestSupport != null)
-            {
-                decimal distToSupport = Math.Abs(ind.CurrentPrice - ind.NearestSupport.Price) / ind.CurrentPrice;
-                if (distToSupport < 0.02m) // Within 2% of support
-                {
-                    buyScore += 15;
-                    reasons.Add($"Near S/R support {ind.NearestSupport.Price:F2} (tested {ind.NearestSupport.TestCount}x ✅BUY)");
-                }
-            }
-            if (ind.NearestResistance != null)
-            {
-                decimal distToResistance = Math.Abs(ind.NearestResistance.Price - ind.CurrentPrice) / ind.CurrentPrice;
-                if (distToResistance < 0.02m) // Within 2% of resistance
-                {
-                    sellScore += 15;
-                    reasons.Add($"Near S/R resistance {ind.NearestResistance.Price:F2} (tested {ind.NearestResistance.TestCount}x ✅SELL)");
-                }
-            }
-        }
-
-        // --- 8. Price Action Patterns (25 points) ---
-        if (ind.DetectedPattern != "None")
-        {
-            if (ind.DetectedPattern.Contains("Bullish", StringComparison.OrdinalIgnoreCase))
-            {
-                buyScore += 25;
-                reasons.Add($"Pattern: {ind.DetectedPattern} ✅BUY");
-            }
-            else if (ind.DetectedPattern.Contains("Bearish", StringComparison.OrdinalIgnoreCase))
-            {
-                sellScore += 25;
-                reasons.Add($"Pattern: {ind.DetectedPattern} ✅SELL");
-            }
-            else
-            {
-                // Neutral patterns like Standard Doji might just indicate indecision
-                reasons.Add($"Pattern: {ind.DetectedPattern} (Neutral)");
-            }
-        }
-
+    private static void ApplyRegimeConfluenceAdjustments(
+        IndicatorSnapshot ind,
+        MarketRegimeDetector.RegimeResult regime,
+        ref int buyScore,
+        ref int sellScore,
+        List<string> reasons)
+    {
         if (regime.Regime == MarketRegime.Trending)
         {
             if (ind.EMA20 > ind.EMA50 && ind.MACDHistogram > 0)
@@ -612,7 +641,5 @@ public class QuantIndicatorService : ITechnicalAnalysisService
                 reasons.Add("Volatility regime filter passed: elevated volume present");
             }
         }
-
-        return (buyScore, sellScore, reasons);
     }
 }

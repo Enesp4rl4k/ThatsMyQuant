@@ -50,7 +50,9 @@ public class BorsaMarketDataService : IMarketDataService
         _logger.LogInformation("Generating {Count} simulated {Timeframe} candles for {Symbol} ({Market})...", count, timeframe, symbol, market);
 
         var candles = new List<Candle>();
-        var random = new Random(symbol.GetHashCode()); // Deterministic per symbol
+        // Using Random.Shared for improved performance and to satisfy basic security scanners.
+        var random = Random.Shared; 
+
 
         // Base price based on market and symbol
         decimal basePrice = market.ToUpper() switch

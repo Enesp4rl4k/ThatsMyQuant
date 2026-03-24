@@ -166,12 +166,32 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
 
     public async Task DisconnectAsync()
     {
-        if (_webSocket != null)
+        try
         {
             _cts?.Cancel();
-            if (_webSocket.State == WebSocketState.Open)
-                await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-            _webSocket.Dispose();
+            _cts?.Dispose();
+        }
+        finally
+        {
+            _cts = null;
+        }
+
+        if (_webSocket != null)
+        {
+            try
+            {
+                if (_webSocket.State == WebSocketState.Open)
+                    await _webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error while closing WebSocket.");
+            }
+            finally
+            {
+                _webSocket.Dispose();
+                _webSocket = null;
+            }
         }
     }
 

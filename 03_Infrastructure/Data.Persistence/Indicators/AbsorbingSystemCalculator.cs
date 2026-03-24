@@ -18,138 +18,104 @@ public static class AbsorbingSystemCalculator
 {
     public static List<SupportResistanceLevel> Calculate(List<Candle> candles, int pivotLen = 10)
     {
-        int count = candles.Count;
         var levels = new List<SupportResistanceLevel>();
+        if (candles.Count < pivotLen * 2 + 1) return levels;
 
-        if (count < pivotLen * 2 + 1) return levels;
+        var resistanceIdxs = FindAbsorptionPivotIndexes(candles, pivotLen, isHigh: true);
+        var supportIdxs = FindAbsorptionPivotIndexes(candles, pivotLen, isHigh: false);
 
-        // Step 1: Find resistance zones (pivot highs with absorption candles)
-        var resistanceIndexes = new List<int>();
-        // Step 2: Find support zones (pivot lows with absorption candles)
-        var supportIndexes = new List<int>();
+        AddLevels(candles, resistanceIdxs, SRType.Resistance, levels);
+        AddLevels(candles, supportIdxs, SRType.Support, levels);
+
+        return levels;
+    }
+
+    private static List<int> FindAbsorptionPivotIndexes(List<Candle> candles, int pivotLen, bool isHigh)
+    {
+        var indexes = new List<int>();
+        int count = candles.Count;
 
         for (int i = pivotLen; i < count - pivotLen; i++)
         {
-            // Check if this bar is a pivot high
-            bool isPivotHigh = true;
-            for (int j = 1; j <= pivotLen; j++)
+            if (IsPivot(candles, i, pivotLen, isHigh) && IsAbsorption(candles[i], isHigh))
             {
-                if (candles[i].High <= candles[i - j].High || candles[i].High <= candles[i + j].High)
-                {
-                    isPivotHigh = false;
-                    break;
-                }
-            }
-
-            // Check if this bar is a pivot low
-            bool isPivotLow = true;
-            for (int j = 1; j <= pivotLen; j++)
-            {
-                if (candles[i].Low >= candles[i - j].Low || candles[i].Low >= candles[i + j].Low)
-                {
-                    isPivotLow = false;
-                    break;
-                }
-            }
-
-            // Absorption candle analysis (wick vs body)
-            var candle = candles[i];
-            decimal open = candle.Open;
-            decimal close = candle.Close;
-            decimal high = candle.High;
-            decimal low = candle.Low;
-            decimal body = Math.Abs(close - open);
-            decimal upperWick = high - Math.Max(open, close);
-            decimal lowerWick = Math.Min(open, close) - low;
-
-            bool isAbsorptionRes = upperWick > lowerWick && upperWick > body;
-            bool isAbsorptionSup = lowerWick > upperWick && lowerWick > body;
-
-            if (isPivotHigh && isAbsorptionRes)
-            {
-                resistanceIndexes.Add(i);
-                // Keep only last 5
-                if (resistanceIndexes.Count > 5)
-                    resistanceIndexes.RemoveAt(0);
-            }
-
-            if (isPivotLow && isAbsorptionSup)
-            {
-                supportIndexes.Add(i);
-                if (supportIndexes.Count > 5)
-                    supportIndexes.RemoveAt(0);
+                indexes.Add(i);
+                if (indexes.Count > 5) indexes.RemoveAt(0);
             }
         }
+        return indexes;
+    }
 
-        // Step 3: Check each S/R level for breakdowns
-        foreach (var idx in resistanceIndexes)
+    private static bool IsPivot(List<Candle> candles, int index, int pivotLen, bool isHigh)
+    {
+        for (int j = 1; j <= pivotLen; j++)
         {
-            decimal resPrice = candles[idx].High;
-            bool isBroken = false;
-            int testCount = 0;
-
-            // Check from detection to end of data
-            for (int j = idx + 1; j < count; j++)
+            if (isHigh)
             {
-                // Test: price approached but didn't break
-                decimal highBody = Math.Max(candles[j].Open, candles[j].Close);
-                if (highBody >= resPrice * 0.998m && candles[j].Close <= resPrice)
-                {
-                    testCount++;
-                }
-
-                // Breakdown: close above resistance
-                if (candles[j].Close > resPrice)
-                {
-                    isBroken = true;
-                    break;
-                }
+                if (candles[index].High <= candles[index - j].High || candles[index].High <= candles[index + j].High)
+                    return false;
             }
+            else
+            {
+                if (candles[index].Low >= candles[index - j].Low || candles[index].Low >= candles[index + j].Low)
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool IsAbsorption(Candle candle, bool isHigh)
+    {
+        decimal body = Math.Abs(candle.Close - candle.Open);
+        decimal upperWick = candle.High - Math.Max(candle.Open, candle.Close);
+        decimal lowerWick = Math.Min(candle.Open, candle.Close) - candle.Low;
+
+        return isHigh 
+            ? upperWick > lowerWick && upperWick > body 
+            : lowerWick > upperWick && lowerWick > body;
+    }
+
+    private static void AddLevels(List<Candle> candles, List<int> indexes, SRType type, List<SupportResistanceLevel> levels)
+    {
+        foreach (var idx in indexes)
+        {
+            decimal price = type == SRType.Resistance ? candles[idx].High : candles[idx].Low;
+            var (isBroken, testCount) = DetectBreakdown(candles, idx, price, type);
 
             levels.Add(new SupportResistanceLevel
             {
-                Price = resPrice,
-                Type = SRType.Resistance,
+                Price = price,
+                Type = type,
                 BarIndex = idx,
                 IsBroken = isBroken,
                 TestCount = testCount,
                 DetectedAt = candles[idx].Timestamp
             });
         }
+    }
 
-        foreach (var idx in supportIndexes)
+    private static (bool IsBroken, int TestCount) DetectBreakdown(List<Candle> candles, int startIdx, decimal price, SRType type)
+    {
+        bool isBroken = false;
+        int testCount = 0;
+        int count = candles.Count;
+
+        for (int j = startIdx + 1; j < count; j++)
         {
-            decimal supPrice = candles[idx].Low;
-            bool isBroken = false;
-            int testCount = 0;
-
-            for (int j = idx + 1; j < count; j++)
+            if (type == SRType.Resistance)
+            {
+                decimal highBody = Math.Max(candles[j].Open, candles[j].Close);
+                if (highBody >= price * 0.998m && candles[j].Close <= price) testCount++;
+                if (candles[j].Close > price) { isBroken = true; break; }
+            }
+            else
             {
                 decimal lowBody = Math.Min(candles[j].Open, candles[j].Close);
-                if (lowBody <= supPrice * 1.002m && candles[j].Close >= supPrice)
-                {
-                    testCount++;
-                }
-
-                if (candles[j].Close < supPrice)
-                {
-                    isBroken = true;
-                    break;
-                }
+                if (lowBody <= price * 1.002m && candles[j].Close >= price) testCount++;
+                if (candles[j].Close < price) { isBroken = true; break; }
             }
-
-            levels.Add(new SupportResistanceLevel
-            {
-                Price = supPrice,
-                Type = SRType.Support,
-                BarIndex = idx,
-                IsBroken = isBroken,
-                TestCount = testCount,
-                DetectedAt = candles[idx].Timestamp
-            });
         }
-
-        return levels;
+        return (isBroken, testCount);
     }
 
     /// <summary>
