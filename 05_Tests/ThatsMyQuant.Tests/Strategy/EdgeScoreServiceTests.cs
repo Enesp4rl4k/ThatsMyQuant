@@ -19,11 +19,12 @@ public class EdgeScoreServiceTests
         var result = _service.Evaluate(
             signal,
             decision,
-            new ExpectancyGuardResult(true, 1.0m, "ok", 10, 40m, 1.8),
-            new SymbolGuardResult(true, 1.0m, "ok"),
-            new PromotionGuardResult(false, 0m, "HFT latency caution with latency", false, 0.30, "Paper"),
-            (true, "ok"),
-            (true, "ok", 0.01m));
+            new EvaluationGuards(
+                new ExpectancyGuardResult(true, 1.0m, "ok", 10, 40m, 1.8),
+                new SymbolGuardResult(true, 1.0m, "ok"),
+                new PromotionGuardResult(false, 0m, "HFT latency caution with latency", false, 0.30, "Paper"),
+                (true, "ok"),
+                (true, "ok", 0.01m)));
 
         result.Approved.Should().BeFalse();
         result.ExecutionEdge.Should().Be(90m);
@@ -37,11 +38,12 @@ public class EdgeScoreServiceTests
         var result = _service.Evaluate(
             signal,
             decision,
-            new ExpectancyGuardResult(true, 1.0m, "ok", 10, 30m, 1.6),
-            new SymbolGuardResult(true, 1.0m, "ok"),
-            new PromotionGuardResult(true, 1.0m, "ok", true, 0.10, "ScaledLive"),
-            (false, "daily loss"),
-            (false, "risk veto", 0m));
+            new EvaluationGuards(
+                new ExpectancyGuardResult(true, 1.0m, "ok", 10, 30m, 1.6),
+                new SymbolGuardResult(true, 1.0m, "ok"),
+                new PromotionGuardResult(true, 1.0m, "ok", true, 0.10, "ScaledLive"),
+                (false, "daily loss"),
+                (false, "risk veto", 0m)));
 
         result.Approved.Should().BeFalse();
         result.RiskContext.Should().BeLessThan(50m);
@@ -55,11 +57,12 @@ public class EdgeScoreServiceTests
         var result = _service.Evaluate(
             signal,
             decision,
-            new ExpectancyGuardResult(true, 0.85m, "soft", 10, 12m, 1.25),
-            new SymbolGuardResult(true, 1.0m, "ok"),
-            new PromotionGuardResult(true, 1.0m, "ok", true, 0.12, "ScaledLive"),
-            (true, "ok"),
-            (true, "ok", 0.025m));
+            new EvaluationGuards(
+                new ExpectancyGuardResult(true, 0.85m, "soft", 10, 12m, 1.25),
+                new SymbolGuardResult(true, 1.0m, "ok"),
+                new PromotionGuardResult(true, 1.0m, "ok", true, 0.12, "ScaledLive"),
+                (true, "ok"),
+                (true, "ok", 0.025m)));
 
         result.Approved.Should().BeTrue();
         result.DecisionBand.Should().Be("reduced");
@@ -75,11 +78,12 @@ public class EdgeScoreServiceTests
         var result = _service.Evaluate(
             signal,
             decision,
-            new ExpectancyGuardResult(true, 0.70m, "soft", 10, 4m, 1.12),
-            new SymbolGuardResult(true, 0.55m, "soft"),
-            new PromotionGuardResult(true, 0.55m, "caution", false, 0.35, "LiveProbe"),
-            (true, "ok"),
-            (true, "ok", 0.015m));
+            new EvaluationGuards(
+                new ExpectancyGuardResult(true, 0.70m, "soft", 10, 4m, 1.12),
+                new SymbolGuardResult(true, 0.55m, "soft"),
+                new PromotionGuardResult(true, 0.55m, "caution", false, 0.35, "LiveProbe"),
+                (true, "ok"),
+                (true, "ok", 0.015m)));
 
         result.Approved.Should().BeFalse();
         result.DecisionBand.Should().Be("probe");

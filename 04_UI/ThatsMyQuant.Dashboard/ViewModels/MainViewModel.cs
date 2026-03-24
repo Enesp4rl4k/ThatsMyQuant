@@ -460,7 +460,11 @@ public partial class MainViewModel : ObservableObject
                 UpdatePortfolioGrowth();
 
                 var rows = tradeRows
-                    .GroupBy(t => new { Strategy = string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag, Regime = string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag })
+                    .GroupBy(t => new StrategyBucketKey(
+                        string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
+                        string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
+                        string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
+                        ResolveSessionBucketForTrade(t)))
                     .Select(g => ProjectLeaderboardRow(g))
                     .OrderByDescending(r => r.ProfitFactor)
                     .ThenByDescending(r => r.TotalPnL)
@@ -521,7 +525,7 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
-    private StrategyLeaderboardRow ProjectLeaderboardRow(IGrouping<dynamic, Trade> group)
+    private StrategyLeaderboardRow ProjectLeaderboardRow(IGrouping<StrategyBucketKey, Trade> group)
     {
         var pnls = group.Select(CalculateTradePnL).ToList();
         var wins = pnls.Count(p => p > 0);
@@ -533,7 +537,7 @@ public partial class MainViewModel : ObservableObject
 
         return new StrategyLeaderboardRow
         {
-            StrategyTag = group.Key.Strategy, RegimeTag = group.Key.Regime,
+            StrategyTag = group.Key.StrategyTag, RegimeTag = group.Key.RegimeTag,
             ExecutionMode = ResolveExecutionModeScope(group), PromotionStage = ResolvePromotionStageScope(group),
             Trades = group.Count(), WinRate = group.Count() > 0 ? wins * 100.0 / group.Count() : 0,
             TotalPnL = pnls.Sum(), ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss),
@@ -688,9 +692,9 @@ public partial class MainViewModel : ObservableObject
     private List<EdgeScoreBandRow> ProjectPersistedEdgeBands(IReadOnlyList<ParsedEdgeJournalEntry> signals, IReadOnlyList<Trade> closedTrades)
     {
         return signals
-            .Join(closedTrades, signal => new { signal.Symbol, signal.Time }, trade => new { trade.Symbol, Time = trade.ExitTime ?? trade.EntryTime }, (signal, trade) => new { Signal = signal, Trade = trade })
-            .GroupBy(item => NormalizeEdgeBand(item.Signal.Band, item.Signal.Score))
-            .Select(group => CreateEdgeScoreBandRowFromGroup(group, ResolveExecutionModeScope(group.Select(item => item.Trade)), ResolvePromotionStageScope(group.Select(item => item.Trade)), "winners from " + ResolveExecutionModeScope(group.Select(item => item.Trade)) + " / " + ResolvePromotionStageScope(group.Select(item => item.Trade)) + " trades"))
+            .Join(closedTrades, signal => new { signal.Symbol, signal.Time }, trade => new { trade.Symbol, Time = trade.ExitTime ?? trade.EntryTime }, (signal, trade) => new JournalMatchedItem(signal, trade))
+            .GroupBy(item => NormalizeEdgeBand(item.Journal.Band, item.Journal.Score))
+            .Select(group => CreateEdgeScoreBandRowFromGroup(group, "LINKED-EXECUTION", "UNKNOWN", "winners matched from journaled edge scores"))
             .OrderByDescending(row => row.ProfitFactor)
             .ThenByDescending(row => row.TotalPnL)
             .ToList();
@@ -699,7 +703,7 @@ public partial class MainViewModel : ObservableObject
     private void PopulateFallbackJournaledBands(IReadOnlyList<ParsedEdgeJournalEntry> journalSignals, IReadOnlyList<Trade> closedTrades)
     {
         var matchedTradeIds = new HashSet<Guid>();
-        var matched = new List<(ParsedEdgeJournalEntry Journal, Trade Trade)>();
+        var matched = new List<JournalMatchedItem>();
 
         foreach (var entry in journalSignals)
         {
@@ -708,7 +712,7 @@ public partial class MainViewModel : ObservableObject
             if (nearestTrade != null)
             {
                 matchedTradeIds.Add(nearestTrade.Trade.Id);
-                matched.Add((entry, nearestTrade.Trade));
+                matched.Add(new JournalMatchedItem(entry, nearestTrade.Trade));
             }
         }
 
@@ -722,13 +726,13 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private EdgeScoreBandRow CreateEdgeScoreBandRowFromGroup(IGrouping<string, dynamic> group, string executionMode, string promotionStage, string summaryContext)
+    private EdgeScoreBandRow CreateEdgeScoreBandRowFromGroup(IGrouping<string, JournalMatchedItem> group, string executionMode, string promotionStage, string summaryContext)
     {
         var pnls = group.Select(item => CalculateTradePnL(item.Trade)).ToList();
         var wins = pnls.Count(pnl => pnl > 0);
         var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
         var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
-        var averageScore = group.Average(item => (double)(item.Signal?.Score ?? item.Journal?.Score ?? 0));
+        var averageScore = group.Average(item => (double)item.Journal.Score);
         return new EdgeScoreBandRow
         {
             Band = group.Key, ExecutionMode = executionMode, PromotionStage = promotionStage, Trades = group.Count(), WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
@@ -814,12 +818,11 @@ public partial class MainViewModel : ObservableObject
     private void PopulateEdgeOpportunities(IReadOnlyList<Trade> closedTrades)
     {
         var rows = closedTrades
-            .GroupBy(trade => new
-            {
-                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
-                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                Session = ResolveSessionBucket(trade.ExitTime ?? trade.EntryTime)
-            })
+            .GroupBy(t => new StrategyBucketKey(
+                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
+                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
+                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
+                ResolveSessionBucketForTrade(t)))
             .Select(group =>
             {
                 var pnls = group.Select(CalculateTradePnL).ToList();
@@ -831,16 +834,16 @@ public partial class MainViewModel : ObservableObject
 
                 return new EdgeOpportunityRow
                 {
-                    StrategyTag = group.Key.Strategy,
-                    RegimeTag = group.Key.Regime,
-                    SessionTag = group.Key.Session,
+                    StrategyTag = group.Key.StrategyTag,
+                    RegimeTag = group.Key.RegimeTag,
+                    SessionTag = group.Key.SessionTag,
                     ExecutionMode = ResolveExecutionModeScope(group),
                     PromotionStage = ResolvePromotionStageScope(group),
                     Trades = group.Count(),
                     WinRate = group.Count() == 0 ? 0 : wins * 100.0 / group.Count(),
                     ProfitFactor = profitFactor,
                     TotalPnL = totalPnl,
-                    EdgeNote = BuildEdgeOpportunityNote(group.Key.Strategy, group.Key.Regime, group.Key.Session, group.Count(), profitFactor, totalPnl),
+                    EdgeNote = BuildEdgeOpportunityNote(group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, group.Count(), profitFactor, totalPnl),
                     PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
                 };
             })
@@ -1033,15 +1036,12 @@ public partial class MainViewModel : ObservableObject
     {
         var rows = closedTrades
             .Where(trade => !string.IsNullOrWhiteSpace(trade.ExitPolicyTag))
-            .GroupBy(trade => new
-            {
-                trade.Symbol,
-                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
-                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                Session = ResolveSessionBucketForTrade(trade),
-                ExitPolicy = string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "TrendRunner" : trade.ExitPolicyTag
-            })
-            .Select(CreateExitPolicyDriftRow)
+            .GroupBy(t => new StrategyBucketKey(
+                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
+                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
+                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
+                ResolveSessionBucketForTrade(t)))
+            .SelectMany(group => group.GroupBy(t => t.ExitPolicyTag ?? "Default").Select(CalculateExitPolicyDrift))
             .Where(row => row is not null && row.DriftScore >= 0.25)
             .Cast<ExitPolicyDriftRow>()
             .OrderByDescending(row => row.DriftScore)
@@ -1058,10 +1058,17 @@ public partial class MainViewModel : ObservableObject
             ?? "No meaningful live-vs-paper exit drift is visible yet for exact buckets.";
     }
 
-    private ExitPolicyDriftRow? CreateExitPolicyDriftRow(IGrouping<dynamic, Trade> group)
+    private ExitPolicyDriftRow CalculateExitPolicyDrift(IGrouping<string, Trade> group)
     {
-        var paperTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "PAPER", StringComparison.OrdinalIgnoreCase)).ToList();
-        var liveTrades = group.Where(trade => string.Equals(NormalizeExecutionMode(trade.ExecutionMode), "REAL", StringComparison.OrdinalIgnoreCase)).ToList();
+        var symbol = group.First().Symbol;
+        var strategy = group.First().StrategyTag ?? "Unlabeled";
+        var regime = group.First().RegimeTag ?? "Unknown";
+        var session = ResolveSessionBucketForTrade(group.First());
+        var exitPolicy = group.Key;
+
+        var paperTrades = group.Where(t => string.Equals(NormalizeExecutionMode(t.ExecutionMode), "PAPER", StringComparison.OrdinalIgnoreCase)).ToList();
+        var liveTrades = group.Where(t => string.Equals(NormalizeExecutionMode(t.ExecutionMode), "REAL", StringComparison.OrdinalIgnoreCase)).ToList();
+        
         if (paperTrades.Count < 2 || liveTrades.Count < 2)
         {
             return null;
@@ -1069,21 +1076,25 @@ public partial class MainViewModel : ObservableObject
 
         var paperPnls = paperTrades.Select(CalculateTradePnL).ToList();
         var livePnls = liveTrades.Select(CalculateTradePnL).ToList();
-        var paperWinRate = paperPnls.Count(pnl => pnl > 0) * 100.0 / paperTrades.Count;
-        var liveWinRate = livePnls.Count(pnl => pnl > 0) * 100.0 / liveTrades.Count;
+
+        var paperWinRate = paperPnls.Count == 0 ? 0 : paperPnls.Count(p => p > 0) * 100.0 / paperPnls.Count;
+        var liveWinRate = livePnls.Count == 0 ? 0 : livePnls.Count(p => p > 0) * 100.0 / livePnls.Count;
+
         var paperProfitFactor = ComputeProfitFactorFromPnls(paperPnls);
         var liveProfitFactor = ComputeProfitFactorFromPnls(livePnls);
-        var paperExpectedValue = paperPnls.Average();
-        var liveExpectedValue = livePnls.Average();
+
+        var paperExpectedValue = paperPnls.Count == 0 ? 0 : paperPnls.Average();
+        var liveExpectedValue = livePnls.Count == 0 ? 0 : livePnls.Average();
+
         var driftScore = ComputeExitPolicyDriftScore(paperWinRate, liveWinRate, paperProfitFactor, liveProfitFactor, paperExpectedValue, liveExpectedValue);
 
         return new ExitPolicyDriftRow
         {
-            Symbol = group.Key.Symbol,
-            StrategyTag = group.Key.Strategy,
-            RegimeTag = group.Key.Regime,
-            SessionTag = group.Key.Session,
-            ExitPolicyTag = group.Key.ExitPolicy,
+            Symbol = symbol,
+            StrategyTag = strategy,
+            RegimeTag = regime,
+            SessionTag = session,
+            ExitPolicyTag = exitPolicy,
             PaperTrades = paperTrades.Count,
             LiveTrades = liveTrades.Count,
             DriftScore = driftScore,
@@ -1093,8 +1104,8 @@ public partial class MainViewModel : ObservableObject
             LiveProfitFactor = liveProfitFactor,
             PaperExpectedValue = paperExpectedValue,
             LiveExpectedValue = liveExpectedValue,
-            Summary = ResolveStoredExitPolicyDriftSummary(group, group.Key.Symbol, group.Key.Strategy, group.Key.Regime, group.Key.Session, group.Key.ExitPolicy, driftScore, paperExpectedValue, liveExpectedValue, paperProfitFactor, liveProfitFactor),
-            SeverityColor = ResolveDriftSeverityColor(driftScore)
+            Summary = ResolveStoredExitPolicyDriftSummary(group, symbol, strategy, regime, session, exitPolicy, driftScore, paperExpectedValue, liveExpectedValue, paperProfitFactor, liveProfitFactor),
+            SeverityColor = driftScore >= 20 ? RedBrush : driftScore >= 10 ? OrangeBrush : GrayBrush
         };
     }
 
@@ -1168,8 +1179,8 @@ public partial class MainViewModel : ObservableObject
         var pnls = group.Select(CalculateTradePnL).ToList();
         var averageBias = group.Average(trade => trade.FinalAllocatorBias);
         var totalPnl = pnls.Sum();
-        var biasDirection = ResolveBiasDirection(averageBias, "pushed higher", "trimmed lower");
-        var storedAllocatorSummary = ResolveStoredAllocatorSummary(
+        var biasDirection = averageBias > 1.0m ? "pushed higher" : "trimmed lower";
+        var storedAllocatorSummary = BuildFinalAllocatorBiasSummary(
             group,
             averageBias,
             group.Key.Symbol,
@@ -1194,7 +1205,7 @@ public partial class MainViewModel : ObservableObject
             AverageBias = averageBias,
             TotalPnL = totalPnl,
             Summary = storedAllocatorSummary,
-            BiasColor = ResolveBiasColor(averageBias, GreenBrush, OrangeBrush),
+            BiasColor = averageBias > 1.0m ? GreenBrush : OrangeBrush,
             PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush
         };
     }
@@ -1229,12 +1240,8 @@ public partial class MainViewModel : ObservableObject
     }
 
     private static string BuildFinalAllocatorBiasSummary(
-        string symbol,
-        string strategy,
-        string regime,
-        string session,
-        string scope,
-        string executionMode,
+        IEnumerable<Trade> trades,
+        decimal averageBias,
         string symbol,
         string strategy,
         string regime,
@@ -1252,66 +1259,54 @@ public partial class MainViewModel : ObservableObject
 
         if (storedTrade is null)
         {
-            return BuildFinalAllocatorBiasSummary(
-                symbol,
-                strategy,
-                regime,
-                session,
-                scope,
-                executionMode,
-                promotionStage,
-                averageBias,
-                totalPnl,
-                biasDirection);
+            return $"{symbol} {strategy} {regime} {session}: Allocator {biasDirection} to {averageBias:F2}x ({scope}) in {executionMode} / {promotionStage}. " +
+                   $"No specific allocator justification stored yet. PnL: {totalPnl:N2}.";
         }
 
         var allocatorImpact = ResolveAllocatorImpactFromTrade(storedTrade);
-        var storedScope = string.IsNullOrWhiteSpace(storedTrade.FinalAllocatorScope) ? scope : storedTrade.FinalAllocatorScope;
-        var pnlDirection = totalPnl >= 0 ? "positive" : "negative";
-        return $"{allocatorImpact}. Stored allocator scope: {storedScope}. {symbol} {strategy}/{regime} in {session} stayed {pnlDirection} in {executionMode} / {promotionStage}.";
+        return $"{symbol} {strategy} {regime} {session}: Allocator {biasDirection} to {averageBias:F2}x ({scope}) in {executionMode} / {promotionStage}. " +
+               $"{allocatorImpact} via {storedTrade.FinalAllocatorScope}. PnL: {totalPnl:N2}.";
     }
 
     private void PopulateVenueExecutionBias(IReadOnlyList<Trade> closedTrades)
     {
         var rows = closedTrades
             .Where(trade => trade.VenueExecutionBias > 0m)
-            .GroupBy(trade => new
-            {
-                trade.Symbol,
-                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
-                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                Session = ResolveSessionBucketForTrade(trade),
-                Scope = string.IsNullOrWhiteSpace(trade.VenueExecutionScope) ? "unknown venue scope" : trade.VenueExecutionScope,
-                ExecutionMode = NormalizeExecutionMode(trade.ExecutionMode),
-                PromotionStage = string.IsNullOrWhiteSpace(trade.PromotionStage) ? "UNKNOWN" : trade.PromotionStage
-            })
+            .GroupBy(t => new StrategyBucketKey(
+                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
+                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
+                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
+                ResolveSessionBucketForTrade(t)))
             .Select(BuildVenueExecutionBiasRow)
-            .OrderByDescending(row => Math.Abs(row.AverageBias - 1.0m))
-            .ThenByDescending(row => Math.Abs(row.TotalPnL))
-            .Take(6)
+            .OrderByDescending(row => row.TotalPnL)
             .ToList();
 
-        foreach (var row in rows) VenueExecutionBiasRows.Add(row);
-
-        UpdateVenueExecutionSummary();
+        InvokeOnUi(() => 
+        {
+            VenueExecutionBiasRows.Clear();
+            foreach (var row in rows) VenueExecutionBiasRows.Add(row);
+            UpdateVenueExecutionSummary();
+        });
     }
 
-    private VenueExecutionBiasRow BuildVenueExecutionBiasRow(IGrouping<dynamic, Trade> group)
+
+
+    private VenueExecutionBiasRow BuildVenueExecutionBiasRow(IGrouping<StrategyBucketKey, Trade> group)
     {
         var pnls = group.Select(CalculateTradePnL).ToList();
         var averageBias = group.Average(trade => trade.VenueExecutionBias);
         var totalPnl = pnls.Sum();
-        var biasDirection = ResolveBiasDirection(averageBias, "helped size", "poisoned size");
+        var biasDirection = averageBias > 1.0m ? "helped size" : "poisoned size";
         
         var storedVenueDisplay = ResolveStoredVenueDisplay(
             group,
             averageBias,
             group.Key.Symbol,
-            group.Key.Strategy,
-            group.Key.Regime,
-            group.Key.Session,
-            group.Key.ExecutionMode,
-            group.Key.PromotionStage,
+            group.Key.StrategyTag,
+            group.Key.RegimeTag,
+            group.Key.SessionTag,
+            "REAL", // Assume Live/Real for bias analysis
+            "UNKNOWN",
             biasDirection);
 
         var (exactImpact, exactSummary, _) = BuildExactBucketPressureDisplay(group);
@@ -1320,9 +1315,9 @@ public partial class MainViewModel : ObservableObject
         return new VenueExecutionBiasRow
         {
             Symbol = group.Key.Symbol,
-            StrategyTag = group.Key.Strategy,
-            RegimeTag = group.Key.Regime,
-            SessionTag = group.Key.Session,
+            StrategyTag = group.Key.StrategyTag,
+            RegimeTag = group.Key.RegimeTag,
+            SessionTag = group.Key.SessionTag,
             VenueExecutionScope = group.Key.Scope,
             ExecutionMode = group.Key.ExecutionMode,
             PromotionStage = group.Key.PromotionStage,
@@ -1333,7 +1328,7 @@ public partial class MainViewModel : ObservableObject
             Summary = storedVenueDisplay.Summary,
             ConcordanceImpact = concImpact,
             ConcordanceSummary = concSummary,
-            BiasColor = ResolveBiasColor(averageBias, GreenBrush, RedBrush),
+            BiasColor = averageBias > 1.0m ? GreenBrush : RedBrush,
             PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush,
             PromotionImpactColor = storedVenueDisplay.ImpactColor,
             ConcordanceImpactColor = concColor
@@ -1453,13 +1448,11 @@ public partial class MainViewModel : ObservableObject
     private void PopulateExactBucketPromotionPressure(IReadOnlyList<Trade> closedTrades)
     {
         var items = closedTrades
-            .GroupBy(trade => new
-            {
-                trade.Symbol,
-                Strategy = string.IsNullOrWhiteSpace(trade.StrategyTag) ? "Unlabeled" : trade.StrategyTag,
-                Regime = string.IsNullOrWhiteSpace(trade.RegimeTag) ? "Unknown" : trade.RegimeTag,
-                Session = ResolveSessionBucketForTrade(trade)
-            })
+            .GroupBy(t => new StrategyBucketKey(
+                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
+                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
+                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
+                ResolveSessionBucketForTrade(t)))
             .Select(BuildExactBucketPromotionSelection)
             .Where(item => item.Row.Trades >= 3)
             .OrderByDescending(item => item.Rank)
@@ -1476,7 +1469,7 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
-    private dynamic BuildExactBucketPromotionSelection(IGrouping<dynamic, Trade> group)
+    private dynamic BuildExactBucketPromotionSelection(IGrouping<StrategyBucketKey, Trade> group)
     {
         var pnls = group.Select(CalculateTradePnL).ToList();
         var perf = CalculatePerformanceMetrics(pnls);
@@ -1485,7 +1478,7 @@ public partial class MainViewModel : ObservableObject
         
         var (impact, summary, color) = BuildExactBucketPressureDisplay(group);
         var avgVenueBias = group.Where(t => t.VenueExecutionBias > 0m).Select(t => t.VenueExecutionBias).DefaultIfEmpty(1.00m).Average();
-        var venueSum = BuildCapitalAllocatorVenueSummary(group.Key.Symbol, group.Key.Strategy, group.Key.Regime, group.Key.Session, avgVenueBias, ResolvePromotionStageScope(group));
+        var venueSum = BuildCapitalAllocatorVenueSummary(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, avgVenueBias, ResolvePromotionStageScope(group));
         var (concImpact, concSummary, concColor) = BuildConcordanceDisplay(impact, summary, avgVenueBias, venueSum);
 
         return new
@@ -1543,15 +1536,15 @@ public partial class MainViewModel : ObservableObject
     }
 
     private ExactBucketPromotionPressureRow CreateExactBucketPromotionPressureRow(
-        IGrouping<dynamic, Trade> group, IReadOnlyList<decimal> pnls, PerformanceMetrics perf,
+        IGrouping<StrategyBucketKey, Trade> group, IReadOnlyList<decimal> pnls, PerformanceMetrics perf,
         string impact, string summary, string concImpact, string concSummary, Brush impactColor, Brush concColor)
     {
         return new ExactBucketPromotionPressureRow
         {
             Symbol = group.Key.Symbol,
-            StrategyTag = group.Key.Strategy,
-            RegimeTag = group.Key.Regime,
-            SessionTag = group.Key.Session,
+            StrategyTag = group.Key.StrategyTag,
+            RegimeTag = group.Key.RegimeTag,
+            SessionTag = group.Key.SessionTag,
             ExecutionMode = ResolveExecutionModeScope(group),
             PromotionStage = ResolvePromotionStageScope(group),
             Trades = perf.Count,
@@ -2054,14 +2047,29 @@ public partial class MainViewModel : ObservableObject
     private void RefreshCapitalAllocation()
     {
         var allocatableCapital = BotRecommendedFunding > 0 ? BotRecommendedFunding : Math.Round(BotFundingAmount * 0.25m, 0);
+        var results = _tradeCache
+            .Where(t => t.Status == TradeStatus.Executed && t.IsClosed && t.ExitTime.HasValue && !DisabledStrategies.Any(d => d.Equals(t.StrategyTag, StringComparison.OrdinalIgnoreCase)))
+            .GroupBy(t => new StrategyBucketKey(
+                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
+                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
+                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
+                ResolveSessionBucketForTrade(t)))
+            .Select(BuildExactBucketPromotionSelection)
+            .OrderByDescending(res => res.Rank)
+            .Take(10)
+            .ToList();
         var candidateRows = _tradeCache
             .Where(t => t.Status == TradeStatus.Executed && t.IsClosed && t.ExitTime.HasValue && !DisabledStrategies.Any(d => d.Equals(t.StrategyTag, StringComparison.OrdinalIgnoreCase)))
-            .GroupBy(t => new { Symbol = string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol, StrategyTag = string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag, RegimeTag = string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag, SessionTag = ResolveSessionBucketForTrade(t) })
-            .Select(g => ProjectCapitalAllocationCandidate(g))
+            .GroupBy(t => new StrategyBucketKey(
+                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
+                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
+                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
+                ResolveSessionBucketForTrade(t)))
+            .Select(ProjectCapitalAllocationCandidate)
             .Where(item => item.Score > 0.05 && item.EffectiveStage != "Backtest")
             .OrderByDescending(item => item.Score)
             .Take(4)
-            .ToList();
+            .ToList<CapitalAllocationCandidate>();
 
         InvokeOnUi(() => 
         {
@@ -2085,7 +2093,7 @@ public partial class MainViewModel : ObservableObject
         });
     }
 
-    private dynamic ProjectCapitalAllocationCandidate(IGrouping<dynamic, Trade> group)
+    private CapitalAllocationCandidate ProjectCapitalAllocationCandidate(IGrouping<StrategyBucketKey, Trade> group)
     {
         var averageVenueBias = group.Where(t => t.VenueExecutionBias > 0m).Select(t => t.VenueExecutionBias).DefaultIfEmpty(1.00m).Average();
         var executionMode = ResolveExecutionModeScope(group);
@@ -2095,13 +2103,19 @@ public partial class MainViewModel : ObservableObject
         var venueSummary = BuildCapitalAllocatorVenueSummary(group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, averageVenueBias, promotionStage);
         var (concImpact, concSummary, concColor) = BuildConcordanceDisplay(exactImpact, exactSummary, averageVenueBias, venueSummary);
 
-        return new
-        {
-            group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag, EffectiveStage = effectiveStage,
-            Score = CalculateStrategyScore(group, effectiveStage), AverageVenueBias = averageVenueBias, VenueImpact = ResolveVenuePromotionImpact(averageVenueBias),
-            VenueSummary = venueSummary, ExactBucketImpact = exactImpact, ExactBucketSummary = exactSummary, ExactBucketImpactColor = exactColor,
-            ConcordanceImpact = concImpact, ConcordanceSummary = concSummary, ConcordanceImpactColor = concColor
-        };
+        return new CapitalAllocationCandidate(
+            group.Key.Symbol, group.Key.StrategyTag, group.Key.RegimeTag, group.Key.SessionTag,
+            effectiveStage, CalculateStrategyScore(group, effectiveStage), averageVenueBias,
+            ResolveVenuePromotionImpact(averageVenueBias), venueSummary, exactImpact, exactSummary, exactColor,
+            concImpact, concSummary, concColor
+        );
+    }
+
+    private Brush ResolveVenueColor(decimal bias)
+    {
+        if (bias >= 0.95m) return GreenBrush;
+        if (bias >= 0.85m) return OrangeBrush;
+        return RedBrush;
     }
 
     private void UpdateCapitalAllocatorSummary(decimal allocatableCapital)
@@ -2140,7 +2154,7 @@ public partial class MainViewModel : ObservableObject
         return score * stageMultiplier * precisionBonus;
     }
 
-    private StrategyAllocationRow CreateStrategyAllocationRow(dynamic item, double allocationPercent, decimal capital)
+    private StrategyAllocationRow CreateStrategyAllocationRow(CapitalAllocationCandidate item, double allocationPercent, decimal capital)
     {
         return new StrategyAllocationRow
         {
@@ -2206,6 +2220,31 @@ public partial class MainViewModel : ObservableObject
         return ResolveDynamicPressure(stats);
     }
 
+    private bool ShouldCapForHighEdgeFail(DashTradeStats stats, out string reason)
+    {
+        reason = string.Empty;
+        if (stats.Count < 5) return false;
+        if (stats.WinRate < 40 || stats.ProfitFactor < 1.0)
+        {
+            reason = $"High edge failing: WR {stats.WinRate:F1}%, PF {stats.ProfitFactor:F2}.";
+            return true;
+        }
+        return false;
+    }
+
+    private (string Impact, string Summary, Brush Color) ResolveDynamicPressure(DashTradeStats stats)
+    {
+        if (stats.Count < 10) return ("Exact bucket is gathering depth", $"Accumulated {stats.Count} trades. Waiting for statistical significance.", GrayBrush);
+        
+        if (stats.ProfitFactor >= 1.7 && stats.WinRate >= 55)
+            return ("Exact bucket supports scaling", $"Healthy metrics: PF {stats.ProfitFactor:F2}, WR {stats.WinRate:F1}%. Scale-up authorized.", GreenBrush);
+            
+        if (stats.ProfitFactor < 1.1 || stats.WinRate < 40)
+            return ("Exact bucket is underperforming", $"Weak metrics: PF {stats.ProfitFactor:F2}, WR {stats.WinRate:F1}%. Defensive sizing required.", RedBrush);
+            
+        return ("Exact bucket is stable", $"Stable metrics: PF {stats.ProfitFactor:F2}, WR {stats.WinRate:F1}%. Maintaining current allocation.", OrangeBrush);
+    }
+
     private (string Impact, string Summary, Brush Color)? ResolveStoredExactBucketPressure(List<Trade> tradeList)
     {
         var storedTrade = tradeList
@@ -2220,33 +2259,38 @@ public partial class MainViewModel : ObservableObject
         return (impact, summary, ResolveExactBucketPressureColor(impact));
     }
 
-    private TradeStats CalculateTradeStats(List<Trade> tradeList)
+    private DashTradeStats CalculateTradeStats(List<Trade> tradeList)
     {
         var pnls = tradeList.Select(CalculateTradePnL).ToList();
         var grossProfit = pnls.Where(pnl => pnl > 0).Sum();
         var grossLoss = Math.Abs(pnls.Where(pnl => pnl < 0).Sum());
 
-        return new TradeStats
-        {
-            Count = tradeList.Count,
-            PnLs = pnls,
-            WinRate = tradeList.Count == 0 ? 0 : pnls.Count(pnl => pnl > 0) * 100.0 / tradeList.Count,
-            ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss),
-            ExpectedValue = pnls.Count == 0 ? 0m : pnls.Average()
-        };
+        return new DashTradeStats(
+            tradeList.Count,
+            pnls,
+            tradeList.Count == 0 ? 0 : pnls.Count(pnl => pnl > 0) * 100.0 / tradeList.Count,
+            (double)CalculateProfitFactor(grossProfit, grossLoss),
+            pnls.Count == 0 ? 0m : pnls.Average()
+        );
     }
 
-    private TradeStats CalculateHighEdgeStats(List<Trade> tradeList)
+    private DashTradeStats CalculateHighEdgeStats(List<Trade> tradeList)
     {
         var highEdgePnls = tradeList
             .Where(t => string.Equals(t.EdgeBand, "Full", StringComparison.OrdinalIgnoreCase) || string.Equals(t.EdgeBand, "Reduced", StringComparison.OrdinalIgnoreCase) || t.EdgeScore >= 70m)
             .Select(CalculateTradePnL)
             .ToList();
-        {
-            return ("Exact bucket supports scaling", $"Exact bucket is healthy: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.", GreenBrush);
-        }
 
-        return ("Exact bucket is still proving itself", $"Exact bucket is still proving itself: PF {profitFactor:F2}, WR {winRate:F1}%, EV {expectedValue:F2}.", GrayBrush);
+        var grossProfit = highEdgePnls.Where(pnl => pnl > 0).Sum();
+        var grossLoss = Math.Abs(highEdgePnls.Where(pnl => pnl < 0).Sum());
+
+        return new DashTradeStats(
+            highEdgePnls.Count,
+            highEdgePnls,
+            highEdgePnls.Count == 0 ? 0 : highEdgePnls.Count(pnl => pnl > 0) * 100.0 / highEdgePnls.Count,
+            (double)CalculateProfitFactor(grossProfit, grossLoss),
+            highEdgePnls.Count == 0 ? 0m : highEdgePnls.Average()
+        );
     }
 
     private Brush ResolveExactBucketPressureColor(string impact)
@@ -3962,8 +4006,8 @@ public partial class MainViewModel : ObservableObject
     {
         CurrentPrice = ind.CurrentPrice;
         UpdateRsiUi(ind.RSI);
-        UpdateMacdUi(ind.MACDHistogram);
-        UpdateEmaUi(ind.EMA20, ind.EMA50);
+        UpdateMacdUi(ind.MACDHistogram ?? 0);
+        UpdateEmaUi(ind.EMA20 ?? 0, ind.EMA50 ?? 0);
         UpdateVitalsUi(ind.BollingerUpper, ind.BollingerLower, ind.ATR, ind.VolumeRatio);
         UpdateAlphaTrendUi(ind.AlphaTrend);
 
@@ -4014,7 +4058,7 @@ public partial class MainViewModel : ObservableObject
         VolumeColor = VolumeRatio >= 1.5 ? GreenBrush : GrayBrush;
     }
 
-    private void UpdateAlphaTrendUi(AlphaTrendSnapshot? alpha)
+    private void UpdateAlphaTrendUi(AlphaTrendResult? alpha)
     {
         if (alpha == null) return;
 
@@ -5129,7 +5173,7 @@ public partial class MainViewModel : ObservableObject
         ApplyPortfolioSeries(labels, values);
     }
 
-    private void SetEmptyWindowGrowthState(double baseline)
+    private void SetEmptyWindowGrowthState(double baseline, string windowSummary)
     {
         var labels = new List<string>();
         var values = new List<double>();
@@ -5327,4 +5371,18 @@ public partial class MainViewModel : ObservableObject
             action();
         }
     }
+
+    private record DashTradeStats(int Count, List<decimal> PnLs, double WinRate, double ProfitFactor, decimal ExpectedValue);
+
+    private record StrategyBucketKey(string Symbol, string StrategyTag, string RegimeTag, string SessionTag, string Scope = "Default", string ExecutionMode = "REAL", string PromotionStage = "UNKNOWN");
+
+    private record CapitalAllocationCandidate(
+        string Symbol, string StrategyTag, string RegimeTag, string SessionTag,
+        string EffectiveStage, double Score, decimal AverageVenueBias,
+        string VenueImpact, string VenueSummary, string ExactBucketImpact,
+        string ExactBucketSummary, Brush ExactBucketImpactColor,
+        string ConcordanceImpact, string ConcordanceSummary, Brush ConcordanceImpactColor
+    );
+
+    private record JournalMatchedItem(ParsedEdgeJournalEntry Journal, Trade Trade);
 }

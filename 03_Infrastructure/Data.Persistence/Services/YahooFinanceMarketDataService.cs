@@ -1,3 +1,5 @@
+using System.Net.Http;
+using Microsoft.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
@@ -29,11 +31,11 @@ public class YahooFinanceMarketDataService : IMarketDataService
     private readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(5);
 
     public YahooFinanceMarketDataService(
-        HttpClient httpClient,
+        IHttpClientFactory httpClientFactory,
         BorsaMarketDataService fallback,
         ILogger<YahooFinanceMarketDataService> logger)
     {
-        _httpClient = httpClient;
+        _httpClient = httpClientFactory.CreateClient("Yahoo");
         _fallback = fallback;
         _logger = logger;
     }

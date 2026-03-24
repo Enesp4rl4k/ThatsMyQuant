@@ -8,6 +8,7 @@ using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Interfaces;
 using ThatsMyQuant.Infrastructure.Persistence;
 using ThatsMyQuant.Infrastructure.Repositories;
+using ThatsMyQuant.Application.Security;
 using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Application.Common;
 using ThatsMyQuant.Application.Strategy;
@@ -34,20 +35,23 @@ builder.Services.AddRateLimiter(options =>
 
 // --- Database ---
 builder.Services.AddDbContext<QuantDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=quant.db"));
+    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"));
 
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
+builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
 
 // --- MediatR ---
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
 
 // --- HttpClient ---
-builder.Services.AddHttpClient<YahooFinanceMarketDataService>(client =>
+builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("Yahoo", client =>
 {
     client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
     client.Timeout = TimeSpan.FromSeconds(10);
 });
+builder.Services.AddHttpClient("Binance");
 
 // --- CORE APPLICATION SERVICES ---
 builder.Services.AddThatsMyQuantApplication();
@@ -55,11 +59,15 @@ builder.Services.AddThatsMyQuantApplication();
 // --- INFRASTRUCTURE ADAPTERS ---
 builder.Services.AddSingleton<BorsaMarketDataService>();
 builder.Services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
-builder.Services.AddSingleton<IAiReasoningService, DeepSeekReasoningService>();
-builder.Services.AddSingleton<IAiAnalystService, AiAnalystService>();
-builder.Services.AddSingleton<ISentimentService, GeminiSentimentService>();
-builder.Services.AddSingleton<ITechnicalAnalysisService, QuantIndicatorService>();
+builder.Services.AddScoped<IAiReasoningService, DeepSeekReasoningService>();
+builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
+builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
+builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
 builder.Services.AddSingleton<IExchangeService, MockBrokerService>();
+    builder.Services.AddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
+builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
+builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
+builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
 
 // Safety Kernel
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
@@ -85,6 +93,9 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
     await db.Database.EnsureCreatedAsync();
+
+    var exchangeInfo = scope.ServiceProvider.GetRequiredService<BinanceExchangeInfoProvider>();
+    await exchangeInfo.InitializeAsync();
 }
 
 app.UseMiddleware<HmacValidationMiddleware>();

@@ -10,26 +10,33 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddThatsMyQuantApplication(this IServiceCollection services)
     {
-        // Application Layer Services (Logic-only)
+        // Application Layer Services - Singletons (Stateful/Heavy)
         services.AddSingleton<RiskAgent>();
-        services.AddSingleton<StrategyExpectancyService>();
-        services.AddSingleton<SymbolExpectancyService>();
-        services.AddSingleton<EdgeScoreService>();
-        services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
-        services.AddSingleton<StrategyPromotionService>();
-        services.AddSingleton<ExitPolicyLearningService>();
-        services.AddSingleton<MarketExecutionProfileService>();
-        services.AddSingleton<HftExecutionService>();
-        services.AddSingleton<IHftMarketDataService, HftMarketDataService>();
-        services.AddSingleton<IHftSignalGenerationService, HftSignalGenerationService>();
-        services.AddSingleton<MemoryPortfolioManager>();
-        services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
-        services.AddSingleton<SentimentAgent>();
-        services.AddSingleton<SwarmOrchestrator>();
-        services.AddSingleton<NewsFeedSim>();
         services.AddSingleton<InferenceAgent>();
         services.AddSingleton<FeatureEngineeringAgent>();
+        services.AddSingleton<MemoryPortfolioManager>();
+        services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
+        services.AddSingleton<NewsFeedSim>();
+        services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
+        services.AddSingleton<MarketExecutionProfileService>();
+
+        // Application Layer Services - Scoped (Logic/Handlers/LLM-Dependent)
+        services.AddScoped<SentimentAgent>();
+        services.AddScoped<SwarmOrchestrator>();
+        services.AddScoped<StrategyExpectancyService>();
+        services.AddScoped<SymbolExpectancyService>();
+        services.AddScoped<EdgeScoreService>();
+        services.AddScoped<StrategyPromotionService>();
+        services.AddScoped<ExitPolicyLearningService>();
+        services.AddScoped<HftExecutionService>();
+        services.AddScoped<IHftMarketDataService, HftMarketDataService>();
+        services.AddScoped<IHftSignalGenerationService, HftSignalGenerationService>();
+        services.AddScoped<OFIExecutionAgent>();
+        
+        services.AddScoped<IStrategyRouter, HftStrategyRouter>();
+        services.AddScoped<IStrategyRouter, TrendStrategyRouter>();
+        services.AddScoped<IStrategyRouter, RangeStrategyRouter>();
+        services.AddScoped<IStrategyRouter, BreakoutStrategyRouter>();
         
         return services;
-    }
 }

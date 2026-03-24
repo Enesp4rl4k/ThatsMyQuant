@@ -5,6 +5,7 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using Serilog;
 using Microsoft.SemanticKernel;
 using ThatsMyQuant.Bot;
+using ThatsMyQuant.Application.Security;
 using ThatsMyQuant.Domain.Interfaces;
 using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Infrastructure.Ai;
@@ -21,6 +22,8 @@ PerformanceBootstrapper.OptimizeForHft();
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("Yahoo", c => c.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0"));
+builder.Services.AddHttpClient("Binance");
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
 
 Log.Logger = new LoggerConfiguration().WriteTo.Console().CreateLogger();
@@ -33,10 +36,12 @@ builder.Services.AddThatsMyQuantApplication();
 // --- INFRASTRUCTURE ADAPTERS ---
 builder.Services.AddSingleton<BorsaMarketDataService>();
 builder.Services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
-builder.Services.AddSingleton<IAiReasoningService, DeepSeekReasoningService>();
-builder.Services.AddSingleton<IAiAnalystService, AiAnalystService>();
-builder.Services.AddSingleton<ISentimentService, GeminiSentimentService>();
-builder.Services.AddSingleton<ITechnicalAnalysisService, QuantIndicatorService>();
+builder.Services.AddScoped<IAiReasoningService, DeepSeekReasoningService>();
+builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
+builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
+builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
+builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
+builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
 
 // Safety Kernel
 if (!string.IsNullOrWhiteSpace(geminiApiKey))
@@ -54,8 +59,9 @@ builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Proce
 
 // Persistence
 builder.Services.AddDbContext<QuantDbContext>(options => 
-    options.UseSqlite(builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=quant.db"));
+    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"));
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
+builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
 builder.Services.AddScoped<ReconciliationAgent>();
 
@@ -66,6 +72,9 @@ builder.Services.AddSingleton<IExchangeService>(sp =>
     return new ChaosExchangeDecorator(inner, sp.GetRequiredService<ILogger<ChaosExchangeDecorator>>());
 });
 
+builder.Services.AddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
+builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
+
 builder.Services.AddHostedService<TradeBotWorker>();
 
 var host = builder.Build();
@@ -73,6 +82,12 @@ using (var scope = host.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
     await db.Database.EnsureCreatedAsync();
+
+    var exchangeInfo = scope.ServiceProvider.GetRequiredService<BinanceExchangeInfoProvider>();
+    await exchangeInfo.InitializeAsync();
+
+    var portfolioCache = scope.ServiceProvider.GetRequiredService<IPortfolioStateCache>();
+    await portfolioCache.InitializeAsync();
 }
 
 await host.RunAsync();

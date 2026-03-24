@@ -839,7 +839,7 @@ public class StrategyPromotionServiceTests
     private static PaperPosition CreatePaperPosition(decimal pnl, string strategyTag = "TrendConfluence", string regimeTag = "Trending", string exitPolicyTag = "TrendRunner", string symbol = "THYAO") => new()
     {
         Symbol = symbol,
-        Side = "Buy",
+        Side = ThatsMyQuant.Domain.Enums.TradeSide.Buy,
         EntryPrice = 100m,
         CurrentPrice = 100m,
         Quantity = 1m,
@@ -917,7 +917,7 @@ public class StrategyPromotionServiceTests
     {
         EntryTime = exitTime.AddMinutes(-30),
         ExitTime = exitTime,
-        Side = "Buy",
+        Side = ThatsMyQuant.Domain.Enums.TradeSide.Buy,
         StrategyTag = strategyTag,
         RegimeTag = regimeTag,
         ExitPolicyTag = exitPolicyTag,

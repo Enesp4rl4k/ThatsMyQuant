@@ -200,7 +200,7 @@ public class ExitPolicyLearningServiceTests
         {
             EntryTime = new DateTime(2026, 3, 20, 7, 30, 0, DateTimeKind.Utc).AddMinutes(index * 5),
             ExitTime = new DateTime(2026, 3, 20, 8, 0, 0, DateTimeKind.Utc).AddMinutes(index * 5),
-            Side = "Buy",
+            Side = TradeSide.Buy,
             StrategyTag = "TrendConfluence",
             RegimeTag = "Trending",
             ExitPolicyTag = exitPolicyTag,
@@ -224,7 +224,7 @@ public class ExitPolicyLearningServiceTests
     private static PaperPosition CreatePaperPosition(string exitPolicyTag, decimal realizedPnl) => new()
     {
         Symbol = "THYAO",
-        Side = "Buy",
+        Side = TradeSide.Buy,
         EntryPrice = 100m,
         CurrentPrice = 100m,
         Quantity = 1m,

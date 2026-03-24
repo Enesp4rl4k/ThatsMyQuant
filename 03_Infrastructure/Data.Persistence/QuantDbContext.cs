@@ -41,6 +41,18 @@ public class QuantDbContext : DbContext
                     c => c.ToDictionary(entry => entry.Key, entry => entry.Value)));
             
             entity.Property(s => s.Metadata).HasColumnType("TEXT");
+            
+            // microstructure microstructure microstructure 
+            entity.Property(s => s.OrderFlowImbalance);
+            entity.Property(s => s.BestBid);
+            entity.Property(s => s.BestAsk);
+            entity.Property(s => s.WallAgeMs);
+            entity.Property(s => s.Quantity).HasPrecision(18, 8);
+            entity.Property(s => s.Confidence);
+            entity.Property(s => s.Reasoning).HasMaxLength(1000);
+            entity.Property(s => s.Volume24h).HasPrecision(18, 2);
+            entity.Property(s => s.ExecutionAction).HasConversion<string>().HasMaxLength(20);
+            entity.Property(s => s.PriceActionSignal).HasConversion<string>().HasMaxLength(20);
 
             entity.HasIndex(s => s.Symbol);
             entity.HasIndex(s => s.Timestamp);

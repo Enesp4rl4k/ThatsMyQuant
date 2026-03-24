@@ -14,6 +14,7 @@ using ThatsMyQuant.Application.Strategy;
 using Microsoft.SemanticKernel.Connectors.Google;
 using Microsoft.EntityFrameworkCore;
 using ThatsMyQuant.Application.Security;
+using ThatsMyQuant.Dashboard.Services;
 
 namespace ThatsMyQuant.Dashboard;
 
@@ -52,6 +53,9 @@ public partial class App : System.Windows.Application
         if (db != null)
         {
             await db.Database.EnsureCreatedAsync();
+            
+            var portfolioCache = scope?.ServiceProvider.GetService<IPortfolioStateCache>();
+            if (portfolioCache != null) await portfolioCache.InitializeAsync();
         }
     }
 
@@ -62,13 +66,17 @@ public partial class App : System.Windows.Application
         // Core Microservice Logic
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
 
-        // HttpClient for Yahoo Finance with browser User-Agent
-        services.AddHttpClient<YahooFinanceMarketDataService>(client =>
+        // HttpClient for Yahoo Finance
+        services.AddHttpClient("Yahoo", client =>
         {
             client.DefaultRequestHeaders.Add("User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
             client.DefaultRequestHeaders.Add("Accept", "application/json");
             client.Timeout = TimeSpan.FromSeconds(10);
+        });
+        services.AddHttpClient("Binance", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(15);
         });
 
         // BorsaMarketDataService is the automatic fallback when Yahoo is unavailable
@@ -76,8 +84,8 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
         services.AddHttpClient<IAlertingService, TelegramAlertService>();
         services.AddHttpClient<IAlertingService, WebhookAlertService>();
-        services.AddSingleton<IAiReasoningService, DeepSeekReasoningService>();
-        services.AddSingleton<IAiAnalystService, AiAnalystService>();
+        services.AddScoped<IAiReasoningService, DeepSeekReasoningService>();
+        services.AddScoped<IAiAnalystService, AiAnalystService>();
         // Exchange Service Integration
         var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Mock";
         
@@ -121,24 +129,31 @@ public partial class App : System.Windows.Application
         {
             services.AddSingleton<IExchangeService, MockBrokerService>();
         }
-        services.AddSingleton<ITechnicalAnalysisService, QuantIndicatorService>();
+        services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
         services.AddTransient<ThatsMyQuant.Application.Strategy.BacktestEngineApp>();
         
         // Database & Repositories
         services.AddDbContext<ThatsMyQuant.Infrastructure.Persistence.QuantDbContext>(options =>
         {
             options.UseLazyLoadingProxies();
-            options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db");
+            options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared");
         });
         services.AddScoped<ISignalRepository, ThatsMyQuant.Infrastructure.Repositories.SignalRepository>();
+        services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
         services.AddScoped<ITradeRepository, ThatsMyQuant.Infrastructure.Repositories.TradeRepository>();
 
         // Swarm Intelligence Layer
         services.AddSingleton<NewsFeedSim>();
-        services.AddSingleton<ISentimentService, GeminiSentimentService>();
+        services.AddScoped<ISentimentService, GeminiSentimentService>();
         services.AddSingleton<SentimentAgent>();
         services.AddSingleton<RiskAgent>();
         services.AddSingleton<SwarmOrchestrator>();
+        
+        // Dashboard Infrastructure
+        services.AddSingleton<ITradingLoopService, TradingLoopService>();
+        services.AddSingleton<IStrategyHealthStore, JsonStrategyHealthStore>();
+        services.AddSingleton<BinanceExchangeInfoProvider>();
+        services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
 
         // Phase 8: HFT & Quantitative Foundation
         services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
