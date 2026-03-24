@@ -168,8 +168,11 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
     {
         try
         {
-            _cts?.Cancel();
-            _cts?.Dispose();
+            if (_cts != null)
+            {
+                await _cts.CancelAsync();
+                _cts.Dispose();
+            }
         }
         finally
         {

@@ -143,7 +143,7 @@ public sealed class TickPipeline : IAsyncDisposable
 
         if (_cts != null)
         {
-            _cts.Cancel();
+            await _cts.CancelAsync();
             _tickChannel.Writer.TryComplete();
             _orderBookChannel.Writer.TryComplete();
 

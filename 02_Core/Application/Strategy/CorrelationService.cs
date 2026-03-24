@@ -42,7 +42,7 @@ public static class CorrelationService
         }
 
         int totalPositions = currentPositionSymbols.Count + 1;
-        double sectorExposure = totalPositions > 0 ? (sameSecPositions * 100.0) / totalPositions : 0;
+        double sectorExposure = (sameSecPositions * 100.0) / totalPositions;
 
         bool isCorrelated = sameSecPositions > 1;
         bool exceedsLimit = sectorExposure > maxSectorExposurePercent;

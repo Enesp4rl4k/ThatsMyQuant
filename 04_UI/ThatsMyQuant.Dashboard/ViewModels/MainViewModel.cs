@@ -1823,8 +1823,8 @@ public partial class MainViewModel : ObservableObject
         }
 
         var failureRate = trades.Count * 100.0 / completedCount;
-        var avgSlippage = trades.Count == 0 ? 0m : trades.Average(trade => trade.EntrySlippagePercent);
-        var avgLatency = trades.Count == 0 ? 0 : trades.Average(trade => (double)trade.ExecutionLatencyMs);
+        var avgSlippage = trades.Average(trade => trade.EntrySlippagePercent);
+        var avgLatency = trades.Average(trade => (double)trade.ExecutionLatencyMs);
 
         rows.Add(new EdgeFailureConditionRow
         {
@@ -5126,7 +5126,7 @@ public partial class MainViewModel : ObservableObject
 
         var first = values.FirstOrDefault(baseline);
         var last = values.LastOrDefault(baseline);
-        var changePercent = first == 0 ? 0 : ((last - first) / first) * 100d;
+        var changePercent = Math.Abs(first) < 1e-9 ? 0 : ((last - first) / first) * 100d;
 
         PortfolioGrowthHeadline = $"{last:N0}";
         PortfolioGrowthSubtext = $"{changePercent:+0.00;-0.00;0.00}% realized | Stage {PortfolioPromotionStageLabel}";
@@ -5219,7 +5219,7 @@ public partial class MainViewModel : ObservableObject
 
             for (int i = 0; i < verticalSteps; i++)
             {
-                var x = verticalSteps == 1 ? 0 : canvasWidth / (verticalSteps - 1) * i;
+                var x = canvasWidth / (verticalSteps - 1) * i;
                 var index = Math.Min(candles.Count - 1, (int)Math.Round((double)i / Math.Max(1, verticalSteps - 1) * (candles.Count - 1)));
                 VerticalGridLines.Add(new ChartGridLineViewModel { X1 = x, Y1 = 0, X2 = x, Y2 = canvasHeight });
                 TimeScaleLabels.Add(new ChartAxisLabel
