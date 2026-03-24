@@ -16,13 +16,10 @@ public static class PMaxCalculator
         int maLength = 10)
     {
         var results = new List<PMaxResult>();
-        if (candles.Count == 0)
-        {
-            return results;
-        }
+        if (candles.Count == 0) return results;
 
-        var closeSeries = candles.Select(c => (double)((c.High + c.Low) / 2m)).ToList();
-        var ema = ComputeEma(closeSeries, maLength);
+        var hl2 = candles.Select(c => (double)((c.High + c.Low) / 2m)).ToList();
+        var ema = ComputeEma(hl2, maLength);
         var atr = ComputeAtr(candles, atrLength);
 
         var longStop = new double[candles.Count];
@@ -32,27 +29,11 @@ public static class PMaxCalculator
 
         for (int i = 0; i < candles.Count; i++)
         {
-            var ma = ema[i];
-            var atrValue = atr[i];
-            longStop[i] = ma - (atrMultiplier * atrValue);
-            shortStop[i] = ma + (atrMultiplier * atrValue);
-
+            UpdateStops(i, ema[i], atr[i], atrMultiplier, longStop, shortStop);
+            
             if (i > 0)
             {
-                var prevLongStop = longStop[i - 1];
-                var prevShortStop = shortStop[i - 1];
-                longStop[i] = ma > prevLongStop ? Math.Max(longStop[i], prevLongStop) : longStop[i];
-                shortStop[i] = ma < prevShortStop ? Math.Min(shortStop[i], prevShortStop) : shortStop[i];
-
-                dir[i] = dir[i - 1];
-                if (dir[i - 1] == -1 && ma > prevShortStop)
-                {
-                    dir[i] = 1;
-                }
-                else if (dir[i - 1] == 1 && ma < prevLongStop)
-                {
-                    dir[i] = -1;
-                }
+                ApplyTrailingLogic(i, ema[i], longStop, shortStop, dir);
             }
             else
             {
@@ -60,23 +41,11 @@ public static class PMaxCalculator
             }
 
             pmax[i] = dir[i] == 1 ? longStop[i] : shortStop[i];
-
-            TradeSide? signal = null;
-            if (i > 0)
-            {
-                if (ema[i] > pmax[i] && ema[i - 1] <= pmax[i - 1])
-                {
-                    signal = TradeSide.Buy;
-                }
-                else if (ema[i] < pmax[i] && ema[i - 1] >= pmax[i - 1])
-                {
-                    signal = TradeSide.Sell;
-                }
-            }
+            TradeSide? signal = DetectSignal(i, ema, pmax);
 
             results.Add(new PMaxResult
             {
-                MovingAverage = ma,
+                MovingAverage = ema[i],
                 Value = pmax[i],
                 Signal = signal,
                 IsBullish = ema[i] >= pmax[i]
@@ -86,13 +55,48 @@ public static class PMaxCalculator
         return results;
     }
 
+    private static void UpdateStops(int i, double ma, double atrValue, double atrMultiplier, double[] longStop, double[] shortStop)
+    {
+        longStop[i] = ma - (atrMultiplier * atrValue);
+        shortStop[i] = ma + (atrMultiplier * atrValue);
+    }
+
+    private static void ApplyTrailingLogic(int i, double ma, double[] longStop, double[] shortStop, int[] dir)
+    {
+        var prevLongStop = longStop[i - 1];
+        var prevShortStop = shortStop[i - 1];
+
+        longStop[i] = ma > prevLongStop ? Math.Max(longStop[i], prevLongStop) : longStop[i];
+        shortStop[i] = ma < prevShortStop ? Math.Min(shortStop[i], prevShortStop) : shortStop[i];
+
+        dir[i] = dir[i - 1];
+        if (dir[i - 1] == -1 && ma > prevShortStop)
+        {
+            dir[i] = 1;
+        }
+        else if (dir[i - 1] == 1 && ma < prevLongStop)
+        {
+            dir[i] = -1;
+        }
+    }
+
+    private static TradeSide? DetectSignal(int i, double[] ema, double[] pmax)
+    {
+        if (i <= 0) return null;
+
+        if (ema[i] > pmax[i] && ema[i - 1] <= pmax[i - 1])
+            return TradeSide.Buy;
+        
+        if (ema[i] < pmax[i] && ema[i - 1] >= pmax[i - 1])
+            return TradeSide.Sell;
+
+        return null;
+    }
+
     private static double[] ComputeEma(List<double> values, int length)
     {
         var result = new double[values.Count];
-        if (values.Count == 0)
-        {
-            return result;
-        }
+        if (values.Count == 0) return result;
 
         var alpha = 2.0 / (length + 1);
         result[0] = values[0];
@@ -101,7 +105,6 @@ public static class PMaxCalculator
         {
             result[i] = (alpha * values[i]) + ((1 - alpha) * result[i - 1]);
         }
-
         return result;
     }
 
@@ -112,28 +115,20 @@ public static class PMaxCalculator
 
         for (int i = 0; i < candles.Count; i++)
         {
-            if (i == 0)
-            {
-                tr[i] = (double)(candles[i].High - candles[i].Low);
-            }
-            else
-            {
-                var hl = (double)(candles[i].High - candles[i].Low);
-                var hc = Math.Abs((double)(candles[i].High - candles[i - 1].Close));
-                var lc = Math.Abs((double)(candles[i].Low - candles[i - 1].Close));
-                tr[i] = Math.Max(hl, Math.Max(hc, lc));
-            }
-
-            if (i == 0)
-            {
-                atr[i] = tr[i];
-            }
-            else
-            {
-                atr[i] = ((atr[i - 1] * (length - 1)) + tr[i]) / length;
-            }
+            tr[i] = CalculateTrueRange(candles, i);
+            atr[i] = i == 0 ? tr[i] : ((atr[i - 1] * (length - 1)) + tr[i]) / length;
         }
-
         return atr;
+    }
+
+    private static double CalculateTrueRange(List<Candle> candles, int i)
+    {
+        if (i == 0) return (double)(candles[i].High - candles[i].Low);
+
+        var hl = (double)(candles[i].High - candles[i].Low);
+        var hc = Math.Abs((double)(candles[i].High - candles[i - 1].Close));
+        var lc = Math.Abs((double)(candles[i].Low - candles[i - 1].Close));
+        
+        return Math.Max(hl, Math.Max(hc, lc));
     }
 }

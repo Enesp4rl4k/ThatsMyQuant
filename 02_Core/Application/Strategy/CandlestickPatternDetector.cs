@@ -8,6 +8,10 @@ namespace ThatsMyQuant.Application.Strategy;
 /// </summary>
 public static class CandlestickPatternDetector
 {
+    private const decimal DojiThreshold = 0.1m;
+    private const decimal IndecisionThreshold = 0.3m;
+    private const decimal StrongBodyThreshold = 0.5m;
+
     public static string DetectPattern(List<Candle> candles, int index = -1)
     {
         if (candles == null || candles.Count < 3) return "None";
@@ -18,66 +22,111 @@ public static class CandlestickPatternDetector
         var c1 = candles[index - 1]; // Previous
         var c2 = candles[index - 2]; // 2 ago
 
-        // --- Current Candle Properties ---
-        decimal body0 = Math.Abs(c0.Close - c0.Open);
-        decimal range0 = Math.Max(c0.High - c0.Low, 0.00000001m);
-        decimal upperWick0 = c0.High - Math.Max(c0.Open, c0.Close);
-        decimal lowerWick0 = Math.Min(c0.Open, c0.Close) - c0.Low;
-        bool isBullish0 = c0.Close > c0.Open;
-        bool isBearish0 = c0.Close < c0.Open;
+        // 1. DOJI
+        var doji = DetectDoji(c0);
+        if (doji != "None") return doji;
 
-        // --- Previous Candle Properties ---
-        decimal body1 = Math.Abs(c1.Close - c1.Open);
-        decimal range1 = Math.Max(c1.High - c1.Low, 0.00000001m);
-        bool isBullish1 = c1.Close > c1.Open;
-        bool isBearish1 = c1.Close < c1.Open;
+        // 2. HAMMER / HANGING MAN
+        var hammer = DetectHammerLike(c0);
+        if (hammer != "None") return hammer;
 
-        // 1. DOJI (Neutral/Reversal)
-        if (body0 <= range0 * 0.1m)
-        {
-            if (lowerWick0 > range0 * 0.6m) return "Dragonfly Doji (Bullish)";
-            if (upperWick0 > range0 * 0.6m) return "Gravestone Doji (Bearish)";
-            return "Standard Doji (Neutral)";
-        }
+        // 3. SHOOTING STAR
+        var shootingStar = DetectShootingStar(c0);
+        if (shootingStar != "None") return shootingStar;
 
-        // 2. HAMMER (Bullish Reversal)
-        // Body in upper 30%, long lower wick, little upper wick
-        bool isHammerShape = lowerWick0 >= body0 * 2 && upperWick0 <= range0 * 0.1m;
-        if (isHammerShape)
-        {
-            return isBullish0 ? "Bullish Hammer" : "Bearish Hammer (Hanging Man)";
-        }
+        // 4. ENGULFING
+        var engulfing = DetectEngulfing(c0, c1);
+        if (engulfing != "None") return engulfing;
 
-        // 3. SHOOTING STAR (Bearish Reversal)
-        bool isShootingStarShape = upperWick0 >= body0 * 2 && lowerWick0 <= range0 * 0.1m;
-        if (isShootingStarShape)
-        {
-            return "Shooting Star (Bearish)";
-        }
+        // 5. MORNING / EVENING STAR
+        var star = DetectStarPattern(c0, c1, c2);
+        if (star != "None") return star;
 
-        // 4. BULLISH ENGULFING
-        if (isBearish1 && isBullish0 && c0.Open <= c1.Close && c0.Close >= c1.Open)
+        return "None";
+    }
+
+    private static string DetectDoji(Candle c)
+    {
+        decimal body = Math.Abs(c.Close - c.Open);
+        decimal range = Math.Max(c.High - c.Low, 0.00000001m);
+        
+        if (body > range * DojiThreshold) return "None";
+
+        decimal upperWick = c.High - Math.Max(c.Open, c.Close);
+        decimal lowerWick = Math.Min(c.Open, c.Close) - c.Low;
+
+        if (lowerWick > range * 0.6m) return "Dragonfly Doji (Bullish)";
+        if (upperWick > range * 0.6m) return "Gravestone Doji (Bearish)";
+        
+        return "Standard Doji (Neutral)";
+    }
+
+    private static string DetectHammerLike(Candle c)
+    {
+        decimal body = Math.Abs(c.Close - c.Open);
+        decimal range = Math.Max(c.High - c.Low, 0.00000001m);
+        decimal upperWick = c.High - Math.Max(c.Open, c.Close);
+        decimal lowerWick = Math.Min(c.Open, c.Close) - c.Low;
+
+        bool isHammerShape = lowerWick >= body * 2 && upperWick <= range * 0.1m;
+        if (!isHammerShape) return "None";
+
+        return IsBullish(c) ? "Bullish Hammer" : "Bearish Hammer (Hanging Man)";
+    }
+
+    private static string DetectShootingStar(Candle c)
+    {
+        decimal body = Math.Abs(c.Close - c.Open);
+        decimal range = Math.Max(c.High - c.Low, 0.00000001m);
+        decimal upperWick = c.High - Math.Max(c.Open, c.Close);
+        decimal lowerWick = Math.Min(c.Open, c.Close) - c.Low;
+
+        bool isShootingStarShape = upperWick >= body * 2 && lowerWick <= range * 0.1m;
+        return isShootingStarShape ? "Shooting Star (Bearish)" : "None";
+    }
+
+    private static string DetectEngulfing(Candle current, Candle previous)
+    {
+        decimal body0 = Math.Abs(current.Close - current.Open);
+        decimal body1 = Math.Abs(previous.Close - previous.Open);
+
+        // Bullish Engulfing
+        if (IsBearish(previous) && IsBullish(current) && 
+            current.Open <= previous.Close && current.Close >= previous.Open &&
+            body0 > body1)
         {
             return "Bullish Engulfing";
         }
 
-        // 5. BEARISH ENGULFING
-        if (isBullish1 && isBearish0 && c0.Open >= c1.Close && c0.Close <= c1.Open)
+        // Bearish Engulfing
+        if (IsBullish(previous) && IsBearish(current) && 
+            current.Open >= previous.Close && current.Close <= previous.Open &&
+            body0 > body1)
         {
             return "Bearish Engulfing";
         }
 
-        // 6. MORNING STAR (3-Candle Bullish)
-        bool c2StrongBear = isBearish(c2) && Math.Abs(c2.Open - c2.Close) > (c2.High - c2.Low) * 0.5m;
-        bool c1Indecision = body1 <= range1 * 0.3m;
-        if (c2StrongBear && c1Indecision && isBullish0 && c0.Close > c2.Open - (c2.Open - c2.Close) / 2m)
+        return "None";
+    }
+
+    private static string DetectStarPattern(Candle c0, Candle c1, Candle c2)
+    {
+        decimal range1 = Math.Max(c1.High - c1.Low, 0.00000001m);
+        decimal body1 = Math.Abs(c1.Close - c1.Open);
+        bool c1Indecision = body1 <= range1 * IndecisionThreshold;
+        
+        if (!c1Indecision) return "None";
+
+        // Morning Star
+        if (IsStrongBearish(c2) && IsBullish(c0) && 
+            c0.Close > c2.Open - (c2.Open - c2.Close) / 2m)
         {
             return "Morning Star (Bullish Reversal)";
         }
 
-        // 7. EVENING STAR (3-Candle Bearish)
-        bool c2StrongBull = isBullish(c2) && Math.Abs(c2.Open - c2.Close) > (c2.High - c2.Low) * 0.5m;
-        if (c2StrongBull && c1Indecision && isBearish0 && c0.Close < c2.Open + (c2.Close - c2.Open) / 2m)
+        // Evening Star
+        if (IsStrongBullish(c2) && IsBearish(c0) && 
+            c0.Close < c2.Open + (c2.Close - c2.Open) / 2m)
         {
             return "Evening Star (Bearish Reversal)";
         }
@@ -85,6 +134,12 @@ public static class CandlestickPatternDetector
         return "None";
     }
 
-    private static bool isBullish(Candle c) => c.Close > c.Open;
-    private static bool isBearish(Candle c) => c.Close < c.Open;
+    private static bool IsBullish(Candle c) => c.Close > c.Open;
+    private static bool IsBearish(Candle c) => c.Close < c.Open;
+
+    private static bool IsStrongBullish(Candle c) => 
+        IsBullish(c) && Math.Abs(c.Open - c.Close) > (c.High - c.Low) * StrongBodyThreshold;
+
+    private static bool IsStrongBearish(Candle c) => 
+        IsBearish(c) && Math.Abs(c.Open - c.Close) > (c.High - c.Low) * StrongBodyThreshold;
 }

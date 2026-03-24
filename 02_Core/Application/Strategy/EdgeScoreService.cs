@@ -2,6 +2,7 @@ using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.ValueObjects;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -22,49 +23,47 @@ public sealed class EdgeScoreService
     public EdgeScoreBreakdown Evaluate(
         Signal signal,
         TradeDecision decision,
-        ExpectancyGuardResult expectancyGuard,
-        SymbolGuardResult symbolGuard,
-        PromotionGuardResult promotionGuard,
-        (bool Approved, string Reason) portfolioGuard,
-        (bool Approved, string Reason, decimal SafePositionSizePercent) riskVote)
+        EvaluationGuards guards)
     {
         var profile = _executionProfiles.ResolveForSymbol(signal.Symbol, signal.Metadata);
 
-        var signalEdge = ComputeSignalEdge(decision);
-        var historicalEdge = ComputeHistoricalEdge(expectancyGuard, symbolGuard, promotionGuard);
-        var executionEdge = ComputeExecutionEdge(signal, decision, promotionGuard, profile);
-        var riskContext = ComputeRiskContext(signal, decision, portfolioGuard, riskVote);
+        var metrics = new ScoreMetrics(
+            ComputeSignalEdge(decision),
+            ComputeHistoricalEdge(guards.Expectancy, guards.Symbol, guards.Promotion),
+            ComputeExecutionEdge(signal, decision, guards.Promotion, profile),
+            ComputeRiskContext(signal, decision, guards.Portfolio, guards.Risk)
+        );
 
-        var finalScore = (signalEdge * WeightSignal) + (historicalEdge * WeightHistorical) +
-                         (executionEdge * WeightExecution) + (riskContext * WeightRisk);
+        var finalScore = (metrics.Signal * WeightSignal) + (metrics.Historical * WeightHistorical) +
+                         (metrics.Execution * WeightExecution) + (metrics.Risk * WeightRisk);
 
-        var adjustedScore = finalScore * (executionEdge / 100m);
+        var adjustedScore = finalScore * (metrics.Execution / 100m);
 
         var reasons = new List<string> {
-            $"S:{signalEdge:F1}", $"H:{historicalEdge:F1}", $"E:{executionEdge:F1}", $"R:{riskContext:F1}"
+            $"S:{metrics.Signal:F1}", $"H:{metrics.Historical:F1}", $"E:{metrics.Execution:F1}", $"R:{metrics.Risk:F1}"
         };
 
-        return ResolveFinalDecision(signalEdge, historicalEdge, executionEdge, riskContext, finalScore, adjustedScore, reasons);
+        return ResolveFinalDecision(metrics, finalScore, adjustedScore, reasons);
     }
 
-    private EdgeScoreBreakdown ResolveFinalDecision(decimal s, decimal h, decimal e, decimal r, decimal final, decimal adj, List<string> reasons)
+    private EdgeScoreBreakdown ResolveFinalDecision(ScoreMetrics m, decimal final, decimal adj, List<string> reasons)
     {
-        if (e < 50m) return CreateBreakdown(s, h, e, r, final, adj, 0m, "reject", false, reasons, "Hard gate: Low Execution");
-        if (r < 50m) return CreateBreakdown(s, h, e, r, final, adj, 0m, "reject", false, reasons, "Hard gate: High Risk");
+        if (m.Execution < 50m) return CreateBreakdown(m, final, adj, 0m, "reject", false, reasons, "Hard gate: Low Execution");
+        if (m.Risk < 50m) return CreateBreakdown(m, final, adj, 0m, "reject", false, reasons, "Hard gate: High Risk");
 
         return adj switch
         {
-            >= 85m => CreateBreakdown(s, h, e, r, final, adj, 1.00m, "full", true, reasons),
-            >= 70m => CreateBreakdown(s, h, e, r, final, adj, 0.65m, "reduced", true, reasons, "Band: reduced size"),
-            >= 55m => CreateBreakdown(s, h, e, r, final, adj, 0m, "probe", false, reasons, "Band: probe/paper only"),
-            _ => CreateBreakdown(s, h, e, r, final, adj, 0m, "reject", false, reasons, "Band: reject")
+            >= 85m => CreateBreakdown(m, final, adj, 1.00m, "full", true, reasons),
+            >= 70m => CreateBreakdown(m, final, adj, 0.65m, "reduced", true, reasons, "Band: reduced size"),
+            >= 55m => CreateBreakdown(m, final, adj, 0m, "probe", false, reasons, "Band: probe/paper only"),
+            _ => CreateBreakdown(m, final, adj, 0m, "reject", false, reasons, "Band: reject")
         };
     }
 
-    private static EdgeScoreBreakdown CreateBreakdown(decimal s, decimal h, decimal e, decimal r, decimal f, decimal a, decimal mult, string band, bool approved, List<string> reasons, string? extraReason = null)
+    private static EdgeScoreBreakdown CreateBreakdown(ScoreMetrics m, decimal f, decimal a, decimal mult, string band, bool approved, List<string> reasons, string? extraReason = null)
     {
         if (extraReason != null) reasons.Add(extraReason);
-        return new EdgeScoreBreakdown(s, h, e, r, f, a, mult, band, approved, reasons);
+        return new EdgeScoreBreakdown(m.Signal, m.Historical, m.Execution, m.Risk, f, a, mult, band, approved, reasons);
     }
 
     private static decimal ComputeSignalEdge(TradeDecision decision)
@@ -104,7 +103,16 @@ public sealed class EdgeScoreService
     }
 }
 
-// --- SONARQUBE FIX: MISSING TYPE ADDED HERE ---
+// --- EVALUATION CONTEXT STRUCTURES ---
+public sealed record EvaluationGuards(
+    ExpectancyGuardResult Expectancy,
+    SymbolGuardResult Symbol,
+    PromotionGuardResult Promotion,
+    (bool Approved, string Reason) Portfolio,
+    (bool Approved, string Reason, decimal SafePositionSizePercent) Risk);
+
+internal readonly record struct ScoreMetrics(decimal Signal, decimal Historical, decimal Execution, decimal Risk);
+
 public sealed record EdgeScoreBreakdown(
     decimal SignalEdge,
     decimal HistoricalEdge,
@@ -115,4 +123,4 @@ public sealed record EdgeScoreBreakdown(
     decimal RecommendedSizeMultiplier,
     string DecisionBand,
     bool Approved,
-    IReadOnlyList<string> Reasons);
+    IReadOnlyCollection<string> Reasons);

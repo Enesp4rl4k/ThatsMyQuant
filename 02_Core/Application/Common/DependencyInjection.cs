@@ -20,6 +20,8 @@ public static class DependencyInjection
         services.AddSingleton<HftExecutionService>();
         services.AddSingleton<IHftMarketDataService, HftMarketDataService>();
         services.AddSingleton<IHftSignalGenerationService, HftSignalGenerationService>();
+        services.AddSingleton<MemoryPortfolioManager>();
+        services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
         services.AddSingleton<SentimentAgent>();
         services.AddSingleton<SwarmOrchestrator>();
         services.AddSingleton<NewsFeedSim>();

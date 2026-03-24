@@ -36,86 +36,115 @@ public static class PerformanceTracker
         if (closed.Count == 0) return new PerformanceReport();
 
         var pnls = closed.Select(p => p.RealizedPnL).ToList();
-        int wins = closed.Count(p => p.RealizedPnL > 0);
-        int losses = closed.Count(p => p.RealizedPnL <= 0);
-
         var winAmounts = pnls.Where(p => p > 0).ToList();
         var lossAmounts = pnls.Where(p => p < 0).ToList();
 
-        decimal avgWin = winAmounts.Count > 0 ? winAmounts.Average() : 0;
-        decimal avgLoss = lossAmounts.Count > 0 ? lossAmounts.Average() : 0;
+        decimal avgWin = winAmounts.Any() ? winAmounts.Average() : 0;
+        decimal avgLoss = lossAmounts.Any() ? lossAmounts.Average() : 0;
+        double winRate = (double)winAmounts.Count / closed.Count;
 
-        // Sharpe
+        var (maxDD, maxDDPercent) = CalculateMaxDrawdown(portfolio);
+
+        return new PerformanceReport
+        {
+            TotalTrades = closed.Count,
+            WinningTrades = winAmounts.Count,
+            LosingTrades = lossAmounts.Count,
+            WinRate = winRate * 100,
+            TotalPnL = pnls.Sum(),
+            SharpeRatio = CalculateSharpeRatio(pnls),
+            SortinoRatio = CalculateSortinoRatio(pnls),
+            ProfitFactor = CalculateProfitFactor(winAmounts, lossAmounts),
+            AverageRR = avgLoss != 0 ? (double)(avgWin / Math.Abs(avgLoss)) : 0,
+            MaxDrawdown = maxDD,
+            MaxDrawdownPercent = maxDDPercent,
+            MaxConsecutiveLosses = CalculateMaxConsecutiveLosses(closed),
+            BestTrade = pnls.Max(),
+            WorstTrade = pnls.Min(),
+            AverageWin = avgWin,
+            AverageLoss = avgLoss,
+            ExpectedValue = winRate * (double)avgWin + (1 - winRate) * (double)avgLoss,
+            AverageHoldTime = CalculateAverageHoldTime(closed)
+        };
+    }
+
+    private static double CalculateSharpeRatio(List<decimal> pnls)
+    {
+        if (pnls.Count < 2) return 0;
+
         var doublePnls = pnls.Select(p => (double)p).ToList();
         double avg = doublePnls.Average();
-        double stdDev = doublePnls.Count > 1
-            ? Math.Sqrt(doublePnls.Sum(p => Math.Pow(p - avg, 2)) / (doublePnls.Count - 1))
-            : 0;
-        double sharpe = stdDev > 0 ? avg / stdDev * Math.Sqrt(252) : 0;
+        double stdDev = Math.Sqrt(doublePnls.Sum(p => Math.Pow(p - avg, 2)) / (doublePnls.Count - 1));
+        
+        return stdDev > 0 ? avg / stdDev * Math.Sqrt(252) : 0;
+    }
 
-        // Sortino
+    private static double CalculateSortinoRatio(List<decimal> pnls)
+    {
+        if (!pnls.Any()) return 0;
+
+        var doublePnls = pnls.Select(p => (double)p).ToList();
+        double avg = doublePnls.Average();
+        
         var downside = doublePnls.Where(p => p < 0).ToList();
-        double downDev = downside.Count > 0
-            ? Math.Sqrt(downside.Sum(p => Math.Pow(p, 2)) / downside.Count)
-            : 0;
-        double sortino = downDev > 0 ? avg / downDev * Math.Sqrt(252) : avg > 0 ? 99 : 0;
+        if (!downside.Any()) return avg > 0 ? 99 : 0;
 
-        // Profit Factor
-        decimal grossProfit = pnls.Where(p => p > 0).Sum();
-        decimal grossLoss = Math.Abs(pnls.Where(p => p < 0).Sum());
-        double profitFactor = grossLoss > 0 ? (double)(grossProfit / grossLoss) : grossProfit > 0 ? 99 : 0;
+        double downDev = Math.Sqrt(downside.Sum(p => Math.Pow(p, 2)) / downside.Count);
+        return downDev > 0 ? avg / downDev * Math.Sqrt(252) : 0;
+    }
 
-        // Average RR
-        double avgRR = avgLoss != 0 ? (double)(avgWin / Math.Abs(avgLoss)) : 0;
+    private static double CalculateProfitFactor(List<decimal> wins, List<decimal> losses)
+    {
+        decimal grossProfit = wins.Sum();
+        decimal grossLoss = Math.Abs(losses.Sum());
+        
+        if (grossLoss <= 0) return grossProfit > 0 ? 99 : 0;
+        return (double)(grossProfit / grossLoss);
+    }
 
-        // Max drawdown from equity curve
+    private static (decimal MaxDD, decimal MaxDDPercent) CalculateMaxDrawdown(PaperPortfolio portfolio)
+    {
         decimal maxDD = 0, maxDDPercent = 0, peak = portfolio.InitialBalance;
         foreach (var eq in portfolio.EquityCurve)
         {
             if (eq > peak) peak = eq;
             decimal dd = peak - eq;
-            if (dd > maxDD) { maxDD = dd; maxDDPercent = peak > 0 ? dd / peak * 100 : 0; }
+            if (dd > maxDD)
+            {
+                maxDD = dd;
+                maxDDPercent = peak > 0 ? dd / peak * 100 : 0;
+            }
         }
+        return (maxDD, maxDDPercent);
+    }
 
-        // Max consecutive losses
+    private static int CalculateMaxConsecutiveLosses(IReadOnlyList<PaperPosition> positions)
+    {
         int consLosses = 0, maxConsLosses = 0;
-        foreach (var p in closed)
+        foreach (var p in positions)
         {
-            if (p.RealizedPnL < 0) { consLosses++; maxConsLosses = Math.Max(maxConsLosses, consLosses); }
-            else consLosses = 0;
+            if (p.RealizedPnL < 0)
+            {
+                consLosses++;
+                maxConsLosses = Math.Max(maxConsLosses, consLosses);
+            }
+            else
+            {
+                consLosses = 0;
+            }
         }
+        return maxConsLosses;
+    }
 
-        // Expected value
-        double winRate = closed.Count > 0 ? wins * 1.0 / closed.Count : 0;
-        double ev = winRate * (double)avgWin + (1 - winRate) * (double)avgLoss;
+    private static TimeSpan CalculateAverageHoldTime(IReadOnlyList<PaperPosition> positions)
+    {
+        var holdTimes = positions
+            .Where(p => p.ExitTime.HasValue)
+            .Select(p => p.ExitTime!.Value - p.EntryTime)
+            .ToList();
 
-        // Average hold time
-        var holdTimes = closed.Where(p => p.ExitTime.HasValue)
-            .Select(p => p.ExitTime!.Value - p.EntryTime).ToList();
-        var avgHold = holdTimes.Count > 0
+        return holdTimes.Any()
             ? TimeSpan.FromTicks((long)holdTimes.Average(t => t.Ticks))
             : TimeSpan.Zero;
-
-        return new PerformanceReport
-        {
-            TotalTrades = closed.Count,
-            WinningTrades = wins,
-            LosingTrades = losses,
-            WinRate = winRate * 100,
-            TotalPnL = pnls.Sum(),
-            SharpeRatio = sharpe,
-            SortinoRatio = sortino,
-            ProfitFactor = profitFactor,
-            AverageRR = avgRR,
-            MaxDrawdown = maxDD,
-            MaxDrawdownPercent = maxDDPercent,
-            MaxConsecutiveLosses = maxConsLosses,
-            BestTrade = pnls.Count > 0 ? pnls.Max() : 0,
-            WorstTrade = pnls.Count > 0 ? pnls.Min() : 0,
-            AverageWin = avgWin,
-            AverageLoss = avgLoss,
-            ExpectedValue = ev,
-            AverageHoldTime = avgHold
-        };
     }
 }

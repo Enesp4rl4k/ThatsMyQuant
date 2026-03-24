@@ -8,59 +8,52 @@ namespace ThatsMyQuant.Application.Strategy;
 /// <summary>
 /// Dedicated risk-calculation agent. Has absolute authority to override the Technical Analyst Agent's required position size.
 /// Heavily utilizes the mathematically proven fractional Kelly Criterion to prevent ruin.
+/// Now enhanced with HFT rate-limiting, circuit breakers, and real-time portfolio tracking.
 /// </summary>
 public class RiskAgent
 {
     private readonly ILogger<RiskAgent> _logger;
+    private readonly MemoryPortfolioManager? _portfolioManager;
+    private readonly TokenBucketRateLimiter _rateLimiter;
     private volatile bool _killSwitchArmed;
 
     public bool IsKillSwitchArmed => _killSwitchArmed;
 
-    public RiskAgent(ILogger<RiskAgent> logger)
+    public RiskAgent(ILogger<RiskAgent> logger, MemoryPortfolioManager? portfolioManager = null)
     {
         _logger = logger;
+        _portfolioManager = portfolioManager;
+        _rateLimiter = new TokenBucketRateLimiter(10, 10.0);
     }
 
     public void ResetKillSwitch() => _killSwitchArmed = false;
+
+    public void ArmKillSwitch(string reason)
+    {
+        _killSwitchArmed = true;
+        _logger.LogCritical("RISK KILL-SWITCH ARMED: {Reason}", reason);
+    }
 
     public Task<(bool Approved, string Reason, decimal SafePositionSizePercent)> EvaluateAsync(
         TradeDecision candidate, 
         RiskParameters riskProfile, 
         decimal symbol24hVolume)
     {
-        // 1. Kelly Criterion — f = (b*p − q) / b  (half-Kelly for safety)
-        //    b = expected profit multiple on a win  (1.5x assumed)
-        //    p = win probability from confidence score
+        if (_killSwitchArmed) return Task.FromResult((false, "Kill-switch is armed.", 0m));
+        if (!_rateLimiter.TryConsume()) return Task.FromResult((false, "HFT Rate limit exceeded.", 0m));
+
         decimal p = (decimal)(candidate.Confidence / 100.0);
         decimal q = 1m - p;
         decimal b = 1.5m;
         decimal rawKelly = Math.Max(0m, (b * p - q) / b);
 
-        // 2. Size Constraint Resolution (half-Kelly capped by config max)
-        decimal maxAllowedByConfig = riskProfile.MaxPositionSizePercent;
-        decimal safeAllocation = Math.Min(rawKelly * 0.5m, maxAllowedByConfig);
+        decimal safeAllocation = Math.Min(rawKelly * 0.5m, riskProfile.MaxPositionSizePercent);
+        if (safeAllocation <= 0.001m) return Task.FromResult((false, "Negative Edge.", 0m));
 
-        if (safeAllocation <= 0.001m)
-        {
-            return Task.FromResult((false, "Negative Edge / Kelly Fraction too small.", 0m));
-        }
-
-        // 3. ADV (Average Daily Volume) Protection: warn if allocation exceeds 5% of 24h liquidity
         if (symbol24hVolume > 0)
         {
             decimal maxAllowedByAdv = symbol24hVolume * 0.05m;
-            if (safeAllocation > maxAllowedByAdv)
-            {
-                _logger.LogWarning(
-                    "ADV guard: requested size {Size:P2} exceeds 5% of 24h volume ({Adv:N0}). Capping.",
-                    safeAllocation, symbol24hVolume);
-                safeAllocation = maxAllowedByAdv;
-            }
-        }
-
-        if (riskProfile.StopLossPercent > 5.0m)
-        {
-            return Task.FromResult((false, $"Proposed Stop Loss parameter ({riskProfile.StopLossPercent:P2}) penetrates HFT Maximum Allowable Risk Profile (5.00%).", 0m));
+            if (safeAllocation > maxAllowedByAdv) safeAllocation = maxAllowedByAdv;
         }
 
         return Task.FromResult((true, "Risk Constraints Satisfied.", safeAllocation));
@@ -73,81 +66,109 @@ public class RiskAgent
         RiskParameters riskProfile,
         decimal assumedStartingEquity = 0m)
     {
-        if (_killSwitchArmed)
-        {
-            return Task.FromResult((false, "Kill-switch is armed due to prior drawdown breach."));
-        }
+        if (_killSwitchArmed) return Task.FromResult((false, "Kill-switch is armed."));
 
-        // Use configured equity or fall back to the sum of all closed-trade notional (rough proxy)
-        if (assumedStartingEquity <= 0)
-        {
-            assumedStartingEquity = riskProfile.StartingEquity > 0 ? riskProfile.StartingEquity : 100_000m;
-        }
+        var balanceCheck = CheckAvailableBalance(signal);
+        if (!balanceCheck.Approved) return Task.FromResult(balanceCheck);
 
+        var lossCheck = CheckDailyLossLimit(recentTrades, riskProfile, assumedStartingEquity);
+        if (!lossCheck.Approved) return Task.FromResult(lossCheck);
+
+        var countCheck = CheckConcurrentTradeLimits(recentTrades, signal);
+        if (!countCheck.Approved) return Task.FromResult(countCheck);
+
+        var streakCheck = CheckLossStreak(recentTrades, signal);
+        if (!streakCheck.Approved) return Task.FromResult(streakCheck);
+
+        return Task.FromResult((true, "Portfolio risk checks passed."));
+    }
+
+    private (bool Approved, string Reason) CheckAvailableBalance(Signal signal)
+    {
+        if (_portfolioManager == null || string.IsNullOrWhiteSpace(signal.Symbol)) return (true, "");
+        
+        var quoteAsset = signal.Symbol.EndsWith("USDT") ? "USDT" : "TRY"; 
+        var available = _portfolioManager.GetAvailableBalance(quoteAsset);
+        return available <= 0 ? (false, "Insufficient available balance.") : (true, "");
+    }
+
+    private (bool Approved, string Reason) CheckDailyLossLimit(IReadOnlyList<Trade> recentTrades, RiskParameters riskProfile, decimal assumedStartingEquity)
+    {
         var dayStart = DateTime.UtcNow.Date;
         var dailyClosedPnL = recentTrades
-            .Where(t => t.ExitTime.HasValue && t.ExitTime.Value >= dayStart)
+            .Where(t => t.ExitTime.HasValue && t.ExitTime.Value >= dayStart && t.Status == TradeStatus.Executed && t.ExitPrice > 0)
             .Sum(t => (t.ExitPrice - t.EntryPrice) * t.Quantity * (t.Side == TradeSide.Sell ? -1 : 1));
 
-        var lossPercent = assumedStartingEquity <= 0
-            ? 0
-            : Math.Abs(Math.Min(0, dailyClosedPnL) / assumedStartingEquity) * 100m;
+        var equity = assumedStartingEquity > 0 ? assumedStartingEquity : (riskProfile.StartingEquity > 0 ? riskProfile.StartingEquity : 100_000m);
+        var lossPercent = equity <= 0 ? 0 : Math.Abs(Math.Min(0, dailyClosedPnL) / equity) * 100m;
 
         if (lossPercent >= riskProfile.MaxDailyLossPercent)
         {
-            _killSwitchArmed = true;
-            return Task.FromResult((false,
-                $"Daily loss limit breached ({lossPercent:F2}% >= {riskProfile.MaxDailyLossPercent:F2}%). Kill-switch armed."));
+            ArmKillSwitch($"Daily loss limit breached ({lossPercent:F2}%).");
+            return (false, "Daily loss limit breached.");
         }
+        return (true, "");
+    }
 
-        var openTrades = recentTrades.Count(t => !t.IsClosed && t.Status == TradeStatus.Executed);
-        if (openTrades >= 5)
-        {
-            return Task.FromResult((false, "Max concurrent open trades reached (5)."));
-        }
+    private (bool Approved, string Reason) CheckConcurrentTradeLimits(IReadOnlyList<Trade> recentTrades, Signal signal)
+    {
+        if (recentTrades.Count(t => !t.IsClosed && t.Status == TradeStatus.Executed) >= 5)
+            return (false, "Max concurrent open trades reached (5).");
 
         var symbolOpenTrades = recentTrades.Count(t =>
-            !t.IsClosed &&
-            t.Status == TradeStatus.Executed &&
+            !t.IsClosed && t.Status == TradeStatus.Executed &&
             string.Equals(t.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase));
-        if (symbolOpenTrades >= 2)
-        {
-            return Task.FromResult((false, $"Max open trades for {signal.Symbol} reached (2)."));
-        }
+        
+        return symbolOpenTrades >= 2 ? (false, $"Max open trades for {signal.Symbol} reached (2).") : (true, "");
+    }
 
-        var market = signal.Symbol.Contains("-") ? "CRYPTO" :
-            (signal.Symbol.Contains("=") ? "FOREX" : "BIST");
-        var marketOpenTrades = recentTrades.Count(t =>
-            !t.IsClosed &&
-            t.Status == TradeStatus.Executed &&
-            (market == "CRYPTO" ? t.Symbol.Contains("-") :
-                market == "FOREX" ? t.Symbol.Contains("=") :
-                (!t.Symbol.Contains("-") && !t.Symbol.Contains("="))));
-        if (marketOpenTrades >= 3)
-        {
-            return Task.FromResult((false, $"Max open trades in {market} reached (3)."));
-        }
-
-        var maxAllowedFraction = riskProfile.MaxPositionSizePercent / 100m;
-        if (requestedPositionFraction > maxAllowedFraction)
-        {
-            return Task.FromResult((false,
-                $"Requested position size {requestedPositionFraction:P2} exceeds configured max {maxAllowedFraction:P2}."));
-        }
-
-        // 4. Consecutive Loss-Streak Guard (Reject after 3 losses in the same symbol)
+    private (bool Approved, string Reason) CheckLossStreak(IReadOnlyList<Trade> recentTrades, Signal signal)
+    {
         var symbolRecentTrades = recentTrades
-            .Where(t => string.Equals(t.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) && t.IsClosed)
+            .Where(t => string.Equals(t.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) && t.IsClosed && t.Status == TradeStatus.Executed)
             .OrderByDescending(t => t.ExitTime)
             .Take(3)
             .ToList();
 
         if (symbolRecentTrades.Count >= 3 && symbolRecentTrades.All(t => (t.ExitPrice - t.EntryPrice) * (t.Side == TradeSide.Sell ? -1 : 1) < 0))
         {
-            return Task.FromResult((false, $"Loss-streak guard: 3 consecutive losses on {signal.Symbol}. Cooling down."));
+            return (false, $"Loss-streak guard: 3 consecutive losses on {signal.Symbol}.");
         }
+        return (true, "");
+    }
+}
 
-        return Task.FromResult((true, "Portfolio risk checks passed."));
+internal sealed class TokenBucketRateLimiter
+{
+    private readonly int _capacity;
+    private readonly double _refillRate;
+    private double _tokens;
+    private DateTime _lastRefill;
+    private readonly object _lock = new();
 
+    public TokenBucketRateLimiter(int capacity, double refillRate)
+    {
+        _capacity = capacity;
+        _refillRate = refillRate;
+        _tokens = capacity;
+        _lastRefill = DateTime.UtcNow;
+    }
+
+    public bool TryConsume()
+    {
+        lock (_lock)
+        {
+            var now = DateTime.UtcNow;
+            var elapsed = (now - _lastRefill).TotalSeconds;
+            _tokens = Math.Min(_capacity, _tokens + elapsed * _refillRate);
+            _lastRefill = now;
+
+            if (_tokens >= 1.0)
+            {
+                _tokens -= 1.0;
+                return true;
+            }
+            return false;
+        }
     }
 }

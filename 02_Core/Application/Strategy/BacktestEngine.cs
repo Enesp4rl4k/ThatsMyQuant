@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Domain.Entities;
 using ThatsMyQuant.Domain.Interfaces;
 using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Domain.Enums;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -63,7 +64,10 @@ public class BacktestEngineApp
             ExitTime = candle.Timestamp, 
             Side = pos.Side, 
             PnL = netPnL, 
-            ExitReason = reason 
+            ExitReason = reason,
+            EntryPrice = pos.EntryPrice,
+            ExitPrice = exitPrice,
+            PnLPercent = pos.EntryPrice > 0 ? (exitPrice - pos.EntryPrice) / pos.EntryPrice * 100 * (pos.Side == TradeSide.Sell ? -1 : 1) : 0
         });
 
         return null;
@@ -84,15 +88,16 @@ public class BacktestEngineApp
 
         return new PaperPosition 
         { 
-            Symbol = symbol, Side = decision.Side.ToString(), EntryPrice = price, 
+            Symbol = symbol, Side = decision.Side, EntryPrice = price, 
             Quantity = qty, StopLoss = decision.StopLoss, TakeProfit = decision.TakeProfit, 
-            EntryTime = candles[index].Timestamp 
+            EntryTime = candles[index].Timestamp,
+            OptimalPriceSinceEntry = price
         };
     }
 
     private static string? ResolveExitReason(Candle c, PaperPosition p)
     {
-        if (p.Side == "Buy")
+        if (p.Side == TradeSide.Buy)
         {
             if (c.Low <= p.StopLoss) return "StopLoss";
             if (c.High >= p.TakeProfit) return "TakeProfit";
@@ -105,9 +110,9 @@ public class BacktestEngineApp
         return null;
     }
 
-    private static decimal CalculateNetPnl(decimal entry, decimal exit, decimal qty, string side)
+    private static decimal CalculateNetPnl(decimal entry, decimal exit, decimal qty, TradeSide side)
     {
-        var direction = side == "Sell" ? -1m : 1m;
+        var direction = side == TradeSide.Sell ? -1m : 1m;
         decimal gross = (exit - entry) * qty * direction;
         decimal fees = (entry * qty + exit * qty) * 0.0005m; // %0.05 sabit komisyon
         return gross - fees;
@@ -118,7 +123,10 @@ public class BacktestEngineApp
         return new BacktestResult 
         { 
             Symbol = sym, TotalTrades = trades.Count, TotalPnL = state.Equity - start, 
-            FinalEquity = state.Equity, MaxDrawdownPercent = state.MaxDDPercent, Trades = trades 
+            FinalEquity = state.Equity, MaxDrawdownPercent = state.MaxDDPercent, Trades = trades,
+            WinningTrades = trades.Count(t => t.PnL > 0),
+            LosingTrades = trades.Count(t => t.PnL <= 0),
+            StartingCapital = start
         };
     }
 

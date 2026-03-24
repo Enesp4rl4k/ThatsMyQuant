@@ -6,10 +6,6 @@ using ThatsMyQuant.Domain.ValueObjects;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-/// <summary>
-/// Paper trading service — execute trades with virtual money against real/simulated market data.
-/// Use this to validate strategy performance before risking real capital.
-/// </summary>
 public class PaperTradingService
 {
     private readonly ITechnicalAnalysisService _analysis;
@@ -36,9 +32,6 @@ public class PaperTradingService
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
     }
 
-    /// <summary>
-    /// Run one analysis cycle for a symbol. Opens, updates, or closes positions.
-    /// </summary>
     public async Task<string> ProcessSymbolAsync(string symbol)
     {
         string market = ResolveMarketType(symbol);
@@ -116,10 +109,16 @@ public class PaperTradingService
     private string? DetermineExitReason(PaperPosition position, Candle currentCandle, Candle previousCandle, bool trailingHit)
     {
         if (trailingHit) return "TrailingSL";
-        if (position.Side == "Buy" && currentCandle.Close <= position.StopLoss) return "StopLoss";
-        if (position.Side == "Buy" && currentCandle.Close >= position.TakeProfit) return "TakeProfit";
-        if (position.Side == "Sell" && currentCandle.Close >= position.StopLoss) return "StopLoss";
-        if (position.Side == "Sell" && currentCandle.Close <= position.TakeProfit) return "TakeProfit";
+        if (position.Side == TradeSide.Buy)
+        {
+            if (currentCandle.Close <= position.StopLoss) return "StopLoss";
+            if (currentCandle.Close >= position.TakeProfit) return "TakeProfit";
+        }
+        else // Sell
+        {
+            if (currentCandle.Close >= position.StopLoss) return "StopLoss";
+            if (currentCandle.Close <= position.TakeProfit) return "TakeProfit";
+        }
 
         var strategyExit = TryGetStrategyPolicyExit(position, currentCandle, previousCandle);
         if (strategyExit != null) return strategyExit;
@@ -136,7 +135,7 @@ public class PaperTradingService
     {
         var adjustedExit = _executionProfiles.ApplyExecutionPrice(
             lastCandle.Close,
-            position.Side == "Buy",
+            position.Side,
             false,
             position.Symbol,
             null,
@@ -209,10 +208,10 @@ public class PaperTradingService
         var newPosition = new PaperPosition
         {
             Symbol = symbol,
-            Side = decision.Side.ToString(),
+            Side = decision.Side,
             EntryPrice = _executionProfiles.ApplyExecutionPrice(
                 currentPrice,
-                decision.Side == TradeSide.Buy,
+                decision.Side,
                 true,
                 symbol,
                 null,
@@ -231,7 +230,7 @@ public class PaperTradingService
             MaxHoldingBars = decision.MaxHoldingBars,
             ExecutionMode = "PAPER",
             PromotionStage = "Paper",
-            HighestPriceSinceEntry = currentPrice,
+            OptimalPriceSinceEntry = currentPrice,
             EntryTime = DateTime.UtcNow
         };
 
@@ -258,7 +257,7 @@ public class PaperTradingService
         }
 
         var triggerDistance = targetDistance * position.BreakevenTriggerFraction;
-        var triggerReached = position.Side == "Buy"
+        var triggerReached = position.Side == TradeSide.Buy
             ? candle.High >= position.EntryPrice + triggerDistance
             : candle.Low <= position.EntryPrice - triggerDistance;
 
@@ -270,7 +269,7 @@ public class PaperTradingService
         position.IsBreakevenArmed = true;
         var buffer = position.EntryPrice * 0.0005m;
 
-        if (position.Side == "Buy")
+        if (position.Side == TradeSide.Buy)
         {
             position.StopLoss = Math.Max(position.StopLoss, position.EntryPrice + buffer);
         }
@@ -304,13 +303,13 @@ public class PaperTradingService
         return position.ExitPolicyTag switch
         {
             "TrendRunner" when position.IsBreakevenArmed &&
-                               position.BarsHeld >= Math.Max(6, position.MaxHoldingBars / 2) &&
-                               ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
+                                position.BarsHeld >= Math.Max(6, position.MaxHoldingBars / 2) &&
+                                ((position.Side == TradeSide.Buy && bearishBar) || (position.Side == TradeSide.Sell && bullishBar))
                 => "TrendMomentumFade",
             "MeanReversion" when position.BarsHeld >= 4 && !position.IsBreakevenArmed
                 => "MeanReversionTimeout",
             "BreakoutExpansion" when position.BarsHeld >= 3 && position.IsBreakevenArmed &&
-                                      ((position.Side == "Buy" && bearishBar) || (position.Side == "Sell" && bullishBar))
+                                       ((position.Side == TradeSide.Buy && bearishBar) || (position.Side == TradeSide.Sell && bullishBar))
                 => "BreakoutFailure",
             "HftScalp" when position.BarsHeld >= 2
                 => "HftMicroExit",

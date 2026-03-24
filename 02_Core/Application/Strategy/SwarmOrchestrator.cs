@@ -12,9 +12,6 @@ using System.Linq;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-/// <summary>
-/// A MediatR request asking the agent swarm for consensus on a potential trade execution.
-/// </summary>
 public class SwarmNegotiationRequest : IRequest<SwarmConsensusResult>
 {
     public Signal Signal { get; set; } = null!;
@@ -26,28 +23,19 @@ public class SwarmNegotiationRequest : IRequest<SwarmConsensusResult>
 public class SwarmConsensusResult
 {
     public bool Approved { get; set; }
-    
-    // Converted generic string RejectionReason into HFT-grade strongly-typed Enums
     public SignalReasonFlags RejectionFlags { get; set; } = SignalReasonFlags.None;
-    
-    // Explicitly dictate Microstructure targets to the execution router
     public ExecutionActionType ExecutionAction { get; set; } = ExecutionActionType.None;
-
     public decimal AdjustedKellyFraction { get; set; }
     public decimal AdjustedTakeProfit { get; set; }
 }
 
-/// <summary>
-/// The central Multi-Agent coordinator. 
-/// Upgraded to a Concurrent Parallel Swarm Pipeline executing NLP, Risk, and Machine Learning matrices simultaneously.
-/// </summary>
 public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmConsensusResult>
 {
     private readonly RiskAgent _riskAgent;
     private readonly SentimentAgent _sentimentAgent;
     private readonly InferenceAgent _inferenceAgent;
     private readonly FeatureEngineeringAgent _featureAgent;
-    private readonly ITradeRepository _tradeRepository;
+    private readonly IPortfolioStateCache _portfolioCache;
     private readonly OFIExecutionAgent _ofiAgent;
     private readonly ILogger<SwarmOrchestrator> _logger;
 
@@ -59,7 +47,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         SentimentAgent sentimentAgent, 
         InferenceAgent inferenceAgent,
         FeatureEngineeringAgent featureAgent,
-        ITradeRepository tradeRepository,
+        IPortfolioStateCache portfolioCache,
         OFIExecutionAgent ofiAgent,
         ILogger<SwarmOrchestrator> logger)
     {
@@ -67,7 +55,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         _sentimentAgent = sentimentAgent;
         _inferenceAgent = inferenceAgent;
         _featureAgent = featureAgent;
-        _tradeRepository = tradeRepository;
+        _portfolioCache = portfolioCache;
         _ofiAgent = ofiAgent;
         _logger = logger;
     }
@@ -78,25 +66,11 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
 
         try
         {
-            // 1. REGIME & STRUCTURE DETECTION
             var regime = MarketRegimeDetector.Detect(request.Candles);
-            
-            // Adapt risk parameters to the current regime if not already adapted
-            var riskParams = request.Risk;
-            if (riskParams == RiskParameters.Default)
-            {
-                riskParams = regime.Regime switch
-                {
-                    MarketRegime.Volatile => RiskParameters.Default with { MaxPositionSizePercent = 2.5m },
-                    MarketRegime.Trending => RiskParameters.Default with { MaxPositionSizePercent = 7.5m },
-                    _ => RiskParameters.Default
-                };
-            }
+            var riskParams = ResolveRegimeAdjustedRisk(request.Risk, regime);
 
-            // 2. PORTFOLIO RISK GUARDRAILS
-            var recentTrades = await _tradeRepository.GetAllAsync(500);
             var portfolioGuard = await _riskAgent.EvaluatePortfolioGuardrailsAsync(
-                recentTrades,
+                _portfolioCache.GetRecentTrades(),
                 request.Signal,
                 request.InitialDecision.PositionSizePercent,
                 riskParams);
@@ -107,71 +81,14 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
                 return result;
             }
 
-            // 3. CONCURRENT SWARM EXECUTION
-            var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, cancellationToken);
-            var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, riskParams, request.Signal.Volume24h);
-            
-            // Wait with timeout to prevent system-wide hangs
-            await Task.WhenAll(sentimentTask, riskTask).WaitAsync(cancellationToken);
-            
-            var sentimentVote = await sentimentTask;
-            var riskVote = await riskTask;
-
-            // 4. ML INFERENCE WITH THREAD-SAFE FEATURES
+            var (sentimentVote, riskVote) = await RunConcurrentAgents(request, riskParams, cancellationToken);
             var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.GetSnapshot());
 
-            // 5. WEIGHTED VOTING ENGINE (Hedge Fund Standard: 30/40/30)
-            float confidenceScore = 0;
-            
-            // Sentiment Weight (30%)
-            if (sentimentVote.Approved) confidenceScore += 0.3f;
-            else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
+            float confidenceScore = CalculateConfidence(sentimentVote, riskVote, mlPrediction, request.InitialDecision, ref result);
 
-            // Technical/Risk Weight (40%)
-            if (riskVote.Approved) confidenceScore += 0.4f;
-            else result.RejectionFlags |= SignalReasonFlags.RiskVeto;
+            await ApplyMicrostructureInjection(request.Signal, ref result, ref confidenceScore, cancellationToken);
 
-            // ML Weight (30%)
-            if (mlPrediction.IsValid)
-            {
-                // ML as Weighting Engine rather than hard veto
-                if (mlPrediction.Value < MlDownsideThreshold && request.InitialDecision.Side == TradeSide.Buy)
-                {
-                    result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
-                    // Catastrophic ML prediction can still lower score significantly
-                    confidenceScore -= 0.5f; 
-                }
-                else
-                {
-                    confidenceScore += 0.3f;
-                }
-            }
-
-            // 6. MICROSTRUCTURE (OFI) INJECTION
-            if (request.Signal.OrderFlowImbalance.HasValue)
-            {
-                await _ofiAgent.Handle(request.Signal, cancellationToken);
-                result.ExecutionAction = request.Signal.ExecutionAction;
-                
-                // OFI Front-run approval adds extra confidence
-                if (result.ExecutionAction != ExecutionActionType.MarketTaker)
-                {
-                    confidenceScore += 0.1f;
-                }
-            }
-
-            // 7. FINAL CONSENSUS
-            if (confidenceScore >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
-            {
-                result.Approved = true;
-                result.AdjustedKellyFraction = riskVote.SafePositionSizePercent * (decimal)(1.0f + mlPrediction.Value);
-                result.AdjustedTakeProfit = request.InitialDecision.TakeProfit;
-                
-                if (result.ExecutionAction == ExecutionActionType.None)
-                {
-                    result.ExecutionAction = ExecutionActionType.MarketTaker;
-                }
-            }
+            FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision, ref result);
         }
         catch (Exception ex)
         {
@@ -181,5 +98,63 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         }
 
         return result;
+    }
+
+    private RiskParameters ResolveRegimeAdjustedRisk(RiskParameters current, MarketRegimeDetector.RegimeResult regime)
+    {
+        if (current != RiskParameters.Default) return current;
+        return regime.Regime switch
+        {
+            MarketRegime.Volatile => RiskParameters.Default with { MaxPositionSizePercent = 2.5m },
+            MarketRegime.Trending => RiskParameters.Default with { MaxPositionSizePercent = 7.5m },
+            _ => RiskParameters.Default
+        };
+    }
+
+    private async Task<((bool Approved, string Reason) Sentiment, (bool Approved, string Reason, decimal SafePositionSizePercent) Risk)> RunConcurrentAgents(SwarmNegotiationRequest request, RiskParameters riskParams, CancellationToken ct)
+    {
+        var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, ct);
+        var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, riskParams, request.Signal.Volume24h);
+        await Task.WhenAll(sentimentTask, riskTask).WaitAsync(ct);
+        return (await sentimentTask, await riskTask);
+    }
+
+    private float CalculateConfidence((bool Approved, string Reason) sentiment, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, ref SwarmConsensusResult result)
+    {
+        float score = 0;
+        if (sentiment.Approved) score += 0.3f; else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
+        if (risk.Approved) score += 0.4f; else result.RejectionFlags |= SignalReasonFlags.RiskVeto;
+
+        if (ml.IsValid)
+        {
+            if (ml.Value < MlDownsideThreshold && decision.Side == TradeSide.Buy)
+            {
+                result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
+                score -= 0.5f;
+            }
+            else score += 0.3f;
+        }
+        return score;
+    }
+
+    private async Task ApplyMicrostructureInjection(Signal signal, ref SwarmConsensusResult result, ref float confidence, CancellationToken ct)
+    {
+        if (signal.OrderFlowImbalance.HasValue)
+        {
+            await _ofiAgent.Handle(signal, ct);
+            result.ExecutionAction = signal.ExecutionAction;
+            if (result.ExecutionAction != ExecutionActionType.MarketTaker) confidence += 0.1f;
+        }
+    }
+
+    private void FinalizeConsensus(float score, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, ref SwarmConsensusResult result)
+    {
+        if (score >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
+        {
+            result.Approved = true;
+            result.AdjustedKellyFraction = risk.Size * (decimal)(1.0f + ml.Value);
+            result.AdjustedTakeProfit = decision.TakeProfit;
+            if (result.ExecutionAction == ExecutionActionType.None) result.ExecutionAction = ExecutionActionType.MarketTaker;
+        }
     }
 }

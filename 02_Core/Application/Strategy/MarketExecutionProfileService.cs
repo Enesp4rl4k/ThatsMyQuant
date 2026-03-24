@@ -1,4 +1,5 @@
 using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Domain.Enums;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -48,7 +49,7 @@ public sealed class MarketExecutionProfileService
 
     public decimal ApplyExecutionPrice(
         decimal price,
-        bool isBuy,
+        TradeSide side,
         bool isEntry,
         string symbol,
         IDictionary<string, string>? metadata = null,
@@ -65,7 +66,7 @@ public sealed class MarketExecutionProfileService
         var spreadHalf = (spreadPercent / 100m) / 2m;
         var cost = slippage + spreadHalf;
 
-        var direction = (isBuy && isEntry) || (!isBuy && !isEntry) ? 1m : -1m;
+        var direction = (side == TradeSide.Buy && isEntry) || (side == TradeSide.Sell && !isEntry) ? 1m : -1m;
         return price * (1m + (direction * cost));
     }
 
@@ -73,12 +74,12 @@ public sealed class MarketExecutionProfileService
         decimal entryPrice,
         decimal exitPrice,
         decimal quantity,
-        string side,
+        TradeSide side,
         string symbol,
         IDictionary<string, string>? metadata = null,
         decimal? overrideCommissionPercent = null)
     {
-        var direction = side == "Sell" ? -1m : 1m;
+        var direction = side == TradeSide.Sell ? -1m : 1m;
         var gross = (exitPrice - entryPrice) * quantity * direction;
         var commissionRate = ResolveCommissionPercent(symbol, metadata, overrideCommissionPercent) / 100m;
         var fees = ((entryPrice * quantity) + (exitPrice * quantity)) * commissionRate;

@@ -1,3 +1,5 @@
+using ThatsMyQuant.Domain.Enums;
+
 namespace ThatsMyQuant.Domain.ValueObjects;
 
 /// <summary>
@@ -50,7 +52,7 @@ public record BacktestTradeResult
 {
     public DateTime EntryTime { get; init; }
     public DateTime ExitTime { get; init; }
-    public string Side { get; init; } = "";
+    public TradeSide Side { get; init; }
     public string StrategyTag { get; init; } = "TrendConfluence";
     public string RegimeTag { get; init; } = "Unknown";
     public string ExitPolicyTag { get; init; } = "TrendRunner";

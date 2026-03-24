@@ -20,6 +20,7 @@ public class PortfolioStateCache : IPortfolioStateCache
     // O(1) Local Memory Bounded Arrays
     private readonly ConcurrentDictionary<Guid, Trade> _activeTrades = new();
     private readonly ConcurrentQueue<Trade> _historicalTrades = new();
+    private readonly ConcurrentDictionary<Guid, byte> _historicalIds = new();
     
     // Hardware limitation parameter limiting unbounded historical growth
     private const int MaxHistory = 500;
@@ -87,12 +88,12 @@ public class PortfolioStateCache : IPortfolioStateCache
         if (!trade.IsClosed && trade.Status == TradeStatus.Executed)
         {
             _activeTrades[trade.Id] = trade;
+            // If it was previously in history (e.g. re-opened), we leave it in history but it's now active too
         }
         else
         {
             if (_activeTrades.TryRemove(trade.Id, out _))
             {
-                // Transitioning natively from Active -> Historical
                 EnqueueHistorical(trade);
             }
             else if (trade.IsClosed || trade.Status == TradeStatus.Failed || trade.Status == TradeStatus.Rejected)
@@ -104,10 +105,15 @@ public class PortfolioStateCache : IPortfolioStateCache
 
     private void EnqueueHistorical(Trade trade)
     {
+        if (!_historicalIds.TryAdd(trade.Id, 0)) return; // Prevent duplicate entries in history
+
         _historicalTrades.Enqueue(trade);
         while (_historicalTrades.Count > MaxHistory)
         {
-            _historicalTrades.TryDequeue(out _);
+            if (_historicalTrades.TryDequeue(out var oldTrade))
+            {
+                _historicalIds.TryRemove(oldTrade.Id, out _);
+            }
         }
     }
 }

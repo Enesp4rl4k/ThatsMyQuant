@@ -1,3 +1,5 @@
+using ThatsMyQuant.Domain.Enums;
+
 namespace ThatsMyQuant.Domain.ValueObjects;
 
 /// <summary>
@@ -33,7 +35,7 @@ public class PaperPortfolio
 public class PaperPosition
 {
     public string Symbol { get; set; } = "";
-    public string Side { get; set; } = "Buy";
+    public TradeSide Side { get; set; } = TradeSide.Buy;
     public decimal EntryPrice { get; set; }
     public decimal CurrentPrice { get; set; }
     public decimal Quantity { get; set; }
@@ -53,14 +55,14 @@ public class PaperPosition
     public string ExecutionMode { get; set; } = "PAPER";
     public string PromotionStage { get; set; } = "Paper";
     public decimal TrailingStopPrice { get; set; }
-    public decimal HighestPriceSinceEntry { get; set; }
+    public decimal OptimalPriceSinceEntry { get; set; }
     public DateTime EntryTime { get; set; } = DateTime.UtcNow;
     public DateTime? ExitTime { get; set; }
     public decimal RealizedPnL { get; set; }
     public string ExitReason { get; set; } = "";
 
     public decimal MarketValue => Quantity * CurrentPrice;
-    public decimal UnrealizedPnL => Side == "Buy"
+    public decimal UnrealizedPnL => Side == TradeSide.Buy
         ? (CurrentPrice - EntryPrice) * Quantity
         : (EntryPrice - CurrentPrice) * Quantity;
 }

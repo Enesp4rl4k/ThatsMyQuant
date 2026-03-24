@@ -18,6 +18,7 @@ public class QuantIndicatorService : ITechnicalAnalysisService
     private readonly ILogger<QuantIndicatorService> _logger;
     private readonly IReadOnlyList<IStrategyRouter> _strategyRouters;
     private readonly ExitPolicyLearningService? _exitPolicyLearningService;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Domain.Common.CircularBuffer<Candle>> _hftCandleCache = new();
     private const int MinimumCandles = 52;
 
     public QuantIndicatorService(
@@ -35,6 +36,15 @@ public class QuantIndicatorService : ITechnicalAnalysisService
                 new RangeStrategyRouter(),
                 new BreakoutStrategyRouter()
             };
+    }
+
+    /// <summary>
+    /// HFT-optimized update for a single candle to maintain online indicator state.
+    /// </summary>
+    public void UpdateHftState(string symbol, Candle candle)
+    {
+        var buffer = _hftCandleCache.GetOrAdd(symbol, _ => new Domain.Common.CircularBuffer<Candle>(200));
+        buffer.Add(candle);
     }
 
     public Task<IndicatorSnapshot> ComputeIndicatorsAsync(List<Candle> candles)
@@ -602,44 +612,59 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         ref int sellScore,
         List<string> reasons)
     {
-        if (regime.Regime == MarketRegime.Trending)
+        switch (regime.Regime)
         {
-            if (ind.EMA20 > ind.EMA50 && ind.MACDHistogram > 0)
-            {
-                buyScore += 10;
-                reasons.Add("Trend regime bonus: trend + momentum aligned");
-            }
-            if (ind.EMA20 < ind.EMA50 && ind.MACDHistogram < 0)
-            {
-                sellScore += 10;
-                reasons.Add("Trend regime bonus: downside trend aligned");
-            }
+            case MarketRegime.Trending:
+                ApplyTrendingBonus(ind, ref buyScore, ref sellScore, reasons);
+                break;
+            case MarketRegime.Ranging:
+                ApplyRangingPenalty(ind, ref buyScore, ref sellScore, reasons);
+                break;
+            case MarketRegime.Volatile:
+                ApplyVolatilityPenalty(ind, ref buyScore, ref sellScore, reasons);
+                break;
         }
-        else if (regime.Regime == MarketRegime.Ranging)
+    }
+
+    private static void ApplyTrendingBonus(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.EMA20 > ind.EMA50 && ind.MACDHistogram > 0)
         {
-            if (ind.RSI is > 40 and < 60)
-            {
-                reasons.Add("Range regime filter: RSI neutral band preferred");
-            }
-            else
-            {
-                buyScore -= 5;
-                sellScore -= 5;
-                reasons.Add("Range regime penalty: RSI stretched for mean reversion");
-            }
+            buyScore += 10;
+            reasons.Add("Trend regime bonus: trend + momentum aligned");
         }
-        else if (regime.Regime == MarketRegime.Volatile)
+        if (ind.EMA20 < ind.EMA50 && ind.MACDHistogram < 0)
         {
-            if ((ind.VolumeRatio ?? 0) < 1.8)
-            {
-                buyScore -= 10;
-                sellScore -= 10;
-                reasons.Add("Volatility regime penalty: breakout lacks strong volume");
-            }
-            else
-            {
-                reasons.Add("Volatility regime filter passed: elevated volume present");
-            }
+            sellScore += 10;
+            reasons.Add("Trend regime bonus: downside trend aligned");
+        }
+    }
+
+    private static void ApplyRangingPenalty(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.RSI is > 40 and < 60)
+        {
+            reasons.Add("Range regime filter: RSI neutral band preferred");
+        }
+        else
+        {
+            buyScore -= 5;
+            sellScore -= 5;
+            reasons.Add("Range regime penalty: RSI stretched for mean reversion");
+        }
+    }
+
+    private static void ApplyVolatilityPenalty(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if ((ind.VolumeRatio ?? 0) < 1.8)
+        {
+            buyScore -= 10;
+            sellScore -= 10;
+            reasons.Add("Volatility regime penalty: breakout lacks strong volume");
+        }
+        else
+        {
+            reasons.Add("Volatility regime filter passed: elevated volume present");
         }
     }
 }

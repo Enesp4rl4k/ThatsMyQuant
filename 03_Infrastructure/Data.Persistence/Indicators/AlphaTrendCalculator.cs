@@ -99,7 +99,7 @@ public static class AlphaTrendCalculator
                            Math.Abs((double)(candles[i].Low - candles[i - 1].Close))));
 
             trSum += tr;
-            if (i >= period) trSum -= (i == period) ? trSum / period : GetTR(candles, i - period); // Rolling Sum
+            if (i >= period) trSum -= GetTR(candles, i - period); // Rolling Sum
             
             if (i >= period - 1) atr[i] = trSum / period;
         }

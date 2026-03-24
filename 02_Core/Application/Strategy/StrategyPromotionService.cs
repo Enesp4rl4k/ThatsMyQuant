@@ -533,7 +533,7 @@ public sealed class StrategyPromotionService
     {
         return trades
             .GroupBy(t => new { symbol, StrategyTag = string.IsNullOrWhiteSpace(t.StrategyTag) ? "TrendConfluence" : t.StrategyTag, RegimeTag = string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag, SessionTag = ResolveSessionBucket(t.ExitTime ?? DateTime.UtcNow), ExitPolicyTag = string.IsNullOrWhiteSpace(t.ExitPolicyTag) ? "TrendRunner" : t.ExitPolicyTag, ExecutionMode = string.IsNullOrWhiteSpace(t.ExecutionMode) ? fallbackMode : t.ExecutionMode })
-            .Select(g => new ExitPolicyPerformanceSnapshot { Symbol = g.Key.symbol, StrategyTag = g.Key.StrategyTag, RegimeTag = g.Key.RegimeTag, SessionTag = g.Key.SessionTag, ExitPolicyTag = g.Key.ExitPolicyTag, ExecutionMode = g.Key.ExecutionMode, Trades = g.Count(), WinRate = g.Count() == 0 ? 0 : g.Count(item => GetLivePnl(item) > 0) * 100.0 / g.Count(), ProfitFactor = ComputeProfitFactor(g.Select(GetLivePnl)), ExpectedValue = g.Any() ? g.Average(GetLivePnl) : 0m, TotalPnL = g.Sum(GetLivePnl), RecordedAtUtc = DateTime.UtcNow })
+            .Select(g => new ExitPolicyPerformanceSnapshot { Symbol = g.Key.symbol, StrategyTag = g.Key.StrategyTag, RegimeTag = g.Key.RegimeTag, SessionTag = g.Key.SessionTag, ExitPolicyTag = g.Key.ExitPolicyTag, ExecutionMode = g.Key.ExecutionMode, Trades = g.Count(), WinRate = !g.Any() ? 0 : g.Count(item => GetLivePnl(item) > 0) * 100.0 / g.Count(), ProfitFactor = ComputeProfitFactor(g.Select(GetLivePnl)), ExpectedValue = g.Any() ? g.Average(GetLivePnl) : 0m, TotalPnL = g.Sum(GetLivePnl), RecordedAtUtc = DateTime.UtcNow })
             .ToList();
     }
 
@@ -541,7 +541,7 @@ public sealed class StrategyPromotionService
     {
         return positions
             .GroupBy(p => new { p.Symbol, p.StrategyTag, p.RegimeTag, SessionTag = ResolveSessionBucket(p.ExitTime!.Value), ExitPolicyTag = string.IsNullOrWhiteSpace(p.ExitPolicyTag) ? "TrendRunner" : p.ExitPolicyTag, ExecutionMode = string.IsNullOrWhiteSpace(p.ExecutionMode) ? "PAPER" : p.ExecutionMode })
-            .Select(g => new ExitPolicyPerformanceSnapshot { Symbol = g.Key.Symbol, StrategyTag = g.Key.StrategyTag, RegimeTag = g.Key.RegimeTag, SessionTag = g.Key.SessionTag, ExitPolicyTag = g.Key.ExitPolicyTag, ExecutionMode = g.Key.ExecutionMode, Trades = g.Count(), WinRate = g.Count() == 0 ? 0 : g.Count(item => item.RealizedPnL > 0) * 100.0 / g.Count(), ProfitFactor = ComputeProfitFactor(g.Select(item => item.RealizedPnL)), ExpectedValue = g.Any() ? g.Average(item => item.RealizedPnL) : 0m, TotalPnL = g.Sum(item => item.RealizedPnL), RecordedAtUtc = DateTime.UtcNow })
+            .Select(g => new ExitPolicyPerformanceSnapshot { Symbol = g.Key.Symbol, StrategyTag = g.Key.StrategyTag, RegimeTag = g.Key.RegimeTag, SessionTag = g.Key.SessionTag, ExitPolicyTag = g.Key.ExitPolicyTag, ExecutionMode = g.Key.ExecutionMode, Trades = g.Count(), WinRate = !g.Any() ? 0 : g.Count(item => item.RealizedPnL > 0) * 100.0 / g.Count(), ProfitFactor = ComputeProfitFactor(g.Select(item => item.RealizedPnL)), ExpectedValue = g.Any() ? g.Average(item => item.RealizedPnL) : 0m, TotalPnL = g.Sum(item => item.RealizedPnL), RecordedAtUtc = DateTime.UtcNow })
             .ToList();
     }
 
@@ -922,9 +922,17 @@ public sealed class StrategyPromotionService
     {
         if (bucket.HighEdgeTrades >= 3)
         {
-            return bucket.HighEdgeProfitFactor >= 1.35 && bucket.HighEdgeWinRate >= 55
-                ? 1.06m
-                : (bucket.HighEdgeProfitFactor < 1.10 || bucket.HighEdgeWinRate < 48) ? 0.88m : 0.97m;
+            if (bucket.HighEdgeProfitFactor >= 1.35 && bucket.HighEdgeWinRate >= 55)
+            {
+                return 1.06m;
+            }
+
+            if (bucket.HighEdgeProfitFactor < 1.10 || bucket.HighEdgeWinRate < 48)
+            {
+                return 0.88m;
+            }
+
+            return 0.97m;
         }
 
         return (bucket.ProfitFactor < 1.05 || bucket.WinRate < 45) ? 0.90m : 1.00m;
@@ -1529,7 +1537,7 @@ public sealed class StrategyPromotionService
     private static Trade MapToTrade(BacktestTradeResult br) => new Trade
     {
         Symbol = "", // Will be grouped by result.Symbol
-        Side = br.Side.Equals("Sell", StringComparison.OrdinalIgnoreCase) ? TradeSide.Sell : TradeSide.Buy,
+        Side = br.Side,
         EntryPrice = br.EntryPrice,
         ExitPrice = br.ExitPrice,
         Quantity = 1.0m, // Quantity isn't always in backtest result, default to 1 for PnL per unit

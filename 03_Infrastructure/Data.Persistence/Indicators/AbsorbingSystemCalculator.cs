@@ -98,24 +98,35 @@ public static class AbsorbingSystemCalculator
     {
         bool isBroken = false;
         int testCount = 0;
-        int count = candles.Count;
 
-        for (int j = startIdx + 1; j < count; j++)
+        for (int j = startIdx + 1; j < candles.Count; j++)
         {
-            if (type == SRType.Resistance)
+            var candle = candles[j];
+            if (IsPriceBroken(candle, price, type))
             {
-                decimal highBody = Math.Max(candles[j].Open, candles[j].Close);
-                if (highBody >= price * 0.998m && candles[j].Close <= price) testCount++;
-                if (candles[j].Close > price) { isBroken = true; break; }
+                isBroken = true;
+                break;
             }
-            else
-            {
-                decimal lowBody = Math.Min(candles[j].Open, candles[j].Close);
-                if (lowBody <= price * 1.002m && candles[j].Close >= price) testCount++;
-                if (candles[j].Close < price) { isBroken = true; break; }
-            }
+            if (IsPriceTested(candle, price, type)) testCount++;
         }
         return (isBroken, testCount);
+    }
+
+    private static bool IsPriceBroken(Candle c, decimal price, SRType type) =>
+        type == SRType.Resistance ? c.Close > price : c.Close < price;
+
+    private static bool IsPriceTested(Candle c, decimal price, SRType type)
+    {
+        if (type == SRType.Resistance)
+        {
+            decimal highBody = Math.Max(c.Open, c.Close);
+            return highBody >= price * 0.998m && c.Close <= price;
+        }
+        else
+        {
+            decimal lowBody = Math.Min(c.Open, c.Close);
+            return lowBody <= price * 1.002m && c.Close >= price;
+        }
     }
 
     /// <summary>
