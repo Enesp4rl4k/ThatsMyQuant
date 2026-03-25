@@ -10,12 +10,12 @@ namespace ThatsMyQuant.Application.HftInfrastructure;
 public class CrossExchangeFeedManager : BackgroundService
 {
     private readonly ILogger<CrossExchangeFeedManager> _logger;
-    private readonly HftRingBuffer<Domain.Entities.Signal> _ringBuffer;
+    private readonly HftRingBuffer<Contracts.Models.Signal> _ringBuffer;
     private readonly AllocationFreeSignalPool _signalPool;
 
     public CrossExchangeFeedManager(
         ILogger<CrossExchangeFeedManager> logger,
-        HftRingBuffer<Domain.Entities.Signal> ringBuffer,
+        HftRingBuffer<Contracts.Models.Signal> ringBuffer,
         AllocationFreeSignalPool signalPool)
     {
         _logger = logger;

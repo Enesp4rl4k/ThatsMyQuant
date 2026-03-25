@@ -1,5 +1,5 @@
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
 using Microsoft.Extensions.Logging;
 
 namespace ThatsMyQuant.Infrastructure.Services;

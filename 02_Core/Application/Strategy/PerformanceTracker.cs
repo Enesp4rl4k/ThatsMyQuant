@@ -1,4 +1,4 @@
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 

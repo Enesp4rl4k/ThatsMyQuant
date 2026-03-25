@@ -1,8 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Application.MachineLearning;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Common;
 
@@ -19,6 +19,7 @@ public static class DependencyInjection
         services.AddSingleton<NewsFeedSim>();
         services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
         services.AddSingleton<MarketExecutionProfileService>();
+        services.AddSingleton<TickPipeline>();
 
         // Application Layer Services - Scoped (Logic/Handlers/LLM-Dependent)
         services.AddScoped<SentimentAgent>();
@@ -37,6 +38,10 @@ public static class DependencyInjection
         services.AddScoped<IStrategyRouter, TrendStrategyRouter>();
         services.AddScoped<IStrategyRouter, RangeStrategyRouter>();
         services.AddScoped<IStrategyRouter, BreakoutStrategyRouter>();
-        
+
+        // 5-Tier Agent Hierarchy Orchestrator
+        services.AddScoped<AgentCoordinator>();
+
         return services;
+    }
 }

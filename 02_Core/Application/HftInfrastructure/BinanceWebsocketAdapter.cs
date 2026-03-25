@@ -1,4 +1,4 @@
-﻿using System.Net.WebSockets;
+using System.Net.WebSockets;
 using System.Text.Json;
 using System.Buffers;
 using System.Buffers.Text;
@@ -9,13 +9,13 @@ namespace ThatsMyQuant.Application.HftInfrastructure;
 
 public sealed class BinanceWebsocketAdapter : BackgroundService
 {
-    private readonly HftRingBuffer<Domain.Entities.Signal> _ringBuffer;
+    private readonly HftRingBuffer<Contracts.Models.Signal> _ringBuffer;
     private readonly AllocationFreeSignalPool _signalPool;
     private readonly ILogger<BinanceWebsocketAdapter> _logger;
     private readonly string _webSocketUrl = "wss://stream.binance.com:9443/ws/btcusdt@trade";
 
     public BinanceWebsocketAdapter(
-        HftRingBuffer<Domain.Entities.Signal> ringBuffer,
+        HftRingBuffer<Contracts.Models.Signal> ringBuffer,
         AllocationFreeSignalPool signalPool,
         ILogger<BinanceWebsocketAdapter> logger)
     {
@@ -47,7 +47,7 @@ public sealed class BinanceWebsocketAdapter : BackgroundService
 
                         if (result.MessageType == WebSocketMessageType.Close) break;
 
-                        // SonarQube Fix: Sadece tam mesajları işle (Partial message protection)
+                        // SonarQube Fix: Sadece tam mesajlari isle (Partial message protection)
                         if (result.EndOfMessage)
                         {
                             ParseAndDispatch(buffer.AsSpan(0, result.Count));
@@ -74,11 +74,11 @@ public sealed class BinanceWebsocketAdapter : BackgroundService
 
         while (reader.Read())
         {
-            // SonarQube Fix: reader.ValueTextEquals kullanarak string allocation'ı engelle
+            // SonarQube Fix: reader.ValueTextEquals kullanarak string allocation'i engelle
             if (reader.TokenType == JsonTokenType.PropertyName && reader.ValueTextEquals("p"))
             {
                 reader.Read();
-                // HFT Optimization: reader.ValueSpan üzerinden doğrudan decimal'e çevir
+                // HFT Optimization: reader.ValueSpan �zerinden dogrudan decimal'e �evir
                 if (Utf8Parser.TryParse(reader.ValueSpan, out price, out _)) break;
             }
         }
@@ -89,7 +89,7 @@ public sealed class BinanceWebsocketAdapter : BackgroundService
 
             if (!_ringBuffer.TryEnqueue(signal))
             {
-                // Telemetry: Hız yetişemezse sinyali havuza iade et ve logla
+                // Telemetry: Hiz yetisemezse sinyali havuza iade et ve logla
                 _signalPool.Return(signal);
                 _logger.LogWarning("Execution Overloaded. Tick Dropped.");
             }

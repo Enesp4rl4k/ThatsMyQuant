@@ -5,6 +5,7 @@
              xmlns:converters="clr-namespace:ThatsMyQuant.Dashboard.Converters">
     <Application.Resources>
         <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
+        <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
         
         <!-- Institutional Quantum Palette -->
         <SolidColorBrush x:Key="AppBg" Color="#0D0E12" />

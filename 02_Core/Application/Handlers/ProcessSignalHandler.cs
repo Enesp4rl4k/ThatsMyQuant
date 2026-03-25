@@ -1,13 +1,12 @@
 using MediatR;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Application.Commands;
+using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Resilience;
 using ThatsMyQuant.Application.Strategy;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Application.Handlers;
 
@@ -18,14 +17,18 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     private readonly ISignalRepository _signalRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly IMarketDataService _marketDataService;
+    private readonly IEnumerable<ISignalValidator> _validators;
+    private readonly AgentCoordinator _agentCoordinator;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
-        ILogger<ProcessSignalHandler> logger, 
-        IMediator mediator, 
+        ILogger<ProcessSignalHandler> logger,
+        IMediator mediator,
         IMarketDataService marketDataService,
         ISignalRepository signalRepository,
         ITechnicalAnalysisService technicalAnalysis,
+        IEnumerable<ISignalValidator> validators,
+        AgentCoordinator agentCoordinator,
         IConfiguration configuration)
     {
         _logger = logger;
@@ -33,6 +36,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         _marketDataService = marketDataService;
         _signalRepository = signalRepository;
         _technicalAnalysis = technicalAnalysis;
+        _validators = validators;
+        _agentCoordinator = agentCoordinator;
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
     }
@@ -44,25 +49,40 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         // 0. Persist Signal immediately (audit trail)
         await _signalRepository.AddAsync(request.Signal);
 
-        // 0.5: Market Hours Check
-        if (!await IsMarketOpenAsync(request.Signal))
-            return false;
+        // 0.5: Modular Validation Chain (Volume, Price, Market Hours, etc.)
+        foreach (var validator in _validators.OrderBy(v => v.Order))
+        {
+            var (isValid, failureReason) = await validator.ValidateAsync(request.Signal);
+            if (!isValid)
+            {
+                request.Signal.Status = TradeStatus.Rejected;
+                request.Signal.Reasoning = failureReason;
+                await _signalRepository.UpdateAsync(request.Signal);
+                _logger.LogWarning("❌ Signal Validation Failed: {Reason}", failureReason);
+                return false;
+            }
+        }
 
         var pipeline = ResiliencePolicies.CreateRetryPipeline(_logger);
 
         // STEP 1: Fetch Candle Data
         var candles = await pipeline.ExecuteAsync(async ct =>
-            await _marketDataService.GetCandlesAsync(request.Signal.Symbol, 100, GetMarketType(request.Signal.Symbol)), cancellationToken);
+            await _marketDataService.GetCandlesAsync(request.Signal.Symbol, 100, request.Signal.MarketType.ToString()), cancellationToken);
 
         // STEP 1.5: Detect Market Regime — Adapt Risk Parameters
         var (regime, structure, riskParams) = AnalyzeMarketRegime(candles, request.Signal);
+
+        // STEP 1.7: Build Foundation (Tier 1) and Pattern (Tier 2) snapshots
+        var foundation = await _agentCoordinator.BuildFoundationAsync([], candles, cancellationToken);
+        var patterns = await _agentCoordinator.BuildPatternAsync(request.Signal, foundation, candles, cancellationToken);
         
         // STEP 2: Technical Analysis — Indicators + Confluence
         var (decision, analysisSuccess) = await PerformTechnicalAnalysisAsync(request.Signal, candles, riskParams);
         if (!analysisSuccess) return false;
 
         // STEP 3: Swarm Orchestration Decision
-        var (finalDecision, swarmApproved) = await NegotiateWithSwarmAsync(request.Signal, decision, riskParams, candles, cancellationToken);
+        var (finalDecision, swarmApproved) = await NegotiateWithSwarmAsync(
+            request.Signal, decision, riskParams, candles, foundation, patterns, regime, cancellationToken);
         if (!swarmApproved) return false;
 
         // STEP 5: Dispatch execution (sync or worker handoff)
@@ -76,19 +96,6 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             signal.Id, signal.Symbol, signal.Side, signal.Price);
     }
 
-    private async Task<bool> IsMarketOpenAsync(Signal signal)
-    {
-        string market = GetMarketType(signal.Symbol);
-        var session = MarketHoursScheduler.GetCurrentSession(market);
-        
-        if (session.CanTrade) return true;
-
-        _logger.LogWarning("⏰ {Market} market not open: {Session}", market, session.Description);
-        signal.Status = TradeStatus.Rejected;
-        signal.Reasoning = $"Outside {market} trading hours: {session.Description}";
-        await _signalRepository.UpdateAsync(signal);
-        return false;
-    }
 
     private (MarketRegimeDetector.RegimeResult regime, StructuralAnalysisResult structure, RiskParameters riskParams) AnalyzeMarketRegime(
         List<Candle> candles, 
@@ -141,10 +148,13 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     }
 
     private async Task<(TradeDecision decision, bool approved)> NegotiateWithSwarmAsync(
-        Signal signal, 
-        TradeDecision decision, 
-        RiskParameters riskParams, 
-        List<Candle> candles, 
+        Signal signal,
+        TradeDecision decision,
+        RiskParameters riskParams,
+        List<Candle> candles,
+        FoundationSnapshot foundation,
+        PatternSnapshot patterns,
+        MarketRegimeDetector.RegimeResult regime,
         CancellationToken ct)
     {
         var swarmRequest = new SwarmNegotiationRequest
@@ -152,7 +162,10 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             Signal = signal,
             InitialDecision = decision,
             Risk = riskParams,
-            Candles = candles
+            Candles = candles,
+            Foundation = foundation,
+            Patterns = patterns,
+            Regime = regime.Regime
         };
 
         var swarmResult = await _mediator.Send(swarmRequest, ct);
@@ -212,13 +225,5 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         }
         _logger.LogInformation("═══════════════════════════════════════════════════════");
         return true;
-    }
-
-    private static string GetMarketType(string symbol)
-    {
-        if (symbol.Contains("=")) return "Forex";
-        if (symbol.Count(c => c == '-') == 1) return "Crypto"; // e.g., BTC-USD
-        if (symbol.All(c => char.IsLetterOrDigit(c))) return "BIST"; // e.g., THYAO
-        return "BIST"; // Default
     }
 }

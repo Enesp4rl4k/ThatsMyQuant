@@ -1,7 +1,7 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using System;
 using System.Windows.Media;
-using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Contracts.Enums;
 
 namespace ThatsMyQuant.Dashboard.ViewModels;
 
@@ -17,5 +17,7 @@ public partial class BacktestTradeViewModel : ObservableObject
     [ObservableProperty] private decimal _exitPrice;
     [ObservableProperty] private decimal _pnL;
     [ObservableProperty] private decimal _pnLPercent;
+    [ObservableProperty] private int _confidence;
+    [ObservableProperty] private string _reasoning = "";
     [ObservableProperty] private Brush _color = Brushes.Gray;
 }

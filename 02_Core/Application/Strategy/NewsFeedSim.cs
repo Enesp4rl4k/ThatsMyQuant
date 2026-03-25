@@ -27,6 +27,11 @@ public class NewsFeedSim
         _logger = logger;
     }
 
+    public void Reset()
+    {
+        _logger.LogInformation("[NEWS FEED] Resetting for a new session.");
+    }
+
     public string GetLatestHeadline()
     {
         var headline = MacroEvents[_rng.Next(MacroEvents.Length)];

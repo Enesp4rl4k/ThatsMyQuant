@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Channels;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 
 namespace Listener.Api.Services;
 

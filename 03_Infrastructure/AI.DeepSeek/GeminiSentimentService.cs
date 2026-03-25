@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Ai;
 

@@ -1,7 +1,8 @@
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.ValueObjects;
+using System.Threading;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -10,7 +11,7 @@ namespace ThatsMyQuant.Application.Strategy;
 /// Heavily utilizes the mathematically proven fractional Kelly Criterion to prevent ruin.
 /// Now enhanced with HFT rate-limiting, circuit breakers, and real-time portfolio tracking.
 /// </summary>
-public class RiskAgent
+public class RiskAgent : IFocusedAgent
 {
     private readonly ILogger<RiskAgent> _logger;
     private readonly MemoryPortfolioManager? _portfolioManager;
@@ -24,6 +25,19 @@ public class RiskAgent
         _logger = logger;
         _portfolioManager = portfolioManager;
         _rateLimiter = new TokenBucketRateLimiter(10, 10.0);
+    }
+
+    public Task ResetAsync(string symbol, CancellationToken ct = default)
+    {
+        _killSwitchArmed = false;
+        _logger.LogInformation("RiskAgent reset for {Symbol}. Kill-switch disarmed.", symbol);
+        return Task.CompletedTask;
+    }
+
+    public Task ProcessStepAsync(Candle candle, CancellationToken ct = default)
+    {
+        // Risk agent might monitor drawdown or volatility spikes per step
+        return Task.CompletedTask;
     }
 
     public void ResetKillSwitch() => _killSwitchArmed = false;

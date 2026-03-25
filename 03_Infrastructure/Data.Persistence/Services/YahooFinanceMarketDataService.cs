@@ -4,8 +4,8 @@ using Microsoft.Extensions.Logging;
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 

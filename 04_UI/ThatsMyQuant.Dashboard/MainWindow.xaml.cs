@@ -16,6 +16,36 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = viewModel;
         Loaded += MainWindow_Loaded;
+        KeyDown += MainWindow_KeyDown;
+    }
+
+    private void MainWindow_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key == System.Windows.Input.Key.F11)
+        {
+            ToggleFullScreen();
+        }
+        else if (e.Key == System.Windows.Input.Key.Z)
+        {
+            if (ViewModel.ToggleZenModeCommand.CanExecute(null))
+            {
+                ViewModel.ToggleZenModeCommand.Execute(null);
+            }
+        }
+    }
+
+    private void ToggleFullScreen()
+    {
+        if (WindowStyle == WindowStyle.None)
+        {
+            WindowStyle = WindowStyle.SingleBorderWindow;
+            WindowState = WindowState.Normal;
+        }
+        else
+        {
+            WindowStyle = WindowStyle.None;
+            WindowState = WindowState.Maximized;
+        }
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)

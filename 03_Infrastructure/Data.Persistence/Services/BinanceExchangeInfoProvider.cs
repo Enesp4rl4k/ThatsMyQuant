@@ -4,7 +4,7 @@ using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 

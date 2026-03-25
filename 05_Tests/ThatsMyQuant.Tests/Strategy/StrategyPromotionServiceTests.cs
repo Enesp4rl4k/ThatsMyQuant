@@ -1,8 +1,7 @@
 using FluentAssertions;
 using ThatsMyQuant.Application.Strategy;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Strategy;
@@ -839,7 +838,7 @@ public class StrategyPromotionServiceTests
     private static PaperPosition CreatePaperPosition(decimal pnl, string strategyTag = "TrendConfluence", string regimeTag = "Trending", string exitPolicyTag = "TrendRunner", string symbol = "THYAO") => new()
     {
         Symbol = symbol,
-        Side = ThatsMyQuant.Domain.Enums.TradeSide.Buy,
+        Side = ThatsMyQuant.Contracts.Enums.TradeSide.Buy,
         EntryPrice = 100m,
         CurrentPrice = 100m,
         Quantity = 1m,
@@ -917,7 +916,7 @@ public class StrategyPromotionServiceTests
     {
         EntryTime = exitTime.AddMinutes(-30),
         ExitTime = exitTime,
-        Side = ThatsMyQuant.Domain.Enums.TradeSide.Buy,
+        Side = ThatsMyQuant.Contracts.Enums.TradeSide.Buy,
         StrategyTag = strategyTag,
         RegimeTag = regimeTag,
         ExitPolicyTag = exitPolicyTag,

@@ -2,9 +2,9 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Enums;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 

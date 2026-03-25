@@ -14,4 +14,8 @@
     <PackageReference Include="Grpc.AspNetCore" Version="2.64.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\06_Contracts\ThatsMyQuant.Contracts.csproj" />
+  </ItemGroup>
+
 </Project>

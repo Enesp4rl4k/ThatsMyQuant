@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Infrastructure.Persistence;
 

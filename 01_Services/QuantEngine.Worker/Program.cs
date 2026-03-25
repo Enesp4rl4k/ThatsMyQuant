@@ -6,17 +6,19 @@ using Serilog;
 using Microsoft.SemanticKernel;
 using ThatsMyQuant.Bot;
 using ThatsMyQuant.Application.Security;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Infrastructure.Ai;
-using ThatsMyQuant.Application.Commands;
+using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Infrastructure.Repositories;
 using ThatsMyQuant.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using MediatR;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Application.Common;
+using ThatsMyQuant.Infrastructure;
+using ThatsMyQuant.Infrastructure.Services.Validators;
 
 PerformanceBootstrapper.OptimizeForHft();
 
@@ -32,14 +34,16 @@ builder.Services.AddSerilog();
 
 // --- CORE APPLICATION SERVICES ---
 builder.Services.AddThatsMyQuantApplication();
+builder.Services.AddThatsMyQuantInfrastructure();
 
 // --- INFRASTRUCTURE ADAPTERS ---
 builder.Services.AddSingleton<BorsaMarketDataService>();
 builder.Services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
-builder.Services.AddScoped<IAiReasoningService, DeepSeekReasoningService>();
+builder.Services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
 builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
 builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
 builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
+builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
 builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
 builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
 
@@ -74,6 +78,10 @@ builder.Services.AddSingleton<IExchangeService>(sp =>
 
 builder.Services.AddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
 builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
+
+builder.Services.AddTransient<ISignalValidator, MarketHoursValidator>();
+builder.Services.AddTransient<ISignalValidator, MinVolumeValidator>();
+builder.Services.AddTransient<ISignalValidator, PriceSanityValidator>();
 
 builder.Services.AddHostedService<TradeBotWorker>();
 

@@ -1,6 +1,6 @@
 using System.Text.Json;
 using System.Linq;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 

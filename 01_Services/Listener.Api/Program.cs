@@ -3,18 +3,21 @@ using MediatR;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using System.Threading.RateLimiting;
-using ThatsMyQuant.Application.Commands;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Persistence;
 using ThatsMyQuant.Infrastructure.Repositories;
 using ThatsMyQuant.Application.Security;
 using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Application.Common;
+using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Application.Strategy;
+using ThatsMyQuant.Infrastructure;
 using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using ThatsMyQuant.Infrastructure.Services.Validators;
 
 PerformanceBootstrapper.OptimizeForHft();
 
@@ -55,19 +58,27 @@ builder.Services.AddHttpClient("Binance");
 
 // --- CORE APPLICATION SERVICES ---
 builder.Services.AddThatsMyQuantApplication();
+builder.Services.AddThatsMyQuantInfrastructure();
 
 // --- INFRASTRUCTURE ADAPTERS ---
 builder.Services.AddSingleton<BorsaMarketDataService>();
 builder.Services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
-builder.Services.AddScoped<IAiReasoningService, DeepSeekReasoningService>();
+builder.Services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
 builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
 builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
 builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
 builder.Services.AddSingleton<IExchangeService, MockBrokerService>();
-    builder.Services.AddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
+builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
+builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+builder.Services.AddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
 builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
 builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
 builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
+
+// Signal Validation Chain
+builder.Services.AddScoped<ISignalValidator, MarketHoursValidator>();
+builder.Services.AddScoped<ISignalValidator, PriceSanityValidator>();
+builder.Services.AddScoped<ISignalValidator, MinVolumeValidator>();
 
 // Safety Kernel
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];

@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Application.HftInfrastructure;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 

@@ -1,8 +1,8 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Application.Strategy;
 

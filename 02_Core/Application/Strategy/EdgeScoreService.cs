@@ -1,5 +1,4 @@
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;

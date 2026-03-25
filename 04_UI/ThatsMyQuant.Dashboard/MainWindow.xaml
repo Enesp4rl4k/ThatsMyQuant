@@ -10,8 +10,12 @@
         Foreground="{StaticResource TextMain}"
         FontFamily="{StaticResource PrimaryFont}"
         WindowStartupLocation="CenterScreen"
-        xmlns:controls="clr-namespace:ThatsMyQuant.Dashboard.Controls">
+        xmlns:controls="clr-namespace:ThatsMyQuant.Dashboard.Controls"
+    xmlns:converters="clr-namespace:ThatsMyQuant.Dashboard.Converters">
     <Window.Resources>
+        <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
+        <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
+        
         <Style TargetType="TabControl">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
@@ -114,6 +118,7 @@
             <Setter Property="FontWeight" Value="Bold" />
             <Setter Property="Cursor" Value="Hand" />
         </Style>
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
 
     <Grid Background="{StaticResource AppBg}">
@@ -123,6 +128,15 @@
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0" Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,8">
+            <Border.Style>
+                <Style TargetType="Border">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding IsZenMode}" Value="True">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Border.Style>
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />   <!-- Logo Section -->
@@ -130,6 +144,7 @@
                     <ColumnDefinition Width="Auto" />   <!-- Telemetry & Health -->
                     <ColumnDefinition Width="Auto" />   <!-- Session PnL -->
                     <ColumnDefinition Width="Auto" />   <!-- Mode Indicator -->
+                    <ColumnDefinition Width="Auto" />   <!-- Zen Toggle -->
                 </Grid.ColumnDefinitions>
                 <!-- 1. Logo Section -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
@@ -172,11 +187,11 @@
                 <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,24,0">
                     <StackPanel Margin="0,0,16,0">
                         <TextBlock Text="REALIZED PnL" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" HorizontalAlignment="Right" />
-                        <TextBlock Text="{Binding RealizedPnL, StringFormat={}{0:N2}}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="13" FontWeight="Black" HorizontalAlignment="Right" Margin="0,-2,0,0" />
+                        <TextBlock Text="{Binding PortfolioView.RealizedPnL, StringFormat={}{0:N2}}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="13" FontWeight="Black" HorizontalAlignment="Right" Margin="0,-2,0,0" />
                     </StackPanel>
                     <StackPanel>
                         <TextBlock Text="UNREALIZED" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" HorizontalAlignment="Right" />
-                        <TextBlock Text="{Binding UnrealizedPnL, StringFormat={}{0:N2}}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="13" FontWeight="Black" HorizontalAlignment="Right" Margin="0,-2,0,0" />
+                        <TextBlock Text="{Binding PortfolioView.UnrealizedPnL, StringFormat={}{0:N2}}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="13" FontWeight="Black" HorizontalAlignment="Right" Margin="0,-2,0,0" />
                     </StackPanel>
                 </StackPanel>
 
@@ -188,13 +203,28 @@
                         </Border>
                     </StackPanel>
                 </Border>
+                
+                <Button Grid.Column="5" Command="{Binding ToggleZenModeCommand}" Background="Transparent" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" Padding="12,4" Margin="12,0,0,0">
+                    <TextBlock Text="ZEN MODE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
+                </Button>
             </Grid>
         </Border>
 
         <Grid Grid.Row="1" Margin="20,18,20,20">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="336" />
+                <ColumnDefinition Width="336">
+                    <ColumnDefinition.Style>
+                        <Style TargetType="ColumnDefinition">
+                            <Setter Property="Width" Value="336" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsZenMode}" Value="True">
+                                    <Setter Property="Width" Value="0" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ColumnDefinition.Style>
+                </ColumnDefinition>
             </Grid.ColumnDefinitions>
 
             <TabControl x:Name="MainTabs" Grid.Column="0" Margin="0,0,24,0">
@@ -209,22 +239,31 @@
 
                         <!-- 1. Executive Summary Cards -->
                         <UniformGrid Grid.Row="0" Columns="4" Margin="0,0,0,12">
+                            <UniformGrid.Style>
+                                <Style TargetType="UniformGrid">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsZenMode}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </UniformGrid.Style>
                             <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text="TOTAL LIQUIDITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding Balance, StringFormat={}${0:N0}}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.Balance, StringFormat={}${0:N0}}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text="DAILY PNL (NET)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding RealizedPnLPercent, StringFormat={}{0:F2}%}" FontFamily="{StaticResource MonoFont}" Foreground="{Binding RealizedPnLColor}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.RealizedPnLPercent, StringFormat={}{0:F2}%}" FontFamily="{StaticResource MonoFont}" Foreground="{Binding PortfolioView.RealizedPnLColor}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text="OPEN POSITIONS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding ActivePositions.Count}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.ActivePositions.Count}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource TerminalCardStyle}">
@@ -235,7 +274,16 @@
                             </Border>
                         </UniformGrid>
 
-                        <Border Grid.Row="2" Style="{StaticResource TerminalCardStyle}" Margin="0,0,0,10" Padding="12,10">
+                        <Border Grid.Row="2" Margin="0,0,0,10" Padding="12,10">
+                            <Border.Style>
+                                <Style TargetType="Border" BasedOn="{StaticResource TerminalCardStyle}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsZenMode}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="1.2*" />
@@ -268,37 +316,78 @@
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <DockPanel Grid.Row="0" Margin="0,0,0,8">
-                                    <TextBlock Text="{Binding ChartHeaderTitle}" Foreground="{StaticResource TextMain}" FontSize="14" FontWeight="Black" DockPanel.Dock="Left" VerticalAlignment="Center" />
+                                    <DockPanel.Style>
+                                        <Style TargetType="DockPanel">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding MarketOverview.IsTradingViewActive}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DockPanel.Style>
+                                    <TextBlock Text="{Binding MarketOverview.ChartHeaderTitle}" Foreground="{StaticResource TextMain}" FontSize="14" FontWeight="Black" DockPanel.Dock="Left" VerticalAlignment="Center" />
                                     
                                     <StackPanel Orientation="Horizontal" Margin="20,0,0,0" VerticalAlignment="Center">
-                                        <RadioButton Content="1m" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=1m}" />
-                                        <RadioButton Content="5m" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=5m}" />
-                                        <RadioButton Content="15m" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=15m}" />
-                                        <RadioButton Content="1h" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=1h}" />
-                                        <RadioButton Content="4h" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=4h}" />
-                                        <RadioButton Content="1d" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=1d}" />
+                                        <RadioButton Content="1m" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding MarketOverview.SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=1m}" />
+                                        <RadioButton Content="5m" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding MarketOverview.SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=5m}" />
+                                        <RadioButton Content="15m" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding MarketOverview.SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=15m}" />
+                                        <RadioButton Content="1h" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding MarketOverview.SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=1h}" />
+                                        <RadioButton Content="4h" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding MarketOverview.SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=4h}" />
+                                        <RadioButton Content="1d" GroupName="TF" Style="{StaticResource TimeframeButtonStyle}" IsChecked="{Binding MarketOverview.SelectedTimeframe, Converter={StaticResource StringToBoolConverter}, ConverterParameter=1d}" />
                                     </StackPanel>
 
-                                    <TextBlock Text="{Binding ChartHeaderOhlc}" Foreground="{Binding ChartHeaderChangeColor}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Bold" DockPanel.Dock="Right" VerticalAlignment="Center" />
+                                    <TextBlock Text="{Binding MarketOverview.ChartHeaderOhlc}" Foreground="{Binding MarketOverview.ChartHeaderChangeColor}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Bold" DockPanel.Dock="Right" VerticalAlignment="Center" />
                                 </DockPanel>
-                                <controls:ScientificChartControl x:Name="CockpitChart" Grid.Row="1" MinHeight="450" />
+                                <controls:ScientificChartControl x:Name="CockpitChart" Grid.Row="1" MinHeight="450" DataContext="{Binding MarketOverview}" />
                                 <Border Grid.Row="2" Background="{StaticResource SurfaceBg}" CornerRadius="4" Padding="10,8" Margin="0,8,0,0">
                                     <UniformGrid Columns="2">
                                         <StackPanel Margin="0,0,12,0">
                                             <TextBlock Text="AI VISUAL REASONING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding VisualReasoningSummary}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" MaxHeight="34" />
+                                            <TextBlock Text="{Binding AiAnalystView.VisualReasoningSummary}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" MaxHeight="34" />
                                         </StackPanel>
                                         <StackPanel>
                                             <TextBlock Text="STRATEGY CONTEXT" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding TradeReadiness}" Foreground="{Binding TradeReadinessColor}" FontSize="14" FontWeight="Black" Margin="0,4,0,0" />
+                                            <TextBlock Text="{Binding AiAnalystView.TradeReadiness}" Foreground="{Binding AiAnalystView.TradeReadinessColor}" FontSize="14" FontWeight="Black" Margin="0,4,0,0" />
                                         </StackPanel>
                                     </UniformGrid>
                                 </Border>
+
+                                <!-- FLOATING ZEN MODE EXIT BUTTON (Visible only when in Zen Mode) -->
+                                <Button HorizontalAlignment="Right" VerticalAlignment="Top" 
+                                        Margin="0,4,20,0" Grid.Row="1"
+                                        Command="{Binding ToggleZenModeCommand}"
+                                        Width="28" Height="28"
+                                        Background="#CC0B0E13"
+                                        BorderBrush="{StaticResource Accent}"
+                                        BorderThickness="1"
+                                        ToolTip="Exit Zen Mode (Hotkey: Z)"
+                                        Panel.ZIndex="1000">
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsZenMode}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                    <TextBlock Text="✕" Foreground="{StaticResource Accent}" FontSize="12" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Button>
                             </Grid>
                         </Border>
 
                         <!-- 3. Active Operations Ledger (DataGrid) -->
-                        <Border Grid.Row="3" Style="{StaticResource TerminalCardStyle}" Padding="0">
+                        <Border Grid.Row="3" Padding="0">
+                            <Border.Style>
+                                <Style TargetType="Border" BasedOn="{StaticResource TerminalCardStyle}">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsZenMode}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Border.Style>
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -310,7 +399,7 @@
                                         <Button Content="PANIC: CLOSE ALL POSITIONS" Command="{Binding CloseAllPositionsCommand}" Background="#7A2F45" Foreground="White" BorderThickness="0" FontSize="9" FontWeight="Black" Padding="12,4" HorizontalAlignment="Right" DockPanel.Dock="Right" />
                                     </DockPanel>
                                 </Border>
-                                <DataGrid Grid.Row="1" ItemsSource="{Binding ActivePositions}" AutoGenerateColumns="False" Background="{StaticResource AppBg}" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource BorderColor}" CanUserAddRows="False" RowBackground="{StaticResource AppBg}" AlternatingRowBackground="{StaticResource SurfaceBg}" Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}">
+                                <DataGrid Grid.Row="1" ItemsSource="{Binding PortfolioView.ActivePositions}" AutoGenerateColumns="False" Background="{StaticResource AppBg}" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource BorderColor}" CanUserAddRows="False" RowBackground="{StaticResource AppBg}" AlternatingRowBackground="{StaticResource SurfaceBg}" Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}">
                                     <DataGrid.Resources>
                                         <Style TargetType="DataGridColumnHeader">
                                             <Setter Property="Background" Value="{StaticResource SurfaceBg}" />
@@ -376,25 +465,25 @@
                             <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text="CURRENT BALANCE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding PortfolioGrowthHeadline}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.PortfolioGrowthHeadline}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text="GROWTH" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding PortfolioGrowthSubtext}" Foreground="{Binding PortfolioGrowthColor}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.PortfolioGrowthSubtext}" Foreground="{Binding PortfolioView.PortfolioGrowthColor}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
                                 <StackPanel>
                                     <TextBlock Text="OPEN POSITIONS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding ActivePositions.Count}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.ActivePositions.Count}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                             <Border Style="{StaticResource TerminalCardStyle}">
                                 <StackPanel>
                                     <TextBlock Text="RANGE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding SelectedPortfolioRange}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.SelectedPortfolioRange}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Border>
                         </UniformGrid>
@@ -409,7 +498,7 @@
                                 <DockPanel Margin="0,0,0,12">
                                     <StackPanel DockPanel.Dock="Left">
                                         <TextBlock Text="PORTFOLIO GROWTH" Foreground="{StaticResource TextMain}" FontSize="15" FontWeight="Black" />
-                                        <TextBlock Text="{Binding PortfolioRangeSummary}" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,0" />
+                                        <TextBlock Text="{Binding PortfolioView.PortfolioRangeSummary}" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,0" />
                                     </StackPanel>
                                     <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                                         <Button Content="DAILY" Command="{Binding SetPortfolioRangeCommand}" CommandParameter="Daily" Style="{StaticResource PageNavButtonStyle}" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
@@ -427,7 +516,7 @@
 
                                     <Border Grid.Column="0" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="16">
                                         <Grid>
-                                            <ItemsControl ItemsSource="{Binding PortfolioXAxisLabels}">
+                                            <ItemsControl ItemsSource="{Binding PortfolioView.PortfolioXAxisLabels}">
                                                 <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
@@ -436,7 +525,7 @@
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>
 
-                                            <ItemsControl ItemsSource="{Binding PortfolioYAxisLabels}">
+                                            <ItemsControl ItemsSource="{Binding PortfolioView.PortfolioYAxisLabels}">
                                                 <ItemsControl.ItemsPanel><ItemsPanelTemplate><Canvas /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
@@ -451,7 +540,7 @@
                                                 <Line X1="0" Y1="110" X2="760" Y2="110" Stroke="#171D26" StrokeThickness="1" />
                                                 <Line X1="0" Y1="165" X2="760" Y2="165" Stroke="#171D26" StrokeThickness="1" />
                                                 <Line X1="0" Y1="220" X2="760" Y2="220" Stroke="#171D26" StrokeThickness="1" />
-                                                <Polyline Points="{Binding PortfolioGrowthPoints}" Stroke="{Binding PortfolioGrowthColor}" StrokeThickness="3" />
+                                                <Polyline Points="{Binding PortfolioView.PortfolioGrowthPoints}" Stroke="{Binding PortfolioView.PortfolioGrowthColor}" StrokeThickness="3" />
                                             </Canvas>
                                         </Grid>
                                     </Border>
@@ -459,9 +548,9 @@
                                     <Border Grid.Column="1" Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="14" Margin="12,0,0,0">
                                         <StackPanel>
                                             <TextBlock Text="SUMMARY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding PortfolioGrowthHeadline}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="20" FontWeight="Black" Margin="0,8,0,0" />
-                                            <TextBlock Text="{Binding PortfolioGrowthSubtext}" Foreground="{Binding PortfolioGrowthColor}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Bold" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                            <TextBlock Text="{Binding PortfolioRangeSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,10,0,0" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding PortfolioView.PortfolioGrowthHeadline}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="20" FontWeight="Black" Margin="0,8,0,0" />
+                                            <TextBlock Text="{Binding PortfolioView.PortfolioGrowthSubtext}" Foreground="{Binding PortfolioView.PortfolioGrowthColor}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Bold" Margin="0,6,0,0" TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding PortfolioView.PortfolioRangeSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,10,0,0" TextWrapping="Wrap" />
                                         </StackPanel>
                                     </Border>
                                 </Grid>
@@ -489,7 +578,7 @@
                                     <TextBlock Text="Choose the bot style first, then tune launch settings on the right." Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,0" />
                                 </StackPanel>
 
-                                <ItemsControl Grid.Row="1" ItemsSource="{Binding BotStrategies}">
+                                <ItemsControl Grid.Row="1" ItemsSource="{Binding Studio.BotStrategies}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="14" Margin="0,0,0,10">
@@ -524,7 +613,7 @@
                         <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}">
                             <StackPanel>
                                 <TextBlock Text="START BOT" Foreground="{StaticResource TextMain}" FontSize="15" FontWeight="Black" />
-                                <TextBlock Text="{Binding BotLaunchHint}" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,12" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding Studio.BotLaunchHint}" Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,4,0,12" TextWrapping="Wrap" />
 
                                 <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
                                     <Grid>
@@ -534,11 +623,11 @@
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Margin="0,0,6,0">
                                             <TextBlock Text="STRATEGY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding BotStrategies}" SelectedItem="{Binding SelectedBotStrategy}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotStrategies}" SelectedItem="{Binding Studio.SelectedBotStrategy}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Margin="6,0,0,0">
                                             <TextBlock Text="OBJECTIVE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding BotObjectives}" SelectedItem="{Binding SelectedBotObjective}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotObjectives}" SelectedItem="{Binding Studio.SelectedBotObjective}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>
@@ -555,19 +644,19 @@
                                         </Grid.RowDefinitions>
                                         <StackPanel Margin="0,0,6,12">
                                             <TextBlock Text="BASE ASSET" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding BotBaseAssets}" SelectedItem="{Binding SelectedBotBaseAsset}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotBaseAssets}" SelectedItem="{Binding Studio.SelectedBotBaseAsset}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Margin="6,0,0,12">
                                             <TextBlock Text="QUOTE ASSET" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding BotQuoteAssets}" SelectedItem="{Binding SelectedBotQuoteAsset}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotQuoteAssets}" SelectedItem="{Binding Studio.SelectedBotQuoteAsset}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Row="1" Margin="0,0,6,0">
                                             <TextBlock Text="FUNDING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBox Text="{Binding BotFundingAmount}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
+                                            <TextBox Text="{Binding Studio.BotFundingAmount}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Row="1" Grid.Column="1" Margin="6,0,0,0">
                                             <TextBlock Text="GRID DENSITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding GridDensityOptions}" SelectedItem="{Binding GridDensity}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.GridDensityOptions}" SelectedItem="{Binding Studio.GridDensity}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>
@@ -582,22 +671,22 @@
                                             </Grid.ColumnDefinitions>
                                             <StackPanel Margin="0,0,6,0">
                                                 <TextBlock Text="UPPER %" Foreground="{StaticResource TextSoft}" FontSize="9" />
-                                                <TextBox Text="{Binding GridUpperLimit}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
+                                                <TextBox Text="{Binding Studio.GridUpperLimit}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="1" Margin="6,0,0,0">
                                                 <TextBlock Text="LOWER %" Foreground="{StaticResource TextSoft}" FontSize="9" />
-                                                <TextBox Text="{Binding GridLowerLimit}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
+                                                <TextBox Text="{Binding Studio.GridLowerLimit}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
                                             </StackPanel>
                                         </Grid>
                                         <TextBlock Text="GRID SLOPE" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,10,0,0" />
-                                        <Slider Value="{Binding GridSlopeBias}" Minimum="0" Maximum="100" Margin="0,6,0,0" />
+                                        <Slider Value="{Binding Studio.GridSlopeBias}" Minimum="0" Maximum="100" Margin="0,6,0,0" />
                                     </StackPanel>
                                 </Border>
 
                                 <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,12">
                                     <StackPanel>
                                         <TextBlock Text="LAUNCH SUMMARY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBlock Text="{Binding BotLaunchSummary}" Foreground="{StaticResource TextMain}" FontSize="11" FontWeight="SemiBold" Margin="0,6,0,0" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding Studio.BotLaunchSummary}" Foreground="{StaticResource TextMain}" FontSize="11" FontWeight="SemiBold" Margin="0,6,0,0" TextWrapping="Wrap" />
                                     </StackPanel>
                                 </Border>
 
@@ -631,11 +720,11 @@
                                     <Border Background="{StaticResource AppBg}" Padding="12" CornerRadius="4" Margin="0,0,0,16">
                                         <StackPanel>
                                             <TextBlock Text="ORDER BLOCK TIMEFRAME" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding TimeframeOptions}" SelectedItem="{Binding ObTimeframe}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,6,0,12" />
+                                            <ComboBox ItemsSource="{Binding Studio.TimeframeOptions}" SelectedItem="{Binding Studio.ObTimeframe}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,6,0,12" />
                                             
                                             <TextBlock Text="FVG SENSITIVITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <Slider Value="{Binding FvgSensitivity}" Minimum="0" Maximum="100" Margin="0,6,0,0" />
-                                            <TextBlock Text="{Binding FvgSensitivity, StringFormat={}{0:F0}%}" Foreground="{StaticResource TextSoft}" FontSize="9" HorizontalAlignment="Right" />
+                                            <Slider Value="{Binding Studio.FvgSensitivity}" Minimum="0" Maximum="100" Margin="0,6,0,0" />
+                                            <TextBlock Text="{Binding Studio.FvgSensitivity, StringFormat={}{0:F0}%}" Foreground="{StaticResource TextSoft}" FontSize="9" HorizontalAlignment="Right" />
                                         </StackPanel>
                                     </Border>
 
@@ -643,10 +732,10 @@
                                     <Border Background="{StaticResource AppBg}" Padding="12" CornerRadius="4" Margin="0,0,0,16">
                                         <StackPanel>
                                             <TextBlock Text="MIN CONFIDENCE THRESHOLD" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <Slider Value="{Binding AiConfidenceThreshold}" Minimum="0" Maximum="100" Margin="0,6,0,0" />
-                                            <TextBlock Text="{Binding AiConfidenceThreshold, StringFormat={}{0:F0}%}" Foreground="{StaticResource TextSoft}" FontSize="9" HorizontalAlignment="Right" />
+                                            <Slider Value="{Binding Studio.AiConfidenceThreshold}" Minimum="0" Maximum="100" Margin="0,6,0,0" />
+                                            <TextBlock Text="{Binding Studio.AiConfidenceThreshold, StringFormat={}{0:F0}%}" Foreground="{StaticResource TextSoft}" FontSize="9" HorizontalAlignment="Right" />
                                             
-                                            <CheckBox Content="AUTO-PILOT MODE (AI SIGNALS)" IsChecked="{Binding IsAiAutomationEnabled}" Foreground="White" FontSize="10" Margin="0,12,0,0" />
+                                            <CheckBox Content="AUTO-PILOT MODE (AI SIGNALS)" IsChecked="{Binding Studio.IsAiAutomationEnabled}" Foreground="White" FontSize="10" Margin="0,12,0,0" />
                                             
                                             <Button Content="CALIBRATE AI MODULE" Command="{Binding CalibrateAiCommand}" Background="{StaticResource SurfaceBg}" Foreground="{StaticResource Accent}" BorderBrush="{StaticResource Accent}" BorderThickness="1" FontSize="9" FontWeight="Black" Padding="0,8" Margin="0,16,0,0" />
                                         </StackPanel>
@@ -656,10 +745,10 @@
                                     <Border Background="{StaticResource AppBg}" Padding="12" CornerRadius="4">
                                         <StackPanel>
                                             <TextBlock Text="DAILY MAX LOSS (%)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBox Text="{Binding RiskDailyLossLimit}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="8" Margin="0,6,0,12" />
+                                            <TextBox Text="{Binding Studio.RiskDailyLossLimit}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="8" Margin="0,6,0,12" />
                                             
                                             <TextBlock Text="MAX POSITION SIZE (%)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBox Text="{Binding RiskMaxPositionSize}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="8" Margin="0,6,0,0" />
+                                            <TextBox Text="{Binding Studio.RiskMaxPositionSize}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="8" Margin="0,6,0,0" />
                                         </StackPanel>
                                     </Border>
                                 </StackPanel>
@@ -704,22 +793,20 @@
                             <StackPanel>
                                 <DockPanel>
                                     <TextBlock Text="MONTHLY PERFORMANCE HEATMAP" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Left" />
-                                    <TextBlock Text="CURRENT YTD: +24.8%" Foreground="{StaticResource BuyColor}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Right" />
-                                </DockPanel>
-                                <UniformGrid Rows="1" Columns="12" Margin="0,10,0,0" Height="20">
-                                    <Border Background="{StaticResource BuyColor}" Opacity="0.8" Margin="2" CornerRadius="2" ToolTip="JAN: +4%" />
-                                    <Border Background="{StaticResource BuyColor}" Opacity="0.5" Margin="2" CornerRadius="2" ToolTip="FEB: +2%" />
-                                    <Border Background="{StaticResource SellColor}" Opacity="0.9" Margin="2" CornerRadius="2" ToolTip="MAR: -5%" />
-                                    <Border Background="{StaticResource BuyColor}" Opacity="1.0" Margin="2" CornerRadius="2" ToolTip="APR: +8%" />
-                                    <Border Background="{StaticResource BuyColor}" Opacity="0.3" Margin="2" CornerRadius="2" />
-                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
-                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
-                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
-                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
-                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
-                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
-                                    <Border Background="{StaticResource SurfaceBg}" Margin="2" CornerRadius="2" />
-                                </UniformGrid>
+                                <TextBlock Text="{Binding CurrentYtdPerformance, StringFormat=CURRENT YTD: {0}}" Foreground="{StaticResource BuyColor}" FontSize="9" FontWeight="Bold" DockPanel.Dock="Right" />
+                            </DockPanel>
+                            <ItemsControl ItemsSource="{Binding MonthlyPerformance}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Rows="1" Columns="12" Margin="0,10,0,0" Height="20" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{Binding Color}" Opacity="{Binding Opacity}" Margin="2" CornerRadius="2" ToolTip="{Binding ToolTip}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                             </StackPanel>
                         </Border>
 
@@ -733,7 +820,7 @@
                                         <Button Content="EXPORT TO CSV" Command="{Binding ExportLedgerCommand}" Background="{StaticResource BgCard}" Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" FontSize="9" FontWeight="Bold" Padding="12,4" HorizontalAlignment="Right" DockPanel.Dock="Right" />
                                     </DockPanel>
                                 </Border>
-                                <DataGrid Grid.Row="1" ItemsSource="{Binding TradeJournal}" AutoGenerateColumns="False" Background="Transparent" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None" VerticalScrollBarVisibility="Auto">
+                                <DataGrid Grid.Row="1" ItemsSource="{Binding TradeJournal}" SelectedItem="{Binding SelectedTradeJournalEntry}" AutoGenerateColumns="False" Background="Transparent" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None" VerticalScrollBarVisibility="Auto">
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="TIME" Binding="{Binding Time, StringFormat={}{0:dd MMM HH:mm}}" Width="120">
                                             <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="FontFamily" Value="{StaticResource MonoFont}"/><Setter Property="Foreground" Value="{StaticResource TextMuted}"/></Style></DataGridTextColumn.ElementStyle>
@@ -756,6 +843,17 @@
                                 </DataGrid>
                             </Grid>
                         </Border>
+
+                        <!-- 3. AI Coaching Review -->
+                        <Border Grid.Row="1" Margin="8,0,0,0" HorizontalAlignment="Right" Width="400" Style="{StaticResource TerminalCardStyle}" Visibility="{Binding SelectedTradeJournalEntry, Converter={StaticResource NullToVisibilityConverter}}">
+                            <StackPanel>
+                                <TextBlock Text="{Binding SelectedTradeReviewTitle}" Foreground="{StaticResource Accent}" FontSize="11" FontWeight="Black" Margin="0,0,0,12" />
+                                <Border Background="{StaticResource AppBg}" Padding="16" CornerRadius="4">
+                                    <TextBlock Text="{Binding SelectedTradeReview}" Foreground="{StaticResource TextMain}" FontSize="11" FontStyle="Italic" TextWrapping="Wrap" />
+                                </Border>
+                                <TextBlock Text="INSTITUTIONAL AI COACHING UNIT" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,12,0,0" HorizontalAlignment="Right" />
+                            </StackPanel>
+                        </Border>
                     </Grid>
                 </TabItem>
                 <TabItem Header="Backtest Engine">
@@ -769,9 +867,9 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel>
                                         <TextBlock Text="BACKTEST ANALYSIS LAB" FontSize="15" FontWeight="Black" Foreground="{StaticResource TextMain}" />
-                                        <TextBlock Text="{Binding BacktestStatus}" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                        <TextBlock Text="{Binding BacktestScenario}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                        <TextBlock Text="{Binding BacktestDateRange}" Foreground="{StaticResource TextMuted}" FontFamily="{StaticResource MonoFont}" FontSize="9" Margin="0,4,0,0" />
+                                        <TextBlock Text="{Binding Studio.BacktestStatus}" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding Studio.BacktestScenario}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                        <TextBlock Text="{Binding Studio.BacktestDateRange}" Foreground="{StaticResource TextMuted}" FontFamily="{StaticResource MonoFont}" FontSize="9" Margin="0,4,0,0" />
                                     </StackPanel>
                                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
                                         <Button Content="RUN GLOBAL BACKTEST" Command="{Binding RunGlobalBacktestCommand}" Background="{StaticResource SurfaceBg}" Foreground="{StaticResource Accent}" BorderBrush="{StaticResource Accent}" BorderThickness="1" FontSize="10" FontWeight="Black" Padding="14,8" Margin="0,0,8,0" />
@@ -782,10 +880,10 @@
                             </Border>
 
                             <UniformGrid Columns="4" Margin="0,0,0,12">
-                                <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0"><StackPanel><TextBlock Text="TOTAL TRADES" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding TotalTrades}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" /><TextBlock Text="{Binding BacktestTradeBreakdown}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap" /></StackPanel></Border>
-                                <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0"><StackPanel><TextBlock Text="WIN RATE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding WinRate, StringFormat={}{0:F1}%}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource BuyColor}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" /><TextBlock Text="{Binding ProfitFactor, StringFormat=PROFIT FACTOR {0:F2}}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="0,6,0,0" /></StackPanel></Border>
-                                <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0"><StackPanel><TextBlock Text="NET PERFORMANCE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding BacktestPnlLabel}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}" FontSize="16" FontWeight="Black" Margin="0,4,0,0" TextWrapping="Wrap" /><TextBlock Text="{Binding BacktestEquityLabel}" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap" /></StackPanel></Border>
-                                <Border Style="{StaticResource TerminalCardStyle}"><StackPanel><TextBlock Text="RISK QUALITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding BacktestRiskSummary}" FontSize="13" FontWeight="Black" Foreground="{StaticResource TextSoft}" Margin="0,4,0,0" TextWrapping="Wrap" /><TextBlock Text="STRATEGY EFFICIENCY METRIC" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,6,0,0" TextWrapping="Wrap" /></StackPanel></Border>
+                                <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0"><StackPanel><TextBlock Text="TOTAL TRADES" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding Studio.TotalTrades}" FontFamily="{StaticResource MonoFont}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" /><TextBlock Text="{Binding Studio.BacktestTradeBreakdown}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap" /></StackPanel></Border>
+                                <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0"><StackPanel><TextBlock Text="WIN RATE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding Studio.WinRate, StringFormat={}{0:F1}%}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource BuyColor}" FontSize="18" FontWeight="Black" Margin="0,4,0,0" /><TextBlock Text="{Binding Studio.ProfitFactor, StringFormat=PROFIT FACTOR {0:F2}}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="0,6,0,0" /></StackPanel></Border>
+                                <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0"><StackPanel><TextBlock Text="NET PERFORMANCE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding Studio.BacktestPnlLabel}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}" FontSize="16" FontWeight="Black" Margin="0,4,0,0" TextWrapping="Wrap" /><TextBlock Text="{Binding Studio.BacktestEquityLabel}" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="0,6,0,0" TextWrapping="Wrap" /></StackPanel></Border>
+                                <Border Style="{StaticResource TerminalCardStyle}"><StackPanel><TextBlock Text="RISK QUALITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" /><TextBlock Text="{Binding Studio.BacktestRiskSummary}" FontSize="13" FontWeight="Black" Foreground="{StaticResource TextSoft}" Margin="0,4,0,0" TextWrapping="Wrap" /><TextBlock Text="STRATEGY EFFICIENCY METRIC" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="0,6,0,0" TextWrapping="Wrap" /></StackPanel></Border>
                             </UniformGrid>
 
                             <Grid>
@@ -801,7 +899,7 @@
                                             <StackPanel>
                                                 <TextBlock Text="VISUAL EDGE ANALYSIS" FontSize="11" FontWeight="Black" Foreground="{StaticResource TextMain}" />
                                                 <TextBlock Text="Review entry/exit confluence quality and strategy-regime alignment per historical candle." Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
-                                                <TextBlock Text="{Binding ChartHeaderTitle}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" Margin="0,10,0,0" />
+                                                <TextBlock Text="{Binding MarketOverview.ChartHeaderTitle}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" Margin="0,10,0,0" />
                                             </StackPanel>
                                         </Border>
                                     </StackPanel>
@@ -817,15 +915,27 @@
                                         <StackPanel Grid.Row="0">
                                             <TextBlock Text="SELECTED TRADE REGISTRY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,10" />
                                             <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="220">
-                                                <ItemsControl ItemsSource="{Binding BacktestTrades}">
+                                                <ItemsControl ItemsSource="{Binding Studio.BacktestTrades}">
                                                     <ItemsControl.ItemTemplate>
                                                         <DataTemplate>
                                                             <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="10" Margin="0,0,0,4">
                                                                 <Grid>
                                                                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                                                    <StackPanel><TextBlock Text="{Binding Side}" Foreground="{Binding Color}" FontSize="10" FontWeight="Black" /><TextBlock Text="{Binding ExitTime, StringFormat={}{0:dd MMM HH:mm}}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource TextMuted}" FontSize="8" /></StackPanel>
-                                                                    <StackPanel Grid.Column="1" Margin="16,0,0,0"><TextBlock Text="{Binding StrategyTag}" FontSize="10" FontWeight="Black" Foreground="{StaticResource TextMain}" /><TextBlock Text="{Binding ExitReason, StringFormat=EXIT: {0}}" Foreground="{StaticResource TextSoft}" FontSize="8" Margin="0,2,0,0" /></StackPanel>
-                                                                    <StackPanel Grid.Column="2" HorizontalAlignment="Right"><TextBlock Text="{Binding PnL, StringFormat={}{0:N2}}" FontFamily="{StaticResource MonoFont}" Foreground="{Binding Color}" FontSize="11" FontWeight="Black" /><TextBlock Text="{Binding PnLPercent, StringFormat={}{0:F2}%}" FontFamily="{StaticResource MonoFont}" Foreground="{Binding Color}" FontSize="8" HorizontalAlignment="Right" /></StackPanel>
+                                                                    <StackPanel>
+                                                                        <StackPanel Orientation="Horizontal">
+                                                                            <TextBlock Text="{Binding Side}" Foreground="{Binding Color}" FontSize="10" FontWeight="Black" />
+                                                                            <TextBlock Text="{Binding Confidence, StringFormat={}({0}%)}" Foreground="{StaticResource TextSoft}" FontSize="8" Margin="4,0,0,0" VerticalAlignment="Center" />
+                                                                        </StackPanel>
+                                                                        <TextBlock Text="{Binding ExitTime, StringFormat={}{0:dd MMM HH:mm}}" FontFamily="{StaticResource MonoFont}" Foreground="{StaticResource TextMuted}" FontSize="8" />
+                                                                    </StackPanel>
+                                                                    <StackPanel Grid.Column="1" Margin="16,0,0,0" ToolTip="{Binding Reasoning}">
+                                                                        <TextBlock Text="{Binding StrategyTag}" FontSize="10" FontWeight="Black" Foreground="{StaticResource TextMain}" />
+                                                                        <TextBlock Text="{Binding ExitReason, StringFormat=EXIT: {0}}" Foreground="{StaticResource TextSoft}" FontSize="8" Margin="0,2,0,0" />
+                                                                    </StackPanel>
+                                                                    <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                                                                        <TextBlock Text="{Binding PnL, StringFormat={}{0:N2}}" FontFamily="{StaticResource MonoFont}" Foreground="{Binding Color}" FontSize="11" FontWeight="Black" />
+                                                                        <TextBlock Text="{Binding PnLPercent, StringFormat={}{0:F2}%}" FontFamily="{StaticResource MonoFont}" Foreground="{Binding Color}" FontSize="8" HorizontalAlignment="Right" />
+                                                                    </StackPanel>
                                                                 </Grid>
                                                             </Border>
                                                         </DataTemplate>
@@ -835,7 +945,7 @@
                                         </StackPanel>
 
                                         <TextBlock Grid.Row="1" Text="GLOBAL MARKET ANALYSIS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,16,0,10" />
-                                        <DataGrid Grid.Row="2" ItemsSource="{Binding GlobalBacktestResults}" AutoGenerateColumns="False" Background="Transparent" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None" MaxHeight="250" VerticalScrollBarVisibility="Auto">
+                                        <DataGrid Grid.Row="2" ItemsSource="{Binding Studio.GlobalBacktestResults}" AutoGenerateColumns="False" Background="Transparent" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None" MaxHeight="250" VerticalScrollBarVisibility="Auto">
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="SYMBOL" Binding="{Binding Symbol}" Width="80">
                                                     <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="FontWeight" Value="Black"/><Setter Property="Foreground" Value="{StaticResource TextMain}"/></Style></DataGridTextColumn.ElementStyle>
@@ -858,6 +968,73 @@
                     </ScrollViewer>
                 </TabItem>
 
+                <TabItem Header="Focused Backtest">
+                    <Grid Margin="12">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Controls -->
+                        <Border Grid.Row="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,0,12">
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="SELECT SYMBOL:" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,12,0" />
+                                <ComboBox ItemsSource="{Binding FocusBacktest.Symbols}" 
+                                          SelectedItem="{Binding FocusBacktest.SelectedSymbol}" 
+                                          Width="150" Foreground="White"
+                                          Background="{StaticResource SurfaceBg}" 
+                                          Padding="8,4" />
+                                
+                                <Button Content="START FOCUS MODE" 
+                                        Command="{Binding FocusBacktest.StartSimulationCommand}" 
+                                        IsEnabled="{Binding FocusBacktest.IsRunning, Converter={StaticResource InverseBooleanConverter}}"
+                                        Background="{StaticResource Accent}" 
+                                        Foreground="White" 
+                                        Margin="16,0,8,0" 
+                                        Padding="20,4" />
+
+                                <Button Content="STOP" 
+                                        Command="{Binding FocusBacktest.StopSimulationCommand}" 
+                                        IsEnabled="{Binding FocusBacktest.IsRunning}"
+                                        Background="{StaticResource BgCard}" 
+                                        Foreground="White" 
+                                        Padding="20,4" />
+
+                                <ProgressBar Value="{Binding FocusBacktest.SimulationProgress}" 
+                                             Width="200" 
+                                             IsIndeterminate="{Binding FocusBacktest.IsRunning}" 
+                                             Height="12"
+                                             Margin="24,0,0,0" 
+                                             Foreground="{StaticResource Accent}" />
+                                
+                                <TextBlock Text="{Binding FocusBacktest.StatusMessage}" 
+                                           Foreground="{StaticResource TextSoft}" 
+                                           FontSize="10" 
+                                           Margin="16,0,0,0" 
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Logs Flow -->
+                        <Border Grid.Row="1" Style="{StaticResource TerminalCardStyle}" Background="{StaticResource AppBg}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Text="AGENT STATUS &amp; DATA FLOW LOGS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,12" />
+                                <ListBox Grid.Row="1" ItemsSource="{Binding FocusBacktest.AgentLogs}" Background="Transparent" BorderThickness="0">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="12" Margin="0,4" />
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </TabItem>
+
                 <TabItem Header="System Settings">
                     <Grid Margin="0,8,0,0">
                         <Grid.ColumnDefinitions>
@@ -874,7 +1051,7 @@
                                 <Border Background="{StaticResource AppBg}" Padding="16" CornerRadius="4" Margin="0,0,0,20">
                                     <StackPanel>
                                         <TextBlock Text="PUBLIC KEY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBox Text="{Binding ApiPublicKey}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
+                                        <TextBox Text="{Binding Studio.ApiPublicKey}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
                                         
                                         <TextBlock Text="PRIVATE SECRET (ENCRYPTED)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                                         <PasswordBox Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
@@ -887,10 +1064,10 @@
                                 <Border Background="{StaticResource AppBg}" Padding="16" CornerRadius="4">
                                     <StackPanel>
                                         <TextBlock Text="TELEGRAM WEBHOOK URL" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBox Text="{Binding TelegramWebhookUrl}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
+                                        <TextBox Text="{Binding Studio.TelegramWebhookUrl}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
                                         
                                         <TextBlock Text="DISCORD WEBHOOK (OPTIONAL)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBox Text="{Binding DiscordWebhookUrl}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,0" />
+                                        <TextBox Text="{Binding Studio.DiscordWebhookUrl}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,0" />
                                     </StackPanel>
                                 </Border>
 
@@ -948,11 +1125,11 @@
                             <UniformGrid Columns="2">
                                 <StackPanel Margin="0,0,10,0">
                                     <TextBlock Text="OPEN" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding ActivePositions.Count}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Margin="0,3,0,0" />
+                                    <TextBlock Text="{Binding PortfolioView.ActivePositions.Count}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Margin="0,3,0,0" />
                                 </StackPanel>
                                 <StackPanel>
                                     <TextBlock Text="QUEUE" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding QueueHealth}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Margin="0,3,0,0" />
+                                    <TextBlock Text="{Binding Telemetry.QueueHealth}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Margin="0,3,0,0" />
                                 </StackPanel>
                             </UniformGrid>
                         </Border>
@@ -960,7 +1137,7 @@
                         <TextBlock Text="OPEN BOOK" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                         <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Margin="0,6,0,10">
                             <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="180">
-                                <ItemsControl ItemsSource="{Binding ActivePositions}">
+                                <ItemsControl ItemsSource="{Binding PortfolioView.ActivePositions}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Margin="0,0,0,8">
@@ -1002,7 +1179,7 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBox Text="{Binding StrategyPrompt, UpdateSourceTrigger=PropertyChanged}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" FontSize="11" />
+                            <TextBox Text="{Binding Studio.StrategyPrompt, UpdateSourceTrigger=PropertyChanged}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" FontSize="11" />
                             <Button Grid.Column="1" Command="{Binding SubmitPromptCommand}" Content="APPLY" Background="{StaticResource Accent}" Foreground="White" FontSize="10" FontWeight="Black" BorderThickness="0" Padding="12,0" Margin="6,0,0,0" />
                         </Grid>
 
@@ -1014,11 +1191,11 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Margin="0,0,6,0">
                                     <TextBlock Text="MARKET" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <ComboBox ItemsSource="{Binding Markets}" SelectedItem="{Binding SelectedMarket}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                    <ComboBox ItemsSource="{Binding MarketOverview.Markets}" SelectedItem="{Binding MarketOverview.SelectedMarket}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                 </StackPanel>
                                 <StackPanel Grid.Column="1" Margin="6,0,0,0">
                                     <TextBlock Text="SYMBOL" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <ComboBox ItemsSource="{Binding Symbols}" SelectedItem="{Binding SelectedSymbol}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                    <ComboBox ItemsSource="{Binding MarketOverview.Symbols}" SelectedItem="{Binding MarketOverview.SelectedSymbol}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Grid>
                         </Border>
@@ -1035,11 +1212,11 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,6,0">
                                     <TextBlock Text="INTERVAL" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <ComboBox ItemsSource="{Binding Timeframes}" SelectedItem="{Binding SelectedTimeframe}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                    <ComboBox ItemsSource="{Binding MarketOverview.TimeframeOptions}" SelectedItem="{Binding MarketOverview.SelectedTimeframe}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                 </StackPanel>
                                 <StackPanel Grid.Row="0" Grid.Column="1" Margin="6,0,0,0">
                                     <TextBlock Text="RISK PROFILE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                    <ComboBox ItemsSource="{Binding RiskProfiles}" SelectedItem="{Binding SelectedRiskProfile}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                    <ComboBox ItemsSource="{Binding Studio.RiskProfiles}" SelectedItem="{Binding Studio.SelectedRiskProfile}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
                                 </StackPanel>
                             </Grid>
                         </Border>
@@ -1047,9 +1224,9 @@
                         <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1,0,0,0" Padding="10" Margin="0,0,0,10">
                             <StackPanel>
                         <TextBlock Text="POSITION RISK STATUS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                <TextBlock Text="{Binding TraderSafetyStatus}" Foreground="{Binding TraderSafetyColor}" FontSize="15" FontWeight="Black" Margin="0,4,0,0" />
-                                <TextBlock Text="{Binding AiTradeRecommendation}" Foreground="{StaticResource TextMain}" FontSize="11" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" />
-                                <TextBlock Text="{Binding AiRiskSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding AiAnalystView.TraderSafetyStatus}" Foreground="{Binding AiAnalystView.TraderSafetyColor}" FontSize="15" FontWeight="Black" Margin="0,4,0,0" />
+                                <TextBlock Text="{Binding AiAnalystView.AiTradeRecommendation}" Foreground="{StaticResource TextMain}" FontSize="11" FontWeight="SemiBold" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding AiAnalystView.AiRiskSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap" />
                             </StackPanel>
                         </Border>
 

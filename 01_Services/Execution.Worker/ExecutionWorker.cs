@@ -2,10 +2,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MediatR;
-using ThatsMyQuant.Application.Commands;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Application.Strategy;
 
 namespace ThatsMyQuant.Execution.Worker;
 
@@ -13,17 +14,24 @@ public class ExecutionWorker : BackgroundService
 {
     private readonly ILogger<ExecutionWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
+    private readonly TickPipeline _tickPipeline;
 
-    public ExecutionWorker(ILogger<ExecutionWorker> logger, IServiceProvider serviceProvider)
+    public ExecutionWorker(
+        ILogger<ExecutionWorker> logger, 
+        IServiceProvider serviceProvider,
+        TickPipeline tickPipeline)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _tickPipeline = tickPipeline;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Execution.Worker (The Hand) starting...");
         
+        // Start the zero-allocation tick pipeline (MiroFish Pattern)
+        _tickPipeline.Start(stoppingToken);
         while (!stoppingToken.IsCancellationRequested)
         {
             await PollAndProcessSignals(stoppingToken);

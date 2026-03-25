@@ -1,8 +1,7 @@
 using FluentAssertions;
 using ThatsMyQuant.Application.Strategy;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Strategy;

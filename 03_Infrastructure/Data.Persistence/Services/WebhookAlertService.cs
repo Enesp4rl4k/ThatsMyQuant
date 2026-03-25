@@ -1,8 +1,7 @@
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 

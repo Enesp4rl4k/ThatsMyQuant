@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Domain\ThatsMyQuant.Domain.csproj" />
+    <ProjectReference Include="..\..\06_Contracts\ThatsMyQuant.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

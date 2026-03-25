@@ -2,17 +2,20 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 using Microsoft.EntityFrameworkCore;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Infrastructure.Persistence;
 using ThatsMyQuant.Infrastructure.Repositories;
 using ThatsMyQuant.Execution.Worker;
-using ThatsMyQuant.Application.Commands;
-using ThatsMyQuant.Application.Common;
+using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Infrastructure;
+using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
+using ThatsMyQuant.Infrastructure.Services.Validators;
+using ThatsMyQuant.Application.Common;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddHttpClient();
@@ -26,16 +29,24 @@ builder.Services.AddSerilog();
 
 // --- CORE APPLICATION SERVICES ---
 builder.Services.AddThatsMyQuantApplication();
+builder.Services.AddThatsMyQuantInfrastructure();
 
 // --- INFRASTRUCTURE ADAPTERS ---
 builder.Services.AddSingleton<BorsaMarketDataService>();
 builder.Services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
-builder.Services.AddScoped<IAiReasoningService, DeepSeekReasoningService>();
+builder.Services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
 builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
 builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
 builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
 builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
 builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
+builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
+builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+
+// Signal Validation Chain
+builder.Services.AddScoped<ISignalValidator, MarketHoursValidator>();
+builder.Services.AddScoped<ISignalValidator, PriceSanityValidator>();
+builder.Services.AddScoped<ISignalValidator, MinVolumeValidator>();
 
 // Safety Kernel
 if (!string.IsNullOrWhiteSpace(geminiApiKey))

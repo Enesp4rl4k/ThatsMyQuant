@@ -2,9 +2,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MediatR;
-using ThatsMyQuant.Application.Commands;
+using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Strategy;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Bot;
 
@@ -56,7 +56,7 @@ public class TradeBotWorker : BackgroundService
                     {
                         Source = isPerfectSignal ? "Alpha.PerfectSetup" : "Internal.Simulation",
                         Symbol = "BTC-USDT",
-                        Side = ThatsMyQuant.Domain.Enums.TradeSide.Buy,
+                        Side = ThatsMyQuant.Contracts.Enums.TradeSide.Buy,
                         Price = 60000m + Random.Shared.Next(-10, 10),
                         Confidence = Random.Shared.Next(40, 70), // High confidence for verification
                         Volume24h = 50_000_000m,

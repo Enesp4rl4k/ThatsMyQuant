@@ -1,16 +1,40 @@
 using Microsoft.Extensions.Logging;
 using MediatR;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
 using System.Collections.Concurrent;
+using System.Threading;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-public partial class HftPriceActionAgent : INotificationHandler<Signal>
+public partial class HftPriceActionAgent : INotificationHandler<Signal>, IFocusedAgent
 {
     private readonly ILogger<HftPriceActionAgent> _logger;
     private readonly int _windowSize;
     private readonly ConcurrentDictionary<string, SymbolState> _states = new();
+    private string _focusedSymbol = string.Empty;
+
+    public Task ResetAsync(string symbol, CancellationToken ct = default)
+    {
+        _focusedSymbol = symbol;
+        _states.TryRemove(symbol, out _);
+        _logger.LogInformation("Agent {AgentId} reset for symbol {Symbol}", nameof(HftPriceActionAgent), symbol);
+        return Task.CompletedTask;
+    }
+
+    public Task ProcessStepAsync(Candle candle, CancellationToken ct = default)
+    {
+        var signal = new Signal 
+        { 
+            Symbol = _focusedSymbol, 
+            BestBid = (double)candle.Low, 
+            BestAsk = (double)candle.High, 
+            Price = candle.Close,
+            Timestamp = candle.Timestamp
+        };
+        return Handle(signal, ct);
+    }
 
     private sealed class SymbolState
     {

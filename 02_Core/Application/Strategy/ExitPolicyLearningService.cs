@@ -1,5 +1,4 @@
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -517,7 +516,7 @@ public sealed class ExitPolicyLearningService
     }
 
     private static decimal GetLivePnl(Trade trade)
-        => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == Domain.Enums.TradeSide.Sell ? -1 : 1);
+        => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == Contracts.Enums.TradeSide.Sell ? -1 : 1);
 
     private readonly record struct ExitPolicyMatchSnapshot(ExitPolicyPerformanceSnapshot Snapshot, string MatchScope);
     private readonly record struct ExitPolicyRecommendation(
@@ -542,13 +541,13 @@ internal static class ExitPolicyProfiles
             _ => (1.25m, 3.20m, 0.45m, 0.40m, 0.55m, 18)
         };
 
-        var stopLoss = decision.Side == Domain.Enums.TradeSide.Buy
+        var stopLoss = decision.Side == Contracts.Enums.TradeSide.Buy
             ? currentPrice - (atr * stopAtr)
             : currentPrice + (atr * stopAtr);
-        var takeProfit = decision.Side == Domain.Enums.TradeSide.Buy
+        var takeProfit = decision.Side == Contracts.Enums.TradeSide.Buy
             ? currentPrice + (atr * takeAtr)
             : currentPrice - (atr * takeAtr);
-        var partialTakeProfit = decision.Side == Domain.Enums.TradeSide.Buy
+        var partialTakeProfit = decision.Side == Contracts.Enums.TradeSide.Buy
             ? currentPrice + ((takeProfit - currentPrice) * partialProgress)
             : currentPrice - ((currentPrice - takeProfit) * partialProgress);
 

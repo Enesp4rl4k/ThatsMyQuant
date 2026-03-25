@@ -1,6 +1,6 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 using System.Collections.Concurrent;
 
 namespace ThatsMyQuant.Application.Strategy;

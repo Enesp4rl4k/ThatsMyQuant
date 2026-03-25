@@ -1,8 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Collections.Concurrent;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Infrastructure.Persistence;
 
 namespace Listener.Api.Middleware;
@@ -19,6 +20,7 @@ public class HmacValidationMiddleware
     private readonly TimeSpan _maxSkew;
     private readonly IMemoryCache _cache;
     private readonly ILogger<HmacValidationMiddleware> _logger;
+    private readonly ConcurrentDictionary<string, bool> _inFlightNonces = new(StringComparer.Ordinal);
 
     public HmacValidationMiddleware(
         RequestDelegate next,
@@ -65,7 +67,7 @@ public class HmacValidationMiddleware
         context.Request.EnableBuffering();
         var body = await ReadBodyAsync(context.Request);
 
-        if (!IsSignatureValid(body, headers.Signature))
+        if (!IsSignatureValid(body, headers.Timestamp, headers.Nonce, headers.Signature))
         {
             _logger.LogWarning("Invalid HMAC signature from {IP}", context.Connection.RemoteIpAddress);
             await SendResponse(context, StatusCodes.Status401Unauthorized, "Invalid signature.");
@@ -79,9 +81,18 @@ public class HmacValidationMiddleware
             return;
         }
 
-        // 4. Finalize and Log
-        await RegisterSuccessfulRequest(headers, dbContext);
+        // 4. Process request; register nonce only after successful downstream response
         await _next(context);
+
+        if (context.Response.StatusCode is >= 200 and < 300)
+        {
+            await RegisterSuccessfulRequest(headers, dbContext);
+        }
+        else
+        {
+            _inFlightNonces.TryRemove(headers.Nonce, out _);
+            _inFlightNonces.TryRemove(headers.Idempotency, out _);
+        }
     }
 
     private static bool IsWebhookRequest(HttpContext context) =>
@@ -109,14 +120,17 @@ public class HmacValidationMiddleware
         return (DateTimeOffset.UtcNow - requestTime).Duration() <= _maxSkew;
     }
 
-    private bool IsSignatureValid(string body, string receivedSignature)
+    private bool IsSignatureValid(string body, string timestamp, string nonce, string receivedSignature)
     {
-        var expected = ComputeSignature(body);
+        var expected = ComputeSignature(timestamp, nonce, body);
         return CryptographicEquals(expected, receivedSignature);
     }
 
     private async Task<bool> IsDuplicateRequest(string nonce, string idempotency, QuantDbContext db)
     {
+        if (!_inFlightNonces.TryAdd(nonce, true) || !_inFlightNonces.TryAdd(idempotency, true))
+            return true;
+
         if (_cache.TryGetValue($"webhook:{nonce}", out _) || _cache.TryGetValue($"webhook:{idempotency}", out _))
             return true;
 
@@ -125,6 +139,9 @@ public class HmacValidationMiddleware
 
     private async Task RegisterSuccessfulRequest((string Signature, string Timestamp, string Nonce, string Idempotency) h, QuantDbContext db)
     {
+        _inFlightNonces.TryRemove(h.Nonce, out _);
+        _inFlightNonces.TryRemove(h.Idempotency, out _);
+
         var options = new MemoryCacheEntryOptions { AbsoluteExpirationRelativeToNow = _maxSkew };
         _cache.Set($"webhook:{h.Nonce}", true, options);
         _cache.Set($"webhook:{h.Idempotency}", true, options);
@@ -140,17 +157,20 @@ public class HmacValidationMiddleware
         await db.SaveChangesAsync();
     }
 
-    private string ComputeSignature(string payload)
+    private string ComputeSignature(string timestamp, string nonce, string payload)
     {
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_secret!));
-        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        var data = $"{timestamp}.{nonce}.{payload}";
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
         return "sha256=" + Convert.ToHexStringLower(hash);
     }
 
     private static bool CryptographicEquals(string expected, string actual)
     {
-        if (expected.Length != actual.Length) return false;
-        return CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(expected), Encoding.UTF8.GetBytes(actual));
+        var expectedBytes = Encoding.UTF8.GetBytes(expected);
+        var actualBytes = Encoding.UTF8.GetBytes(actual);
+        if (expectedBytes.Length != actualBytes.Length) return false;
+        return CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes);
     }
 
     private static async Task<string> ReadBodyAsync(HttpRequest request)

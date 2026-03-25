@@ -1,8 +1,8 @@
 using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Application.Commands;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
 using MediatR;
 using ThatsMyQuant.Application.MachineLearning;
 
@@ -14,8 +14,11 @@ public sealed class TickPipeline : IAsyncDisposable
     private readonly ILogger<TickPipeline> _logger;
     private readonly IMediator _mediator;
     private readonly FeatureEngineeringAgent _featureAgent;
+    private readonly ITickLogger _tickLogger;
     private readonly Channel<MarketTick> _tickChannel;
     private readonly Channel<OrderBookSnapshot> _orderBookChannel;
+    private readonly Action<MarketTick> _tickHandler;
+    private readonly Action<OrderBookSnapshot> _obHandler;
     private CancellationTokenSource? _cts;
     private Task? _tickWorker;
     private Task? _obWorker;
@@ -25,12 +28,14 @@ public sealed class TickPipeline : IAsyncDisposable
         IStreamingMarketDataService streamingService, 
         ILogger<TickPipeline> logger, 
         IMediator mediator,
-        FeatureEngineeringAgent featureAgent)
+        FeatureEngineeringAgent featureAgent,
+        ITickLogger tickLogger)
     {
         _streamingService = streamingService;
         _logger = logger;
         _mediator = mediator;
         _featureAgent = featureAgent;
+        _tickLogger = tickLogger;
 
         // Bounded channel options optimized for single-reader/writer
         var tickOptions = new BoundedChannelOptions(10_000)
@@ -50,9 +55,10 @@ public sealed class TickPipeline : IAsyncDisposable
         _tickChannel = Channel.CreateBounded<MarketTick>(tickOptions);
         _orderBookChannel = Channel.CreateBounded<OrderBookSnapshot>(obOptions);
 
-        // Event handler'ları zayıf referans veya düzgün unsubscribe mantığıyla bağlamak gerekebilir
-        _streamingService.OnTickReceived += tick => _tickChannel.Writer.TryWrite(tick);
-        _streamingService.OnOrderBookUpdated += ob => _orderBookChannel.Writer.TryWrite(ob);
+        _tickHandler = tick => _tickChannel.Writer.TryWrite(tick);
+        _obHandler = ob => _orderBookChannel.Writer.TryWrite(ob);
+        _streamingService.OnTickReceived += _tickHandler;
+        _streamingService.OnOrderBookUpdated += _obHandler;
     }
 
     public void Start(CancellationToken cancellationToken)
@@ -74,14 +80,18 @@ public sealed class TickPipeline : IAsyncDisposable
         {
             await foreach (var tick in _tickChannel.Reader.ReadAllAsync(token).ConfigureAwait(false))
             {
-                _featureAgent.ProcessTickNatively((double)tick.Price);
+                try
+                {
+                    _featureAgent.ProcessTickNatively((double)tick.Price);
+                    await _tickLogger.LogTickAsync(tick).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing tick for {Symbol}.", tick.Symbol);
+                }
             }
         }
         catch (OperationCanceledException) { /* Normal shutdown */ }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Fatal error in tick pipeline worker.");
-        }
     }
 
     private async Task ProcessOrderBooksAsync(CancellationToken token)
@@ -90,36 +100,38 @@ public sealed class TickPipeline : IAsyncDisposable
         {
             await foreach (var ob in _orderBookChannel.Reader.ReadAllAsync(token).ConfigureAwait(false))
             {
-                if (ob.Bids.Length == 0 || ob.Asks.Length == 0) continue;
-
-                // Pre-calculating volumes for better readability & structured math
-                var (bidVol, askVol) = SumTopLevelVolumes(ob, 5);
-
-                decimal totalVol = bidVol + askVol;
-                double imbalance = totalVol > 0 ? (double)((bidVol - askVol) / totalVol) : 0;
-                
-                _featureAgent.ApplyOrderFlowImbalance(imbalance);
-
-                var signal = new Signal
+                try
                 {
-                    Source = "HFT-OrderFlow",
-                    Symbol = ob.Symbol,
-                    Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ob.TimestampMs).UtcDateTime,
-                    BestBid = (double)ob.Bids[0].Price,
-                    BestAsk = (double)ob.Asks[0].Price,
-                    OrderFlowImbalance = imbalance,
-                    WallAgeMs = 150d,
-                    Price = (ob.Bids[0].Price + ob.Asks[0].Price) * 0.5m
-                };
+                    if (ob.Bids.Length == 0 || ob.Asks.Length == 0) continue;
 
-                await _mediator.Send(new ProcessSignalCommand(signal), token).ConfigureAwait(false);
+                    var (bidVol, askVol) = SumTopLevelVolumes(ob, 5);
+
+                    decimal totalVol = bidVol + askVol;
+                    double imbalance = totalVol > 0 ? (double)((bidVol - askVol) / totalVol) : 0;
+
+                    _featureAgent.ApplyOrderFlowImbalance(imbalance);
+
+                    var signal = new Signal
+                    {
+                        Source = "HFT-OrderFlow",
+                        Symbol = ob.Symbol,
+                        Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ob.TimestampMs).UtcDateTime,
+                        BestBid = (double)ob.Bids[0].Price,
+                        BestAsk = (double)ob.Asks[0].Price,
+                        OrderFlowImbalance = imbalance,
+                        WallAgeMs = 150d,
+                        Price = (ob.Bids[0].Price + ob.Asks[0].Price) * 0.5m
+                    };
+
+                    await _mediator.Send(new ProcessSignalCommand(signal), token).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error processing order book for {Symbol}.", ob.Symbol);
+                }
             }
         }
         catch (OperationCanceledException) { /* Normal shutdown */ }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Fatal error in orderbook pipeline worker.");
-        }
     }
 
     private static (decimal bidVol, decimal askVol) SumTopLevelVolumes(OrderBookSnapshot ob, int levels)
@@ -141,6 +153,9 @@ public sealed class TickPipeline : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
 
+        _streamingService.OnTickReceived -= _tickHandler;
+        _streamingService.OnOrderBookUpdated -= _obHandler;
+
         if (_cts != null)
         {
             await _cts.CancelAsync();
@@ -149,6 +164,9 @@ public sealed class TickPipeline : IAsyncDisposable
 
             // All workers should be awaited to ensure no background leaks
             await Task.WhenAll(_tickWorker ?? Task.CompletedTask, _obWorker ?? Task.CompletedTask).ConfigureAwait(false);
+            
+            // Final flush of the tick logger
+            await _tickLogger.FlushAsync().ConfigureAwait(false);
             
             _cts.Dispose();
         }

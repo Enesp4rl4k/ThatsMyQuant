@@ -4,13 +4,12 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
-using ThatsMyQuant.Application.Commands;
+using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Handlers;
 using ThatsMyQuant.Application.Strategy;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Handlers;
@@ -19,11 +18,12 @@ public class ProcessSignalHandlerTests : IDisposable
 {
     private readonly ILogger<ProcessSignalHandler> _logger;
     private readonly IMediator _mediator;
-    private readonly IAiReasoningService _aiService;
+    private readonly IReasoningProvider _aiService;
     private readonly IMarketDataService _marketDataService;
     private readonly ISignalRepository _signalRepository;
     private readonly ITradeRepository _tradeRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
+    private readonly AgentCoordinator _agentCoordinator;
     private readonly RiskAgent _riskAgent;
     private readonly IConfiguration _configuration;
     private readonly ProcessSignalHandler _handler;
@@ -35,7 +35,7 @@ public class ProcessSignalHandlerTests : IDisposable
 
         _logger = Substitute.For<ILogger<ProcessSignalHandler>>();
         _mediator = Substitute.For<IMediator>();
-        _aiService = Substitute.For<IAiReasoningService>();
+        _aiService = Substitute.For<IReasoningProvider>();
         _marketDataService = Substitute.For<IMarketDataService>();
         _signalRepository = Substitute.For<ISignalRepository>();
         _tradeRepository = Substitute.For<ITradeRepository>();
@@ -49,9 +49,20 @@ public class ProcessSignalHandlerTests : IDisposable
             .Build();
         _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(Array.Empty<Trade>());
 
+        _agentCoordinator = Substitute.For<AgentCoordinator>(
+            Enumerable.Empty<IFoundationAgent>(),
+            Enumerable.Empty<IPatternAgent>(),
+            Enumerable.Empty<IStrategyAgent>(),
+            Enumerable.Empty<IRiskGuardAgent>(),
+            Enumerable.Empty<IMetaLearningAgent>(),
+            Substitute.For<ILogger<AgentCoordinator>>());
+
         _handler = new ProcessSignalHandler(
             _logger, _mediator, _marketDataService,
-            _signalRepository, _technicalAnalysis, _configuration);
+            _signalRepository, _technicalAnalysis, 
+            Enumerable.Empty<ISignalValidator>(),
+            _agentCoordinator,
+            _configuration);
     }
 
     public void Dispose()
@@ -208,5 +219,60 @@ public class ProcessSignalHandlerTests : IDisposable
         // Assert
         result.Should().BeFalse();
         signal.Status.Should().Be(TradeStatus.Failed);
+    }
+
+    [Fact]
+    public async Task Handle_ValidatorRejects_ShouldReturnFalseWithoutDispatchingTrade()
+    {
+        var signal = CreateTestSignal();
+        var failingValidator = Substitute.For<ISignalValidator>();
+        failingValidator.Order.Returns(0);
+        failingValidator.ValidateAsync(Arg.Any<Signal>())
+            .Returns(Task.FromResult((false, "Test: market closed")));
+
+        var handler = new ProcessSignalHandler(
+            _logger, _mediator, _marketDataService,
+            _signalRepository, _technicalAnalysis,
+            new[] { failingValidator },
+            _agentCoordinator,
+            _configuration);
+
+        var result = await handler.Handle(new ProcessSignalCommand(signal), CancellationToken.None);
+
+        result.Should().BeFalse();
+        signal.Status.Should().Be(TradeStatus.Rejected);
+        signal.Reasoning.Should().Be("Test: market closed");
+        await _mediator.DidNotReceive().Send(Arg.Any<ExecuteTradeCommand>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Handle_ValidatorPasses_ShouldContinueProcessing()
+    {
+        var signal = CreateTestSignal();
+        var passingValidator = Substitute.For<ISignalValidator>();
+        passingValidator.Order.Returns(0);
+        passingValidator.ValidateAsync(Arg.Any<Signal>())
+            .Returns(Task.FromResult((true, string.Empty)));
+
+        _marketDataService.GetCandlesAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>())
+            .Returns(CreateTestCandles());
+        _technicalAnalysis.AnalyzeAsync(Arg.Any<Signal>(), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>())
+            .Returns(TradeDecision.Reject("Confluence too weak"));
+
+        _mediator.Send(Arg.Any<SwarmNegotiationRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new SwarmConsensusResult { Approved = false, RejectionFlags = SignalReasonFlags.SentimentVeto });
+
+        var handler = new ProcessSignalHandler(
+            _logger, _mediator, _marketDataService,
+            _signalRepository, _technicalAnalysis,
+            new[] { passingValidator },
+            _agentCoordinator,
+            _configuration);
+
+        var result = await handler.Handle(new ProcessSignalCommand(signal), CancellationToken.None);
+
+        result.Should().BeFalse();
+        await passingValidator.Received(1).ValidateAsync(signal);
+        await _mediator.DidNotReceive().Send(Arg.Any<ExecuteTradeCommand>(), Arg.Any<CancellationToken>());
     }
 }

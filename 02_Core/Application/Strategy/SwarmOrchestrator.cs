@@ -2,10 +2,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using ThatsMyQuant.Application.MachineLearning;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.ValueObjects;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
 using System.Linq;
@@ -18,6 +17,9 @@ public class SwarmNegotiationRequest : IRequest<SwarmConsensusResult>
     public TradeDecision InitialDecision { get; set; } = null!;
     public RiskParameters Risk { get; set; } = null!;
     public IReadOnlyList<Candle> Candles { get; set; } = null!;
+    public FoundationSnapshot Foundation { get; set; } = FoundationSnapshot.Empty;
+    public PatternSnapshot Patterns { get; set; } = PatternSnapshot.Empty;
+    public MarketRegime Regime { get; set; } = MarketRegime.Ranging;
 }
 
 public class SwarmConsensusResult
@@ -37,18 +39,20 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     private readonly FeatureEngineeringAgent _featureAgent;
     private readonly IPortfolioStateCache _portfolioCache;
     private readonly OFIExecutionAgent _ofiAgent;
+    private readonly AgentCoordinator _agentCoordinator;
     private readonly ILogger<SwarmOrchestrator> _logger;
 
     private const float MlDownsideThreshold = -0.01f;
     private const float SuccessThreshold = 0.6f;
 
     public SwarmOrchestrator(
-        RiskAgent riskAgent, 
-        SentimentAgent sentimentAgent, 
+        RiskAgent riskAgent,
+        SentimentAgent sentimentAgent,
         InferenceAgent inferenceAgent,
         FeatureEngineeringAgent featureAgent,
         IPortfolioStateCache portfolioCache,
         OFIExecutionAgent ofiAgent,
+        AgentCoordinator agentCoordinator,
         ILogger<SwarmOrchestrator> logger)
     {
         _riskAgent = riskAgent;
@@ -57,6 +61,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         _featureAgent = featureAgent;
         _portfolioCache = portfolioCache;
         _ofiAgent = ofiAgent;
+        _agentCoordinator = agentCoordinator;
         _logger = logger;
     }
 
@@ -84,10 +89,31 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
             var (sentimentVote, riskVote) = await RunConcurrentAgents(request, riskParams, cancellationToken);
             var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.GetSnapshot());
 
-            float confidenceScore = CalculateConfidence(sentimentVote, riskVote, mlPrediction, request.InitialDecision, result);
+            var strategyVotes = await _agentCoordinator.CollectStrategyVotesAsync(
+                request.Signal, request.Patterns, request.Foundation,
+                request.Candles, regime.Regime, cancellationToken);
+
+            var metaAdaptation = await _agentCoordinator.RunMetaAdaptationAsync(
+                _portfolioCache.GetRecentTrades(), regime.Regime, cancellationToken);
+
+            float confidenceScore = CalculateConfidence(
+                sentimentVote, riskVote, mlPrediction, request.InitialDecision,
+                strategyVotes, metaAdaptation, result);
+
             confidenceScore = await ApplyMicrostructureInjection(request.Signal, result, confidenceScore, cancellationToken);
 
-            FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision, result);
+            var riskGauntletResult = await _agentCoordinator.RunRiskGauntletAsync(
+                request.Signal, request.InitialDecision, _portfolioCache.GetRecentTrades(), cancellationToken);
+
+            if (!riskGauntletResult.Approved)
+            {
+                result.RejectionFlags |= riskGauntletResult.VetoFlag;
+                _logger.LogWarning("RiskGauntlet vetoed {Symbol}: {Reason}", request.Signal.Symbol, riskGauntletResult.Reason);
+                return result;
+            }
+
+            FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision,
+                riskGauntletResult.SizeMultiplier, result);
         }
         catch (Exception ex)
         {
@@ -110,7 +136,8 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         };
     }
 
-    private async Task<((bool Approved, string Reason) Sentiment, (bool Approved, string Reason, decimal SafePositionSizePercent) Risk)> RunConcurrentAgents(SwarmNegotiationRequest request, RiskParameters riskParams, CancellationToken ct)
+    private async Task<((bool Approved, string Reason) Sentiment, (bool Approved, string Reason, decimal SafePositionSizePercent) Risk)>
+        RunConcurrentAgents(SwarmNegotiationRequest request, RiskParameters riskParams, CancellationToken ct)
     {
         var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, ct);
         var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, riskParams, request.Signal.Volume24h);
@@ -118,7 +145,14 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         return (await sentimentTask, await riskTask);
     }
 
-    private float CalculateConfidence((bool Approved, string Reason) sentiment, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, SwarmConsensusResult result)
+    private float CalculateConfidence(
+        (bool Approved, string Reason) sentiment,
+        (bool Approved, string Reason, decimal Size) risk,
+        PredictionResult ml,
+        TradeDecision decision,
+        IReadOnlyList<StrategyVote> strategyVotes,
+        MetaAdaptation meta,
+        SwarmConsensusResult result)
     {
         float score = 0;
         if (sentiment.Approved) score += 0.3f; else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
@@ -133,7 +167,37 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
             }
             else score += 0.3f;
         }
+
+        if (strategyVotes.Count > 0)
+        {
+            var voteScore = ComputeWeightedVoteScore(strategyVotes, meta);
+            score += voteScore * 0.3f;
+            _logger.LogDebug("Strategy votes contribution: {Score:F3} ({Count} votes)", voteScore, strategyVotes.Count);
+        }
+
+        score *= meta.ConfidenceScalar;
+
         return score;
+    }
+
+    private static float ComputeWeightedVoteScore(IReadOnlyList<StrategyVote> votes, MetaAdaptation meta)
+    {
+        float weightedSum = 0f, totalWeight = 0f;
+
+        foreach (var vote in votes)
+        {
+            if (vote.Vote == VoteOutcome.Abstain) continue;
+
+            var baseWeight = 1.0f;
+            if (meta.StrategyWeights.TryGetValue(vote.StrategyTag, out var metaWeight))
+                baseWeight = metaWeight;
+
+            var direction = vote.Vote == VoteOutcome.Approve ? 1f : -1f;
+            weightedSum += direction * Math.Abs(vote.ConfidenceAdjustment) * baseWeight;
+            totalWeight += Math.Abs(vote.ConfidenceAdjustment) * baseWeight;
+        }
+
+        return totalWeight > 0 ? weightedSum / totalWeight : 0f;
     }
 
     private async Task<float> ApplyMicrostructureInjection(Signal signal, SwarmConsensusResult result, float confidence, CancellationToken ct)
@@ -147,12 +211,13 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         return confidence;
     }
 
-    private void FinalizeConsensus(float score, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml, TradeDecision decision, SwarmConsensusResult result)
+    private void FinalizeConsensus(float score, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml,
+        TradeDecision decision, decimal sizeMultiplier, SwarmConsensusResult result)
     {
         if (score >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
         {
             result.Approved = true;
-            result.AdjustedKellyFraction = risk.Size * (decimal)(1.0f + ml.Value);
+            result.AdjustedKellyFraction = risk.Size * (decimal)(1.0f + ml.Value) * sizeMultiplier;
             result.AdjustedTakeProfit = decision.TakeProfit;
             if (result.ExecutionAction == ExecutionActionType.None) result.ExecutionAction = ExecutionActionType.MarketTaker;
         }

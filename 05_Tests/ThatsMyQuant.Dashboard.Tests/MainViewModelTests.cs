@@ -5,10 +5,10 @@ using System.IO;
 using ThatsMyQuant.Dashboard.Services;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Dashboard.ViewModels;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 using Xunit;
 
 namespace ThatsMyQuant.Dashboard.Tests;
@@ -1225,7 +1225,15 @@ public class MainViewModelTests
                 });
         }
 
-        var backtestEngine = new BacktestEngineApp(technicalAnalysis, Substitute.For<ILogger<BacktestEngineApp>>());
+        var agentCoordinator = new AgentCoordinator(
+            Array.Empty<IFoundationAgent>(),
+            Array.Empty<IPatternAgent>(),
+            Array.Empty<IStrategyAgent>(),
+            Array.Empty<IRiskGuardAgent>(),
+            Array.Empty<IMetaLearningAgent>(),
+            Substitute.For<ILogger<AgentCoordinator>>());
+
+        var backtestEngine = new BacktestEngineApp(technicalAnalysis, agentCoordinator, Substitute.For<ILogger<BacktestEngineApp>>());
         var signalRepository = Substitute.For<ISignalRepository>();
         signalRepository.GetStatusCountsAsync().Returns(new Dictionary<TradeStatus, int>());
         if (tradeRepository == null)
@@ -1236,6 +1244,9 @@ public class MainViewModelTests
 
         strategyHealthStore ??= Substitute.For<IStrategyHealthStore>();
         strategyHealthStore.LoadAsync().Returns(Task.FromResult<IReadOnlyList<StrategyHealthSnapshot>>(Array.Empty<StrategyHealthSnapshot>()));
+
+        // Moved up for BacktestEngineApp dependency
+        // var agentCoordinator = ...;
 
         return new MainViewModel(
             marketDataService,
@@ -1248,6 +1259,8 @@ public class MainViewModelTests
             tradeRepository,
             new TradingLoopService(Substitute.For<ILogger<TradingLoopService>>()),
             strategyHealthStore,
+            agentCoordinator,
+            new FocusedBacktestViewModel(agentCoordinator, marketDataService, Array.Empty<IFocusedAgent>()),
             enableBackgroundTimers: false,
             enableAutomaticAnalysis: false);
     }

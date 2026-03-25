@@ -1,13 +1,14 @@
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using ThatsMyQuant.Dashboard.ViewModels;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using MediatR;
-using ThatsMyQuant.Application.Commands;
+using ThatsMyQuant.Contracts.Commands;
 
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Application.Strategy;
@@ -15,6 +16,8 @@ using Microsoft.SemanticKernel.Connectors.Google;
 using Microsoft.EntityFrameworkCore;
 using ThatsMyQuant.Application.Security;
 using ThatsMyQuant.Dashboard.Services;
+using ThatsMyQuant.Application.Common;
+using ThatsMyQuant.Infrastructure;
 
 namespace ThatsMyQuant.Dashboard;
 
@@ -84,7 +87,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
         services.AddHttpClient<IAlertingService, TelegramAlertService>();
         services.AddHttpClient<IAlertingService, WebhookAlertService>();
-        services.AddScoped<IAiReasoningService, DeepSeekReasoningService>();
+        services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
         services.AddScoped<IAiAnalystService, AiAnalystService>();
         // Exchange Service Integration
         var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Mock";
@@ -142,12 +145,12 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
         services.AddScoped<ITradeRepository, ThatsMyQuant.Infrastructure.Repositories.TradeRepository>();
 
-        // Swarm Intelligence Layer
+        // Swarm Intelligence & 5-Tier Agent Hierarchy
+        services.AddThatsMyQuantApplication();
+        services.AddThatsMyQuantInfrastructure();
+        
         services.AddSingleton<NewsFeedSim>();
         services.AddScoped<ISentimentService, GeminiSentimentService>();
-        services.AddSingleton<SentimentAgent>();
-        services.AddSingleton<RiskAgent>();
-        services.AddSingleton<SwarmOrchestrator>();
         
         // Dashboard Infrastructure
         services.AddSingleton<ITradingLoopService, TradingLoopService>();
@@ -161,6 +164,12 @@ public partial class App : System.Windows.Application
         services.AddSingleton(sp => new ThatsMyQuant.Application.Strategy.MicrosecondPredictionEngine(
             "models/price_prediction.onnx", // Placeholder path
             sp.GetRequiredService<ILogger<ThatsMyQuant.Application.Strategy.MicrosecondPredictionEngine>>()));
+
+        // FOCUSED BACKTEST (UI Flow)
+        services.AddTransient<FocusedBacktestViewModel>();
+        services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<RiskAgent>());
+        services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<HftPriceActionAgent>());
+        services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<SentimentAgent>());
 
         // AI (The Brain)
         if (!string.IsNullOrWhiteSpace(geminiApiKey))

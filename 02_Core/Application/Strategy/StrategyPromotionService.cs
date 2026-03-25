@@ -1,6 +1,5 @@
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Enums;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
 using System.Threading;
 
 namespace ThatsMyQuant.Application.Strategy;

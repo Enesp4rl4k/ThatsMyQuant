@@ -1,19 +1,20 @@
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.ValueObjects;
-using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Enums;
 
 namespace ThatsMyQuant.Application.Strategy;
 
 public class BacktestEngineApp
 {
     private readonly ITechnicalAnalysisService _technicalAnalysis;
+    private readonly AgentCoordinator _agentCoordinator;
     private readonly ILogger<BacktestEngineApp> _logger;
 
-    public BacktestEngineApp(ITechnicalAnalysisService technicalAnalysis, ILogger<BacktestEngineApp> logger)
+    public BacktestEngineApp(ITechnicalAnalysisService technicalAnalysis, AgentCoordinator agentCoordinator, ILogger<BacktestEngineApp> logger)
     {
         _technicalAnalysis = technicalAnalysis ?? throw new ArgumentNullException(nameof(technicalAnalysis));
+        _agentCoordinator = agentCoordinator ?? throw new ArgumentNullException(nameof(agentCoordinator));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -27,6 +28,7 @@ public class BacktestEngineApp
 
         var state = new BacktestState(startingCapital);
         var trades = new List<BacktestTradeResult>();
+        var fullTradeHistory = new List<Trade>();
         PaperPosition? openPosition = null;
 
         for (int i = 60; i < historicalCandles.Count; i++)
@@ -35,18 +37,19 @@ public class BacktestEngineApp
             
             if (openPosition != null)
             {
-                openPosition = ProcessExit(candle, openPosition, state, trades);
+                openPosition = ProcessExit(candle, openPosition, state, trades, fullTradeHistory);
             }
             else
             {
-                openPosition = await TryEntry(symbol, historicalCandles, i, state.Equity).ConfigureAwait(false);
+                var openTrades = openPosition != null ? new List<Trade> { MapToTrade(openPosition) } : new List<Trade>();
+                openPosition = await TryEntry(symbol, historicalCandles, i, state.Equity, openTrades, fullTradeHistory).ConfigureAwait(false);
             }
         }
 
         return BuildFinalResult(symbol, trades, state, startingCapital);
     }
 
-    private PaperPosition? ProcessExit(Candle candle, PaperPosition pos, BacktestState state, List<BacktestTradeResult> trades)
+    private PaperPosition? ProcessExit(Candle candle, PaperPosition pos, BacktestState state, List<BacktestTradeResult> trades, List<Trade> fullHistory)
     {
         string? reason = ResolveExitReason(candle, pos);
         if (reason == null) return pos;
@@ -67,11 +70,22 @@ public class BacktestEngineApp
             ExitReason = reason,
             EntryPrice = pos.EntryPrice,
             ExitPrice = exitPrice,
-            PnLPercent = CalculatePnLPercent(pos.EntryPrice, exitPrice, pos.Side)
+            PnLPercent = CalculatePnLPercent(pos.EntryPrice, exitPrice, pos.Side),
+            Reasoning = pos.Reasoning,
+            Confidence = pos.Confidence
         });
 
+        fullHistory.Add(MapToClosedTrade(pos, candle.Timestamp, exitPrice, netPnL));
         return null;
     }
+
+    private Trade MapToTrade(PaperPosition p) => new() { Symbol = p.Symbol, Side = p.Side, EntryPrice = p.EntryPrice, Quantity = p.Quantity, EntryTime = p.EntryTime };
+
+    private Trade MapToClosedTrade(PaperPosition p, DateTime exitTime, decimal exitPrice, decimal pnl) => new() 
+    { 
+        Symbol = p.Symbol, Side = p.Side, EntryPrice = p.EntryPrice, ExitPrice = exitPrice, 
+        Quantity = p.Quantity, EntryTime = p.EntryTime, ExitTime = exitTime 
+    };
 
     private decimal CalculatePnLPercent(decimal entryPrice, decimal exitPrice, TradeSide side)
     {
@@ -80,25 +94,56 @@ public class BacktestEngineApp
         return side == TradeSide.Sell ? -rawPercent : rawPercent;
     }
 
-    private async Task<PaperPosition?> TryEntry(string symbol, List<Candle> candles, int index, decimal currentEquity)
+    private async Task<PaperPosition?> TryEntry(string symbol, List<Candle> candles, int index, decimal currentEquity, IReadOnlyList<Trade> openTrades, IReadOnlyList<Trade> history)
     {
         var window = candles.Skip(index - 60).Take(61).ToList();
         var signal = new Signal { Symbol = symbol, Price = candles[index].Close };
+        
+        // 1. Technical Baseline
         var decision = await _technicalAnalysis.AnalyzeAsync(signal, window, RiskParameters.Default).ConfigureAwait(false);
+        if (!decision.ShouldTrade || decision.Confidence < 55) return null;
 
-        if (!decision.ShouldTrade || decision.Confidence < 60) return null;
+        // 2. Agent Intelligence Layer
+        var snapshot = await _agentCoordinator.RunFullPipelineAsync(
+            signal, 
+            new List<MarketTick>(), 
+            window, 
+            MarketRegime.Trending, 
+            openTrades, 
+            history).ConfigureAwait(false);
+
+        // 3. Consensus Logic (Multi-Agent Synthesis)
+        float agentAdjustment = snapshot.Votes
+            .Where(v => v.Vote != VoteOutcome.Abstain)
+            .Sum(v => v.ConfidenceAdjustment);
+
+        var consensusConfidence = (double)decision.Confidence + agentAdjustment;
+        
+        // Apply Metadata Adaptation (Tier 5)
+        if (snapshot.Meta != null)
+        {
+            consensusConfidence *= snapshot.Meta.ConfidenceScalar;
+        }
+
+        if (snapshot.RiskGauntlet != null && !snapshot.RiskGauntlet.Approved) return null;
+        if (consensusConfidence < 55) return null; // Final threshold after agent synthesis
 
         decimal price = candles[index].Close;
         decimal qty = price > 0 ? Math.Floor((currentEquity * decision.PositionSizePercent) / price) : 0;
         
         if (qty <= 0) return null;
 
+        var primaryPattern = snapshot.Patterns.PatternTags.FirstOrDefault() ?? "No Pattern";
+        var voteSummary = snapshot.Votes.Any(v => v.Vote == VoteOutcome.Approve) ? " (Voted Approve)" : "";
+
         return new PaperPosition 
         { 
             Symbol = symbol, Side = decision.Side, EntryPrice = price, 
             Quantity = qty, StopLoss = decision.StopLoss, TakeProfit = decision.TakeProfit, 
             EntryTime = candles[index].Timestamp,
-            OptimalPriceSinceEntry = price
+            OptimalPriceSinceEntry = price,
+            Reasoning = $"Engine Consensus: {primaryPattern}{voteSummary}. {decision.Reasoning}",
+            Confidence = Math.Min(99, Math.Max(10, (int)consensusConfidence))
         };
     }
 
@@ -111,8 +156,11 @@ public class BacktestEngineApp
         }
         else
         {
-            if (c.High >= p.StopLoss) return "StopLoss";
-            if (c.Low <= p.TakeProfit) return "TakeProfit";
+            if (p.Side == TradeSide.Sell)
+            {
+                if (c.High >= p.StopLoss) return "StopLoss";
+                if (c.Low <= p.TakeProfit) return "TakeProfit";
+            }
         }
         return null;
     }
@@ -121,7 +169,7 @@ public class BacktestEngineApp
     {
         var direction = side == TradeSide.Sell ? -1m : 1m;
         decimal gross = (exit - entry) * qty * direction;
-        decimal fees = (entry * qty + exit * qty) * 0.0005m; // %0.05 sabit komisyon
+        decimal fees = (entry * qty + exit * qty) * 0.0005m; // %0.05 fixed commission
         return gross - fees;
     }
 
@@ -133,7 +181,8 @@ public class BacktestEngineApp
             FinalEquity = state.Equity, MaxDrawdownPercent = state.MaxDDPercent, Trades = trades,
             WinningTrades = trades.Count(t => t.PnL > 0),
             LosingTrades = trades.Count(t => t.PnL <= 0),
-            StartingCapital = start
+            StartingCapital = start,
+            ProfitFactor = trades.Count(t => t.PnL <= 0) == 0 ? 9.99 : (double)(trades.Where(t => t.PnL > 0).Sum(t => t.PnL) / Math.Abs(trades.Where(t => t.PnL <= 0).Sum(t => t.PnL)))
         };
     }
 

@@ -28,4 +28,5 @@ public class TradeJournalEntry
     public Brush ExecutionModeColor { get; set; } = Brushes.Gray;
     public Brush SideColor { get; set; } = Brushes.Gray;
     public decimal PnL { get; set; }
+    public ThatsMyQuant.Contracts.Models.Trade? OriginalTrade { get; set; }
 }

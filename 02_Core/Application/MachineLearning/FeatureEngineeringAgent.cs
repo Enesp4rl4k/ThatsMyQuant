@@ -1,6 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Application.Strategy;
 
 namespace ThatsMyQuant.Application.MachineLearning;

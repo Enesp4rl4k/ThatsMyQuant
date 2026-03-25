@@ -1,8 +1,8 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
-using ThatsMyQuant.Domain.Interfaces;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Infrastructure.Ai;
 
@@ -74,6 +74,59 @@ public class AiAnalystService : IAiAnalystService
             _logger.LogError(ex, "Failed to generate AI Analysis.");
             heuristicResult.ExecutiveSummary = "AI analysis unavailable, showing rule-based fallback guidance.";
             return heuristicResult;
+        }
+    }
+
+    public async Task<string> ReviewTradeAsync(Trade trade)
+    {
+        _logger.LogInformation("Generating AI Post-Trade Review for {Symbol} (Trade ID: {Id})...", trade.Symbol, trade.Id);
+
+        var pnlStatus = trade.RealisedPnL >= 0 ? "Profit" : "Loss";
+        var prompt = $@"
+        You are an Institutional Trading Coach. Analyze this closed trade and provide a concise, 
+        brutally honest feedback summary (max 3 sentences). 
+        
+        TRADE DETAILS:
+        - Symbol: {trade.Symbol}
+        - Side: {trade.Side}
+        - Entry: {trade.EntryPrice:F2} at {trade.EntryTime:f}
+        - Exit: {trade.ExitPrice:F2} at {trade.ExitTime:f}
+        - PnL: {trade.RealisedPnL:F2} ({trade.PnlPercent:P2}) - {pnlStatus}
+        - Strategy: {trade.StrategyTag}
+        - Regime: {trade.RegimeTag}
+        - Edge Score: {trade.EdgeScore:F2}
+        - Promotion Stage: {trade.PromotionStage}
+        - Execution: {trade.ExecutionMode} (Latency: {trade.ExecutionLatencyMs}ms)
+
+        CONTEXT:
+        - Exact Bucket Impact: {trade.ExactBucketImpactLabel} ({trade.ExactBucketSummary})
+        - Concordance: {trade.ConcordanceImpactLabel} ({trade.ConcordanceSummary})
+        - Venue Bias: {trade.VenueImpactLabel}
+
+        Your feedback should address:
+        1. Was the execution quality acceptable for HFT?
+        2. Did the trade align with the detected Market Regime?
+        3. One actionable improvement for future setups.
+
+        Format: Just provide the raw text response.
+        ";
+
+        try
+        {
+            if (_chatService == null)
+            {
+                return "AI Coach unavailable. Rule-based review: " + 
+                       (trade.RealisedPnL >= 0 ? "Positive outcome, but ensure adherence to regime filters." 
+                                              : "Negative outcome. Verify if stop-loss was optimal for this regime.");
+            }
+
+            var results = await _chatService.GetChatMessageContentsAsync(prompt);
+            return results.FirstOrDefault()?.Content ?? "No review generated.";
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to generate AI Trade Review.");
+            return "Review generation failed due to an internal error.";
         }
     }
 

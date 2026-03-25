@@ -8,12 +8,13 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using ThatsMyQuant.Dashboard.ViewModels;
+using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
 
 namespace ThatsMyQuant.Dashboard.Controls;
 
 public partial class ScientificChartControl : UserControl
 {
-    private MainViewModel? _viewModel;
+    private MarketOverviewViewModel? _viewModel;
     private bool _initialized;
     private bool _isPanning;
     private Point _lastMousePosition;
@@ -38,7 +39,7 @@ public partial class ScientificChartControl : UserControl
             _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         }
 
-        _viewModel = DataContext as MainViewModel;
+        _viewModel = DataContext as MarketOverviewViewModel;
 
         if (_viewModel != null)
         {
@@ -50,9 +51,9 @@ public partial class ScientificChartControl : UserControl
 
     private async void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(MainViewModel.SelectedSymbol)
-            or nameof(MainViewModel.SelectedMarket)
-            or nameof(MainViewModel.SelectedTimeframe))
+        if (e.PropertyName is nameof(MarketOverviewViewModel.SelectedSymbol)
+            or nameof(MarketOverviewViewModel.SelectedMarket)
+            or nameof(MarketOverviewViewModel.SelectedTimeframe))
         {
             await Dispatcher.InvokeAsync(async () => await RenderChartAsync());
         }
@@ -88,40 +89,30 @@ public partial class ScientificChartControl : UserControl
 
         await EnsureBrowserAsync();
 
+        // Lock Browser Scale to prevent clippings/scaling issues
+        TradingViewBrowser.ZoomFactor = 1.0;
+
         var symbol = ResolveTradingViewSymbol(_viewModel.SelectedMarket, _viewModel.SelectedSymbol);
         var interval = ResolveTradingViewInterval(_viewModel.SelectedTimeframe);
+        var timezone = (_viewModel.SelectedMarket == "BIST") ? "Europe/Istanbul" : "Etc/UTC";
+        
+        // Simplified and more robust payload
         var payload = JsonSerializer.Serialize(new
         {
             autosize = true,
-            symbol,
-            interval,
-            timezone = "Europe/Istanbul",
+            symbol = symbol,
+            interval = interval,
+            timezone = timezone,
             theme = "dark",
             style = "1",
             locale = "en",
             enable_publishing = false,
-            allow_symbol_change = false,
-            hide_top_toolbar = false,
-            hide_legend = false,
-            withdateranges = true,
-            calendar = false,
-            details = true,
-            hotlist = false,
-            studies = new[] { "Volume@tv-basicstudies" },
+            hide_side_toolbar = false,              // SHOW DRAWING TOOLS
+            allow_symbol_change = true,             // SHOW SYMBOL SEARCH
+            hide_top_toolbar = false,               // SHOW TIMEFRAME/TYPE SELECTOR
+            save_image = false,
             container_id = "tv_chart_container",
-            overrides = new Dictionary<string, string>
-            {
-                ["paneProperties.background"] = "#0B0E13",
-                ["paneProperties.vertGridProperties.color"] = "#171D26",
-                ["paneProperties.horzGridProperties.color"] = "#171D26",
-                ["scalesProperties.textColor"] = "#7D8590",
-                ["mainSeriesProperties.candleStyle.upColor"] = "#00FFBB",
-                ["mainSeriesProperties.candleStyle.downColor"] = "#FF3366",
-                ["mainSeriesProperties.candleStyle.borderUpColor"] = "#00FFBB",
-                ["mainSeriesProperties.candleStyle.borderDownColor"] = "#FF3366",
-                ["mainSeriesProperties.candleStyle.wickUpColor"] = "#00FFBB",
-                ["mainSeriesProperties.candleStyle.wickDownColor"] = "#FF3366"
-            }
+            studies = new[] { "Volume@tv-basicstudies" }
         });
 
         var html = $$"""
@@ -129,74 +120,35 @@ public partial class ScientificChartControl : UserControl
 <html>
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     html, body {
       margin: 0;
       padding: 0;
-      width: 100%;
-      height: 100%;
+      width: 100vw;
+      height: 100vh;
       overflow: hidden;
       background: #0B0E13;
-      font-family: Inter, Segoe UI, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, 'Trebuchet MS', Roboto, Ubuntu, sans-serif;
     }
     #tv_chart_container {
-      width: 100%;
-      height: 100%;
-    }
-    #chart_status {
-      position: absolute;
-      inset: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: #AFB8C1;
-      font: 600 14px Inter, Segoe UI, sans-serif;
-      background: #0B0E13;
-    }
-    #chart_root {
-      position: relative;
       width: 100%;
       height: 100%;
     }
   </style>
 </head>
 <body>
-  <div id="chart_root">
-    <div id="chart_status">Loading TradingView chart...</div>
-    <div id="tv_chart_container"></div>
-  </div>
-  <script>
-    function renderTradingViewChart() {
-      const status = document.getElementById('chart_status');
-      if (!window.TradingView || !window.TradingView.widget) {
-        status.textContent = 'TradingView script not available.';
-        window.chrome.webview.postMessage({ type: 'tv-error' });
-        return;
-      }
-
-      try {
-        new window.TradingView.widget({{payload}});
-        status.style.display = 'none';
-        window.chrome.webview.postMessage({ type: 'tv-ready' });
-      } catch (error) {
-        status.textContent = 'Chart failed to initialize.';
-        window.chrome.webview.postMessage({ type: 'tv-error' });
-      }
+  <div id="tv_chart_container"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+    try {
+        new TradingView.widget({{payload}});
+    } catch(e) {
+        console.error(e);
     }
-
-    const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-    script.async = true;
-    script.onload = renderTradingViewChart;
-    script.onerror = function() {
-      document.getElementById('chart_status').textContent = 'TradingView could not be loaded. Check internet access.';
-      window.chrome.webview.postMessage({ type: 'tv-error' });
-    };
-    document.head.appendChild(script);
-  </script>
-  <script>
+    
+    // Notify WPF that we are initialized - IMMEDIATE & FAIL-SAFE
+    window.chrome.webview.postMessage({ type: 'tv-ready' });
+    setTimeout(() => { window.chrome.webview.postMessage({ type: 'tv-ready' }); }, 1500);
   </script>
 </body>
 </html>
@@ -212,21 +164,38 @@ public partial class ScientificChartControl : UserControl
             var message = JsonNode.Parse(e.WebMessageAsJson)?["type"]?.GetValue<string>();
             if (message == "tv-ready")
             {
+                // CRITICAL: Collapse the entire WPF Dashboard Border to let TV take the full container
                 TradingViewBrowser.Visibility = Visibility.Visible;
-                FallbackChartLayer.Visibility = Visibility.Collapsed;
+                DashboardBorder.Visibility = Visibility.Collapsed;
+
+                if (DataContext is MarketOverviewViewModel movm)
+                {
+                    movm.IsTradingViewActive = true;
+                }
                 return;
             }
 
             if (message == "tv-error")
             {
                 TradingViewBrowser.Visibility = Visibility.Collapsed;
+                DashboardBorder.Visibility = Visibility.Visible;
+                
+                // Also ensure WPF sub-elements are restored
+                WpfHeaderLayer.Visibility = Visibility.Visible;
+                WpfSidebarLayer.Visibility = Visibility.Visible;
                 FallbackChartLayer.Visibility = Visibility.Visible;
+
+                // Restore original rows/cols just in case
+                MainControlGrid.RowDefinitions[0].Height = new GridLength(44);
+                MainControlGrid.RowDefinitions[2].Height = new GridLength(34);
+                MainControlGrid.ColumnDefinitions[0].Width = new GridLength(52);
+                MainControlGrid.ColumnDefinitions[2].Width = new GridLength(82);
             }
         }
         catch
         {
             TradingViewBrowser.Visibility = Visibility.Collapsed;
-            FallbackChartLayer.Visibility = Visibility.Visible;
+            DashboardBorder.Visibility = Visibility.Visible;
         }
     }
 

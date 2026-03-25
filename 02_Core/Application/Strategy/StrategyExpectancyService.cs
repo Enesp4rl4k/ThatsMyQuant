@@ -1,5 +1,4 @@
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.ValueObjects;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -131,7 +130,7 @@ public sealed class StrategyExpectancyService
     }
 
     private static decimal ComputePnl(Trade trade)
-        => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == Domain.Enums.TradeSide.Sell ? -1 : 1);
+        => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == Contracts.Enums.TradeSide.Sell ? -1 : 1);
 
     private static string ResolveSessionBucket(DateTime timestamp)
     {

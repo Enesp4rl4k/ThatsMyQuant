@@ -1,4 +1,4 @@
-using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Contracts.Enums;
 using System.Collections.Concurrent;
 
 namespace ThatsMyQuant.Application.Strategy;

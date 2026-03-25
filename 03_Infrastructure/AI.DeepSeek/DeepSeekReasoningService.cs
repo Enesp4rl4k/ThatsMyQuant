@@ -1,12 +1,12 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Ai;
 
-public class DeepSeekReasoningService : IAiReasoningService
+public class DeepSeekReasoningService : IReasoningProvider
 {
     private readonly ILogger<DeepSeekReasoningService> _logger;
     private readonly IChatCompletionService _chatService;

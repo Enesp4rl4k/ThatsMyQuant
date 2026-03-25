@@ -1,5 +1,5 @@
 using Microsoft.ML.Data;
-using ThatsMyQuant.Domain.Entities;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.MachineLearning;
 

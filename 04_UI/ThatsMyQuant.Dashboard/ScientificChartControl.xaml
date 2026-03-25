@@ -9,11 +9,12 @@
              d:DesignWidth="1040">
     <Grid Background="{StaticResource AppBg}"
           SizeChanged="RootGrid_SizeChanged">
-        <Border Background="#0B0E13"
+        <Border x:Name="DashboardBorder"
+                Background="#0B0E13"
                 BorderBrush="{StaticResource BorderColor}"
                 BorderThickness="1"
                 CornerRadius="8">
-            <Grid>
+            <Grid x:Name="MainControlGrid">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="44" />
                     <RowDefinition Height="*" />
@@ -25,7 +26,8 @@
                     <ColumnDefinition Width="82" />
                 </Grid.ColumnDefinitions>
 
-                <Border Grid.Row="0"
+                <Border x:Name="WpfHeaderLayer"
+                        Grid.Row="0"
                         Grid.Column="0"
                         Grid.ColumnSpan="3"
                         Background="#0F131B"
@@ -79,7 +81,8 @@
                     </Grid>
                 </Border>
 
-                <Border Grid.Row="1"
+                <Border x:Name="WpfSidebarLayer"
+                        Grid.Row="1"
                         Grid.Column="0"
                         Background="#0F131B"
                         BorderBrush="{StaticResource BorderColor}"
@@ -344,13 +347,6 @@
                         </Canvas>
                     </Grid>
 
-                    <wv2:WebView2 x:Name="TradingViewBrowser"
-                                  Margin="0"
-                                  DefaultBackgroundColor="#0B0E13"
-                                  HorizontalAlignment="Stretch"
-                                  VerticalAlignment="Stretch"
-                                  Visibility="Collapsed" />
-
                     <Border HorizontalAlignment="Left"
                             VerticalAlignment="Top"
                             Margin="14,10,0,0"
@@ -441,5 +437,17 @@
                 </Border>
             </Grid>
         </Border>
+
+        <!-- WebView2 MOVED HERE AS DIRECT CHILD OF OUTER GRID -->
+        <wv2:WebView2 x:Name="TradingViewBrowser"
+                      Grid.Row="0"
+                      Grid.RowSpan="3"
+                      Grid.Column="0"
+                      Grid.ColumnSpan="3"
+                      Margin="0"
+                      DefaultBackgroundColor="#0B0E13"
+                      HorizontalAlignment="Stretch"
+                      VerticalAlignment="Stretch"
+                      Visibility="Collapsed" />
     </Grid>
 </UserControl>

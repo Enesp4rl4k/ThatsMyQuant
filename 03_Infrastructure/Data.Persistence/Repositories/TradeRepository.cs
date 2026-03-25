@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
-using ThatsMyQuant.Domain.Entities;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Persistence;
 
 namespace ThatsMyQuant.Infrastructure.Repositories;

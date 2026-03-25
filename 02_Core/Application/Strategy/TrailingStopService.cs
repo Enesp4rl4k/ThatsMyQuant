@@ -1,5 +1,5 @@
-using ThatsMyQuant.Domain.ValueObjects;
-using ThatsMyQuant.Domain.Enums;
+using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
 
 namespace ThatsMyQuant.Application.Strategy;
 

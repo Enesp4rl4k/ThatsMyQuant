@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using ThatsMyQuant.Application.Security;
-using ThatsMyQuant.Domain.Interfaces;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
