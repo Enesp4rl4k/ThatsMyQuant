@@ -28,6 +28,7 @@ public static class DependencyInjection
         services.AddScoped<IStrategyAgent, BreakoutStrategyAgent>();
         services.AddScoped<IStrategyAgent, StatisticalArbitrageAgent>();
         services.AddScoped<IStrategyAgent, ScalpingStrategyAgent>();
+        services.AddScoped<IStrategyAgent, VolatilityExpansionAgent>();
 
         // Tier 4: Risk
         services.AddScoped<IRiskGuardAgent, KellyPositionSizerAgent>();

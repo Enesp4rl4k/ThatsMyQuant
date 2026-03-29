@@ -4,6 +4,7 @@ using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
 using MediatR;
+using ThatsMyQuant.Application.Common;
 using ThatsMyQuant.Application.MachineLearning;
 
 namespace ThatsMyQuant.Application.Strategy;
@@ -23,19 +24,24 @@ public sealed class TickPipeline : IAsyncDisposable
     private Task? _tickWorker;
     private Task? _obWorker;
     private bool _disposed;
+    private readonly object _startLock = new();
+
+    private readonly DataFreshnessMonitor _freshnessMonitor;
 
     public TickPipeline(
-        IStreamingMarketDataService streamingService, 
-        ILogger<TickPipeline> logger, 
+        IStreamingMarketDataService streamingService,
+        ILogger<TickPipeline> logger,
         IMediator mediator,
         FeatureEngineeringAgent featureAgent,
-        ITickLogger tickLogger)
+        ITickLogger tickLogger,
+        DataFreshnessMonitor freshnessMonitor)
     {
         _streamingService = streamingService;
         _logger = logger;
         _mediator = mediator;
         _featureAgent = featureAgent;
         _tickLogger = tickLogger;
+        _freshnessMonitor = freshnessMonitor;
 
         // Bounded channel options optimized for single-reader/writer
         var tickOptions = new BoundedChannelOptions(10_000)
@@ -55,22 +61,33 @@ public sealed class TickPipeline : IAsyncDisposable
         _tickChannel = Channel.CreateBounded<MarketTick>(tickOptions);
         _orderBookChannel = Channel.CreateBounded<OrderBookSnapshot>(obOptions);
 
-        _tickHandler = tick => _tickChannel.Writer.TryWrite(tick);
-        _obHandler = ob => _orderBookChannel.Writer.TryWrite(ob);
+        _tickHandler = tick =>
+        {
+            if (tick.Price <= 0 || tick.Volume < 0) return; // price sanity guard
+            _tickChannel.Writer.TryWrite(tick);
+        };
+        _obHandler = ob =>
+        {
+            if (ob.Bids.Length > 0 && ob.Bids[0].Price <= 0) return; // price sanity guard
+            if (ob.Asks.Length > 0 && ob.Asks[0].Price <= 0) return;
+            _orderBookChannel.Writer.TryWrite(ob);
+        };
         _streamingService.OnTickReceived += _tickHandler;
         _streamingService.OnOrderBookUpdated += _obHandler;
     }
 
     public void Start(CancellationToken cancellationToken)
     {
-        if (_cts != null) return; // Zaten çalışıyorsa ikinciyi başlatma
+        lock (_startLock)
+        {
+            if (_cts != null) return; // Already running — don't start a second time
 
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        
-        // SonarQube Fix: Task.Run tercih edilir veya StartNew kullanılacaksa scheduler belirtilmelidir.
-        _tickWorker = Task.Run(() => ProcessTicksAsync(_cts.Token), _cts.Token);
-        _obWorker = Task.Run(() => ProcessOrderBooksAsync(_cts.Token), _cts.Token);
-        
+            _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+            _tickWorker = Task.Run(() => ProcessTicksAsync(_cts.Token), _cts.Token);
+            _obWorker = Task.Run(() => ProcessOrderBooksAsync(_cts.Token), _cts.Token);
+        }
+
         _logger.LogInformation("Zero-allocation Tick Pipeline started.");
     }
 
@@ -82,7 +99,18 @@ public sealed class TickPipeline : IAsyncDisposable
             {
                 try
                 {
-                    _featureAgent.ProcessTickNatively((double)tick.Price);
+                    TradingMetrics.TicksIngested.Add(1);
+                    _freshnessMonitor.RecordTick(tick.Symbol, tick.TimestampMs);
+
+                    var priceD = (double)tick.Price;
+                    if (double.IsNaN(priceD) || double.IsInfinity(priceD) || priceD <= 0)
+                    {
+                        TradingMetrics.TicksDropped.Add(1);
+                        _logger.LogWarning("[TickPipeline] Dropping insane tick: {Symbol} price={Price}", tick.Symbol, tick.Price);
+                        continue;
+                    }
+
+                    _featureAgent.ProcessTickNatively(priceD, (double)tick.Volume);
                     await _tickLogger.LogTickAsync(tick).ConfigureAwait(false);
                 }
                 catch (Exception ex)
@@ -103,6 +131,16 @@ public sealed class TickPipeline : IAsyncDisposable
                 try
                 {
                     if (ob.Bids.Length == 0 || ob.Asks.Length == 0) continue;
+
+                    _freshnessMonitor.RecordOrderBook(ob.Symbol, ob.TimestampMs);
+
+                    // Block signal dispatch if data is stale — prevents trading on old prices
+                    var freshness = _freshnessMonitor.CheckFreshness(ob.Symbol);
+                    if (!freshness.IsFresh)
+                    {
+                        _logger.LogWarning("[TickPipeline] Skipping signal for {Symbol}: {Reason}", ob.Symbol, freshness.Reason);
+                        continue;
+                    }
 
                     var (bidVol, askVol) = SumTopLevelVolumes(ob, 5);
 

@@ -26,7 +26,7 @@ public class EdgeScoreServiceTests
                 (true, "ok", 0.01m)));
 
         result.Approved.Should().BeFalse();
-        result.ExecutionEdge.Should().Be(90m);
+        result.ExecutionEdge.Should().Be(62m); // baseline 50 + 12 (volume >= 2× ADV)
     }
 
     [Fact]
@@ -51,15 +51,17 @@ public class EdgeScoreServiceTests
     [Fact]
     public void Evaluate_ShouldRecommendReducedSize_ForSeventyToEightyFourBand()
     {
+        // High-confidence trending signal with strong guards → lands in "reduced" band
         var signal = CreateSignal("THYAO");
-        var decision = CreateDecision("TrendConfluence", "Trending", 82);
+        signal.Volume24h = 50_000_000m; // Very high volume → execution edge boost to 62
+        var decision = CreateDecision("TrendConfluence", "Trending", 95);
         var result = _service.Evaluate(
             signal,
             decision,
             new EvaluationGuards(
-                new ExpectancyGuardResult(true, 0.85m, "soft", 10, 12m, 1.25),
+                new ExpectancyGuardResult(true, 1.0m, "ok", 50, 30m, 2.0),
                 new SymbolGuardResult(true, 1.0m, "ok"),
-                new PromotionGuardResult(true, 1.0m, "ok", true, 0.12, "ScaledLive"),
+                new PromotionGuardResult(true, 1.0m, "ok", true, 0.0, "ScaledLive"),
                 (true, "ok"),
                 (true, "ok", 0.025m)));
 
@@ -72,13 +74,15 @@ public class EdgeScoreServiceTests
     [Fact]
     public void Evaluate_ShouldRecommendProbe_ForFiftyFiveToSixtyNineBand()
     {
+        // Lower-confidence ranging signal with moderate guards → lands in "probe" band
         var signal = CreateSignal("THYAO");
-        var decision = CreateDecision("RangeReversion", "Ranging", 72);
+        signal.Volume24h = 50_000_000m;
+        var decision = CreateDecision("RangeReversion", "Ranging", 65);
         var result = _service.Evaluate(
             signal,
             decision,
             new EvaluationGuards(
-                new ExpectancyGuardResult(true, 0.70m, "soft", 10, 4m, 1.12),
+                new ExpectancyGuardResult(true, 0.60m, "soft", 10, 4m, 1.12),
                 new SymbolGuardResult(true, 0.55m, "soft"),
                 new PromotionGuardResult(true, 0.55m, "caution", false, 0.35, "LiveProbe"),
                 (true, "ok"),

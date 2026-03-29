@@ -23,6 +23,22 @@ PerformanceBootstrapper.OptimizeForHft();
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── Secret validation — fail before accepting any traffic ──────────────────
+// Set secrets via: dotnet user-secrets set "<Key>" "<value>"
+// (UserSecretsId is defined in Listener.Api.csproj)
+static void RequireSecret(IConfiguration cfg, string key, string hint)
+{
+    var value = cfg[key];
+    if (string.IsNullOrWhiteSpace(value) || value.StartsWith("change-me", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException(
+            $"[Security] Required secret '{key}' is missing or still set to the placeholder default.\n" +
+            $"  Fix: dotnet user-secrets set \"{key}\" \"{hint}\"");
+}
+
+RequireSecret(builder.Configuration, "WebhookSecret",          "<64-char-random-hex>");
+RequireSecret(builder.Configuration, "Security:InternalApiKey", "<32-char-random-hex>");
+// ──────────────────────────────────────────────────────────────────────────
+
 builder.Services.AddMemoryCache();
 builder.Services.AddRateLimiter(options =>
 {
@@ -37,9 +53,12 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // --- Database ---
+var quantDbConn = builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=quantbot.db;Cache=Shared";
 builder.Services.AddDbContext<QuantDbContext>(options =>
-    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"));
+    options.UseSqlite(quantDbConn));
 
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<QuantDbContext>();
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
@@ -57,7 +76,7 @@ builder.Services.AddHttpClient("Yahoo", client =>
 builder.Services.AddHttpClient("Binance");
 
 // --- CORE APPLICATION SERVICES ---
-builder.Services.AddThatsMyQuantApplication();
+builder.Services.AddThatsMyQuantApplication(builder.Configuration);
 builder.Services.AddThatsMyQuantInfrastructure();
 
 // --- INFRASTRUCTURE ADAPTERS ---
@@ -111,6 +130,8 @@ using (var scope = app.Services.CreateScope())
 
 app.UseMiddleware<HmacValidationMiddleware>();
 app.UseMiddleware<ApiKeyValidationMiddleware>();
+
+app.MapHealthChecks("/health");
 
 app.MapPost("/webhook", async (Signal signal, IMediator mediator) =>
 {

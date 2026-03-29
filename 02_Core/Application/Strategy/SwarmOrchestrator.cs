@@ -5,9 +5,13 @@ using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using ThatsMyQuant.Application.Common;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -39,11 +43,9 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     private readonly FeatureEngineeringAgent _featureAgent;
     private readonly IPortfolioStateCache _portfolioCache;
     private readonly OFIExecutionAgent _ofiAgent;
-    private readonly AgentCoordinator _agentCoordinator;
+    private readonly IAgentCoordinator _agentCoordinator;
     private readonly ILogger<SwarmOrchestrator> _logger;
-
-    private const float MlDownsideThreshold = -0.01f;
-    private const float SuccessThreshold = 0.6f;
+    private readonly SwarmOptions _opts;
 
     public SwarmOrchestrator(
         RiskAgent riskAgent,
@@ -52,8 +54,9 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         FeatureEngineeringAgent featureAgent,
         IPortfolioStateCache portfolioCache,
         OFIExecutionAgent ofiAgent,
-        AgentCoordinator agentCoordinator,
-        ILogger<SwarmOrchestrator> logger)
+        IAgentCoordinator agentCoordinator,
+        ILogger<SwarmOrchestrator> logger,
+        IOptions<SwarmOptions>? options = null)
     {
         _riskAgent = riskAgent;
         _sentimentAgent = sentimentAgent;
@@ -63,64 +66,151 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         _ofiAgent = ofiAgent;
         _agentCoordinator = agentCoordinator;
         _logger = logger;
+        _opts = options?.Value ?? new SwarmOptions();
     }
 
     public async Task<SwarmConsensusResult> Handle(SwarmNegotiationRequest request, CancellationToken cancellationToken)
     {
+        TradingMetrics.SwarmNegotiations.Add(1);
+        var sw = Stopwatch.StartNew();
         var result = new SwarmConsensusResult { Approved = false };
 
+        // Snapshot portfolio once — avoids 3 list rebuilds per signal
+        var recentTrades = _portfolioCache.GetRecentTrades();
+
+        // --- Step 1: Portfolio guardrails (risk-critical — veto on failure) ---
         try
         {
             var regime = MarketRegimeDetector.Detect(request.Candles);
             var riskParams = ResolveRegimeAdjustedRisk(request.Risk, regime);
 
             var portfolioGuard = await _riskAgent.EvaluatePortfolioGuardrailsAsync(
-                _portfolioCache.GetRecentTrades(),
+                recentTrades,
                 request.Signal,
                 request.InitialDecision.PositionSizePercent,
                 riskParams);
 
             if (!portfolioGuard.Approved)
             {
+                _logger.LogInformation("[PortfolioGuard] Vetoed {Symbol}: {Reason}", request.Signal.Symbol, portfolioGuard.Reason);
                 result.RejectionFlags |= SignalReasonFlags.RiskVeto;
                 return result;
             }
 
-            var (sentimentVote, riskVote) = await RunConcurrentAgents(request, riskParams, cancellationToken);
+            // --- Step 2: Concurrent agents (each handled independently) ---
+            var regime2 = regime; // capture for closure
+            var riskParams2 = riskParams;
+
+            var (sentimentVote, riskVote) = await RunConcurrentAgentsSafe(request, riskParams2, result, cancellationToken);
+
+            // --- Step 3: ML inference (already safe — returns IsValid=false on any issue) ---
             var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.GetSnapshot());
 
-            var strategyVotes = await _agentCoordinator.CollectStrategyVotesAsync(
-                request.Signal, request.Patterns, request.Foundation,
-                request.Candles, regime.Regime, cancellationToken);
+            // --- Step 4: Strategy votes (non-risk — abstain on failure) ---
+            IReadOnlyList<StrategyVote> strategyVotes = Array.Empty<StrategyVote>();
+            try
+            {
+                using var voteCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                voteCts.CancelAfter(_opts.AgentTimeoutMs);
+                strategyVotes = await _agentCoordinator.CollectStrategyVotesAsync(
+                    request.Signal, request.Patterns, request.Foundation,
+                    request.Candles, regime2.Regime, voteCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                TradingMetrics.AgentTimeouts.Add(1, new KeyValuePair<string, object?>("step", "strategy_votes"));
+                _logger.LogWarning("[AgentCoordinator.StrategyVotes] Timed out for {Symbol} after {Ms}ms — abstaining", request.Signal.Symbol, _opts.AgentTimeoutMs);
+                result.RejectionFlags |= SignalReasonFlags.SystemError;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "[AgentCoordinator.StrategyVotes] Faulted for {Symbol} — abstaining from strategy vote", request.Signal.Symbol);
+                result.RejectionFlags |= SignalReasonFlags.SystemError;
+            }
 
-            var metaAdaptation = await _agentCoordinator.RunMetaAdaptationAsync(
-                _portfolioCache.GetRecentTrades(), regime.Regime, cancellationToken);
+            // --- Step 5: Meta-adaptation (non-risk — use defaults on failure) ---
+            var metaAdaptation = MetaAdaptation.Default;
+            try
+            {
+                using var metaCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                metaCts.CancelAfter(_opts.AgentTimeoutMs);
+                metaAdaptation = await _agentCoordinator.RunMetaAdaptationAsync(
+                    recentTrades, regime2.Regime, metaCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                TradingMetrics.AgentTimeouts.Add(1, new KeyValuePair<string, object?>("step", "meta_adaptation"));
+                _logger.LogWarning("[AgentCoordinator.MetaAdaptation] Timed out for {Symbol} after {Ms}ms — using defaults", request.Signal.Symbol, _opts.AgentTimeoutMs);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "[AgentCoordinator.MetaAdaptation] Faulted for {Symbol} — using default weights", request.Signal.Symbol);
+            }
 
             float confidenceScore = CalculateConfidence(
                 sentimentVote, riskVote, mlPrediction, request.InitialDecision,
                 strategyVotes, metaAdaptation, result);
 
-            confidenceScore = await ApplyMicrostructureInjection(request.Signal, result, confidenceScore, cancellationToken);
-
-            var riskGauntletResult = await _agentCoordinator.RunRiskGauntletAsync(
-                request.Signal, request.InitialDecision, _portfolioCache.GetRecentTrades(), cancellationToken);
-
-            if (!riskGauntletResult.Approved)
+            // --- Step 6: Microstructure / OFI injection (non-risk — skip on failure) ---
+            try
             {
-                result.RejectionFlags |= riskGauntletResult.VetoFlag;
-                _logger.LogWarning("RiskGauntlet vetoed {Symbol}: {Reason}", request.Signal.Symbol, riskGauntletResult.Reason);
-                return result;
+                confidenceScore = await ApplyMicrostructureInjection(request.Signal, result, confidenceScore, cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "[OFIExecutionAgent] Faulted for {Symbol} — microstructure injection skipped", request.Signal.Symbol);
             }
 
-            FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision,
-                riskGauntletResult.SizeMultiplier, result);
+            // --- Step 7: Risk gauntlet (risk-critical — veto on failure/timeout) ---
+            try
+            {
+                using var riskCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                riskCts.CancelAfter(_opts.AgentTimeoutMs);
+                var riskGauntletResult = await _agentCoordinator.RunRiskGauntletAsync(
+                    request.Signal, request.InitialDecision, recentTrades, riskCts.Token);
+
+                if (!riskGauntletResult.Approved)
+                {
+                    result.RejectionFlags |= riskGauntletResult.VetoFlag;
+                    _logger.LogWarning("[RiskGauntlet] Vetoed {Symbol}: {Reason}", request.Signal.Symbol, riskGauntletResult.Reason);
+                    return result;
+                }
+
+                FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision,
+                    riskGauntletResult.SizeMultiplier, result);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                TradingMetrics.AgentTimeouts.Add(1, new KeyValuePair<string, object?>("step", "risk_gauntlet"));
+                _logger.LogWarning("[AgentCoordinator.RiskGauntlet] Timed out for {Symbol} after {Ms}ms — conservative veto", request.Signal.Symbol, _opts.AgentTimeoutMs);
+                result.RejectionFlags |= SignalReasonFlags.RiskVeto | SignalReasonFlags.SystemError;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "[AgentCoordinator.RiskGauntlet] Faulted for {Symbol} — conservative veto applied", request.Signal.Symbol);
+                result.RejectionFlags |= SignalReasonFlags.RiskVeto | SignalReasonFlags.SystemError;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("[SwarmOrchestrator] Cancelled for {Symbol}", request.Signal.Symbol);
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Swarm Orchestration CRITICAL FAILURE for {Symbol}", request.Signal.Symbol);
+            _logger.LogCritical(ex, "[SwarmOrchestrator] Unexpected orchestration fault for {Symbol} — all agents aborted", request.Signal.Symbol);
             result.Approved = false;
             result.RejectionFlags |= SignalReasonFlags.SystemError;
         }
+
+        sw.Stop();
+        TradingMetrics.SwarmLatencyMs.Record(sw.Elapsed.TotalMilliseconds,
+            new KeyValuePair<string, object?>("symbol", request.Signal.Symbol));
+
+        if (result.Approved)
+            TradingMetrics.SwarmApprovals.Add(1);
+        else
+            TradingMetrics.SwarmVetos.Add(1);
 
         return result;
     }
@@ -130,19 +220,52 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         if (current != RiskParameters.Default) return current;
         return regime.Regime switch
         {
-            MarketRegime.Volatile => RiskParameters.Default with { MaxPositionSizePercent = 2.5m },
-            MarketRegime.Trending => RiskParameters.Default with { MaxPositionSizePercent = 7.5m },
+            MarketRegime.Volatile => RiskParameters.Default with { MaxPositionSizePercent = _opts.VolatileRegimeMaxPositionPct },
+            MarketRegime.Trending => RiskParameters.Default with { MaxPositionSizePercent = _opts.TrendingRegimeMaxPositionPct },
             _ => RiskParameters.Default
         };
     }
 
+    /// <summary>
+    /// Runs sentiment and risk agents concurrently with independent fault isolation.
+    /// Sentiment failure → abstain (non-critical). Risk agent failure → conservative veto (safety-first).
+    /// </summary>
     private async Task<((bool Approved, string Reason) Sentiment, (bool Approved, string Reason, decimal SafePositionSizePercent) Risk)>
-        RunConcurrentAgents(SwarmNegotiationRequest request, RiskParameters riskParams, CancellationToken ct)
+        RunConcurrentAgentsSafe(SwarmNegotiationRequest request, RiskParameters riskParams, SwarmConsensusResult result, CancellationToken ct)
     {
-        var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, ct);
-        var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, riskParams, request.Signal.Volume24h);
+        var sentimentTask = RunSentimentAgentSafe(request.Signal.Symbol, ct);
+        var riskTask = RunRiskAgentSafe(request.InitialDecision, riskParams, request.Signal.Volume24h);
+
         await Task.WhenAll(sentimentTask, riskTask).WaitAsync(ct);
         return (await sentimentTask, await riskTask);
+    }
+
+    private async Task<(bool Approved, string Reason)> RunSentimentAgentSafe(string symbol, CancellationToken ct)
+    {
+        try
+        {
+            return await _sentimentAgent.EvaluateAsync(symbol, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[SentimentAgent] Faulted for {Symbol} — abstaining from vote", symbol);
+            return (false, $"SentimentAgent faulted: {ex.GetType().Name}");
+        }
+    }
+
+    private async Task<(bool Approved, string Reason, decimal SafePositionSizePercent)> RunRiskAgentSafe(
+        TradeDecision decision, RiskParameters riskParams, decimal volume24h)
+    {
+        try
+        {
+            return await _riskAgent.EvaluateAsync(decision, riskParams, volume24h);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[RiskAgent.Evaluate] Faulted — conservative veto applied");
+            return (false, $"RiskAgent faulted: {ex.GetType().Name}", 0m);
+        }
     }
 
     private float CalculateConfidence(
@@ -155,23 +278,29 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         SwarmConsensusResult result)
     {
         float score = 0;
-        if (sentiment.Approved) score += 0.3f; else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
-        if (risk.Approved) score += 0.4f; else result.RejectionFlags |= SignalReasonFlags.RiskVeto;
+        if (sentiment.Approved) score += _opts.SentimentWeight; else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
+        if (risk.Approved) score += _opts.RiskWeight; else result.RejectionFlags |= SignalReasonFlags.RiskVeto;
 
         if (ml.IsValid)
         {
-            if (ml.Value < MlDownsideThreshold && decision.Side == TradeSide.Buy)
+            // ML predicting negative return = hard veto (no negative expected value trades)
+            if (ml.Value < 0 && decision.Side == TradeSide.Buy)
             {
                 result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
-                score -= 0.5f;
+                return 0f; // ML veto — don't trade against the model
             }
-            else score += 0.3f;
+            else if (ml.Value > 0 && decision.Side == TradeSide.Sell)
+            {
+                result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
+                return 0f;
+            }
+            else score += _opts.MlWeight;
         }
 
         if (strategyVotes.Count > 0)
         {
             var voteScore = ComputeWeightedVoteScore(strategyVotes, meta);
-            score += voteScore * 0.3f;
+            score += voteScore * _opts.StrategyVoteWeight;
             _logger.LogDebug("Strategy votes contribution: {Score:F3} ({Count} votes)", voteScore, strategyVotes.Count);
         }
 
@@ -180,17 +309,32 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         return score;
     }
 
-    private static float ComputeWeightedVoteScore(IReadOnlyList<StrategyVote> votes, MetaAdaptation meta)
+    /// <summary>
+    /// Computes a weighted consensus score from strategy votes.
+    /// Weight source priority: RL bandit (data-driven) → agent's PriorWeight (design-time).
+    /// PriorWeight is the agent's SwarmWeight carried on the vote, normalized so the average
+    /// prior equals 1.0. Once the RL bandit has enough data, its learned weights override.
+    /// </summary>
+    private float ComputeWeightedVoteScore(IReadOnlyList<StrategyVote> votes, MetaAdaptation meta)
     {
         float weightedSum = 0f, totalWeight = 0f;
 
-        foreach (var vote in votes)
-        {
-            if (vote.Vote == VoteOutcome.Abstain) continue;
+        // Normalize prior weights so their average = 1.0
+        var activeVotes = votes.Where(v => v.Vote != VoteOutcome.Abstain).ToList();
+        // Require >50% agent participation — if most agents abstain, signal is too weak
+        if (activeVotes.Count == 0 || activeVotes.Count < votes.Count * _opts.MinParticipationRate) return 0f;
 
-            var baseWeight = 1.0f;
-            if (meta.StrategyWeights.TryGetValue(vote.StrategyTag, out var metaWeight))
-                baseWeight = metaWeight;
+        float avgPrior = activeVotes.Average(v => (float)v.PriorWeight);
+        if (avgPrior <= 0) avgPrior = 1f;
+
+        foreach (var vote in activeVotes)
+        {
+            // RL bandit weight takes priority; fall back to normalized prior weight
+            float baseWeight;
+            if (meta.StrategyWeights.TryGetValue(vote.StrategyTag, out var rlWeight))
+                baseWeight = rlWeight;
+            else
+                baseWeight = vote.PriorWeight / avgPrior;
 
             var direction = vote.Vote == VoteOutcome.Approve ? 1f : -1f;
             weightedSum += direction * Math.Abs(vote.ConfidenceAdjustment) * baseWeight;
@@ -206,7 +350,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         {
             await _ofiAgent.Handle(signal, ct);
             result.ExecutionAction = signal.ExecutionAction;
-            if (result.ExecutionAction != ExecutionActionType.MarketTaker) return confidence + 0.1f;
+            if (result.ExecutionAction != ExecutionActionType.MarketTaker) return confidence + _opts.OfiConfidenceBoost;
         }
         return confidence;
     }
@@ -214,10 +358,11 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     private void FinalizeConsensus(float score, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml,
         TradeDecision decision, decimal sizeMultiplier, SwarmConsensusResult result)
     {
-        if (score >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
+        if (score >= _opts.SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
         {
             result.Approved = true;
-            result.AdjustedKellyFraction = risk.Size * (decimal)(1.0f + ml.Value) * sizeMultiplier;
+            var mlAdjusted = Math.Clamp((decimal)(1.0f + ml.Value), _opts.MlSizeClampMin, _opts.MlSizeClampMax);
+            result.AdjustedKellyFraction = risk.Size * mlAdjusted * sizeMultiplier;
             result.AdjustedTakeProfit = decision.TakeProfit;
             if (result.ExecutionAction == ExecutionActionType.None) result.ExecutionAction = ExecutionActionType.MarketTaker;
         }

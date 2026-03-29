@@ -22,7 +22,12 @@ public class SignalIngestionChannel
         _channel = Channel.CreateBounded<Signal>(options);
     }
 
-    public bool TryWrite(Signal signal) => _channel.Writer.TryWrite(signal);
+    public bool TryWrite(Signal signal)
+    {
+        if (signal is null || string.IsNullOrWhiteSpace(signal.Symbol))
+            return false;
+        return _channel.Writer.TryWrite(signal);
+    }
     
     public IAsyncEnumerable<Signal> ReadAllAsync(CancellationToken ct) => _channel.Reader.ReadAllAsync(ct);
 }

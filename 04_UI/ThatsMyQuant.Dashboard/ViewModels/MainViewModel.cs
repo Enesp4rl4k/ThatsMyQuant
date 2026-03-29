@@ -39,6 +39,7 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private PortfolioViewModel _portfolioView = new();
     [ObservableProperty] private StrategyStudioViewModel _studio = new();
     [ObservableProperty] private FocusedBacktestViewModel _focusBacktest;
+    [ObservableProperty] private MonitoringViewModel _monitoring = new();
 
     // --- KPI Cards ---
     [ObservableProperty] private string _status = "READY";
@@ -101,27 +102,11 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private decimal _realizedPnLPercent = 0;
     [ObservableProperty] private decimal _unrealizedPnLPercent = 0;
     [ObservableProperty] private decimal _riskRewardRatio = 0;
-    [ObservableProperty] private bool _isKillSwitchArmed = false;
-    [ObservableProperty] private string _riskGuardStatus = "Armed: No";
-    [ObservableProperty] private string _listenerHealth = "Unknown";
-    [ObservableProperty] private string _marketDataHealth = "Unknown";
-    [ObservableProperty] private string _aiServiceHealth = "Unknown";
-    [ObservableProperty] private string _apiPing = "-- ms";
-    [ObservableProperty] private Brush _apiPingColor = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
-    [ObservableProperty] private string _serverLatency = "-- ms";
-    [ObservableProperty] private Brush _serverLatencyColor = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
     [ObservableProperty] private decimal _realizedPnL = 0;
     [ObservableProperty] private Brush _realizedPnLColor = new SolidColorBrush(Color.FromRgb(0x3F, 0xB9, 0x50));
     [ObservableProperty] private decimal _unrealizedPnL = 0;
     [ObservableProperty] private decimal? _alphaTrendValue;
     
-    // --- Execution Queue Stats ---
-    [ObservableProperty] private int _queuedCount = 0;
-    [ObservableProperty] private int _executedCount = 0;
-    [ObservableProperty] private int _failedCount = 0;
-    [ObservableProperty] private int _deadLetterCount = 0;
-    [ObservableProperty] private string _queueHealth = "Optimal";
-
     // --- PLAIN ENGLISH TRANSLATION ---
     [ObservableProperty] private string _plainEnglishTranslation = "";
 
@@ -351,10 +336,27 @@ public partial class MainViewModel : ObservableObject
 
         Studio.PropertyChanged += (s, e) =>
         {
-            if (e.PropertyName is nameof(Studio.SelectedBotStrategy) or nameof(Studio.SelectedRiskProfile))
+            if (e.PropertyName is nameof(Studio.SelectedBotBaseAsset) or
+                nameof(Studio.SelectedBotQuoteAsset) or
+                nameof(Studio.SelectedBotStrategy) or
+                nameof(Studio.SelectedBotObjective) or
+                nameof(Studio.BotFundingAmount) or
+                nameof(Studio.GridUpperLimit) or
+                nameof(Studio.GridLowerLimit) or
+                nameof(Studio.GridDensity) or
+                nameof(Studio.GridSlopeBias))
             {
                 UpdateBotLaunchSummary();
+            }
+
+            if (e.PropertyName is nameof(Studio.SelectedBotStrategy) or nameof(Studio.SelectedRiskProfile))
+            {
                 EvaluateStrategyThrottle();
+            }
+
+            if (e.PropertyName == nameof(Studio.SelectedRiskProfile))
+            {
+                UpdatePlainEnglishTranslation();
             }
         };
 
@@ -393,17 +395,14 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var counts = await _signalRepository.GetStatusCountsAsync();
-            
-            InvokeOnUi(() => 
-            {
-                QueuedCount = counts.GetValueOrDefault(TradeStatus.Queued, 0);
-                ExecutedCount = counts.GetValueOrDefault(TradeStatus.Executed, 0);
-                FailedCount = counts.GetValueOrDefault(TradeStatus.Failed, 0);
-                DeadLetterCount = counts.GetValueOrDefault(TradeStatus.DeadLetter, 0);
 
-                if (DeadLetterCount > 0) QueueHealth = "Critical (Dead-Letter)";
-                else if (QueuedCount > 5) QueueHealth = "Congested";
-                else QueueHealth = "Optimal";
+            InvokeOnUi(() =>
+            {
+                Monitoring.UpdateQueueStats(
+                    counts.GetValueOrDefault(TradeStatus.Queued, 0),
+                    counts.GetValueOrDefault(TradeStatus.Executed, 0),
+                    counts.GetValueOrDefault(TradeStatus.Failed, 0),
+                    counts.GetValueOrDefault(TradeStatus.DeadLetter, 0));
 
                 UpdateHftWorkspace();
             });
@@ -447,6 +446,45 @@ public partial class MainViewModel : ObservableObject
                         string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
                         ResolveSessionBucketForTrade(t)))
                     .Select(g => ProjectLeaderboardRow(g))
+                    .GroupBy(r => new { r.StrategyTag, r.RegimeTag })
+                    .Select(merged =>
+                    {
+                        if (merged.Count() == 1) return merged.First();
+                        var all = merged.ToList();
+                        var totalTrades = all.Sum(r => r.Trades);
+                        var totalPnl = all.Sum(r => r.TotalPnL);
+                        var weightedWinRate = totalTrades > 0 ? all.Sum(r => r.WinRate * r.Trades) / totalTrades : 0;
+                        var grossProfit = all.Where(r => r.TotalPnL > 0).Sum(r => r.TotalPnL);
+                        var grossLoss = Math.Abs(all.Where(r => r.TotalPnL < 0).Sum(r => r.TotalPnL));
+                        var first = all.First();
+                        first.Trades = totalTrades;
+                        first.TotalPnL = totalPnl;
+                        first.WinRate = weightedWinRate;
+                        first.ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss);
+                        first.PnlColor = totalPnl >= 0 ? GreenBrush : RedBrush;
+
+                        // Recompute venue bias from all merged buckets
+                        var mergedVenueBias = all.Average(r => r.AverageVenueExecutionBias);
+                        first.AverageVenueExecutionBias = mergedVenueBias;
+
+                        // Recompute exact bucket pressure from merged stats
+                        if (totalTrades >= 3 && weightedWinRate < 35)
+                        {
+                            first.ExactBucketPromotionImpact = "Exact bucket is capping near Paper";
+                            first.ExactBucketSummary = $"Exact bucket has low win rate ({weightedWinRate:F1}%) across {totalTrades} merged trades — not yet earned live deployment.";
+                            first.ExactBucketPromotionImpactColor = RedBrush;
+                        }
+
+                        // Recompute concordance from merged pressure + venue
+                        var (concImpact, concSummary, concColor) = BuildConcordanceDisplay(
+                            first.ExactBucketPromotionImpact, first.ExactBucketSummary,
+                            mergedVenueBias, first.VenueExecutionSummary);
+                        first.ConcordanceImpact = concImpact;
+                        first.ConcordanceSummary = concSummary;
+                        first.ConcordanceImpactColor = concColor;
+
+                        return first;
+                    })
                     .OrderByDescending(r => r.ProfitFactor)
                     .ThenByDescending(r => r.TotalPnL)
                     .Take(6)
@@ -1248,7 +1286,7 @@ public partial class MainViewModel : ObservableObject
 
         var allocatorImpact = ResolveAllocatorImpactFromTrade(storedTrade);
         return $"{symbol} {strategy} {regime} {session}: Allocator {biasDirection} to {averageBias:F2}x ({scope}) in {executionMode} / {promotionStage}. " +
-               $"{allocatorImpact} via {storedTrade.FinalAllocatorScope}. PnL: {totalPnl:N2}.";
+               $"{allocatorImpact} Stored allocator scope: {storedTrade.FinalAllocatorScope}. PnL: {totalPnl:N2}.";
     }
 
     private void PopulateVenueExecutionBias(IReadOnlyList<Trade> closedTrades)
@@ -2217,6 +2255,9 @@ public partial class MainViewModel : ObservableObject
 
     private (string Impact, string Summary, Brush Color) ResolveDynamicPressure(DashTradeStats stats)
     {
+        if (stats.Count >= 3 && stats.WinRate < 35)
+            return ("Exact bucket is capping near Paper", $"Exact bucket has low win rate ({stats.WinRate:F1}%) across {stats.Count} trades — not yet earned live deployment.", RedBrush);
+
         if (stats.Count < 10) return ("Exact bucket is gathering depth", $"Accumulated {stats.Count} trades. Waiting for statistical significance.", GrayBrush);
         
         if (stats.ProfitFactor >= 1.7 && stats.WinRate >= 55)
@@ -3035,6 +3076,10 @@ public partial class MainViewModel : ObservableObject
         if (strategyDisabled) return UpdateLaunchGuard("Disabled", RedBrush, $"{Studio.SelectedBotStrategy} is on the diagonal list.", "Do not deploy disabled strategies.", 0);
         if (StrategyThrottleStatus == "Blocked") return UpdateLaunchGuard("Blocked", RedBrush, "Strategy bucket is underperforming.", "Focus on research and backtesting.", null);
 
+        // Force-enabled strategies are in recovery mode — reduced confidence until validated
+        if (IsForceEnabledStrategy(Studio.SelectedBotStrategy))
+            return UpdateLaunchGuard("Reduced", OrangeBrush, $"{Studio.SelectedBotStrategy} is in manual recovery mode.", "Start with reduced size. Monitor closely for edge confirmation.", null);
+
         var pressure = ResolveSelectedExactBucketPressure();
         if (pressure is { } p && p.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase))
             return UpdateLaunchGuard("Blocked", RedBrush, p.Summary, "Exact bucket learning is rejecting this deployment.", 0);
@@ -3061,14 +3106,33 @@ public partial class MainViewModel : ObservableObject
 
     private void UpdateDeploymentChecklist(string activeSession, bool strategyDisabled)
     {
-        // DeploymentChecklist is still in MainViewModel (view has it globally) or should it move?
-        // User asked for "empty directories and unused collections". DeploymentChecklist was in 'SafetyBanners' earlier.
-        // Wait, I already removed DeploymentChecklist from MainViewModel in the previous step?
-        // Let me check. I removed 'SafetyBanners' and 'TraderWarnings'. I didn't explicitly remove DeploymentChecklist.
-        // But since it's a "redundant property", it should probably go to a sub-ViewModel too.
-        // For now, I'll keep it in MainViewModel OR move it to sub-ViewModel.
-        // MainWindow binds to 'DeploymentChecklist'? No, MainWindow binds to 'Dashboard.DeploymentChecklist'?
-        // Let me check MainWindow.xaml.
+        DeploymentChecklist.Clear();
+
+        AddDeploymentCheck("Strategy throttle",
+            StrategyThrottleStatus is "Normal" or "Learning",
+            $"Throttle is {StrategyThrottleStatus}.");
+
+        AddDeploymentCheck("Risk profile",
+            Studio.SelectedRiskProfile is not null and not "",
+            $"Risk profile: {Studio.SelectedRiskProfile}.");
+
+        AddDeploymentCheck("Session context",
+            !activeSession.Contains("Dead", StringComparison.OrdinalIgnoreCase),
+            $"Active session: {activeSession}.");
+
+        var pressure = ResolveSelectedExactBucketPressure();
+        AddDeploymentCheck("Exact bucket pressure",
+            pressure is null || !pressure.Value.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase),
+            pressure is not null ? pressure.Value.Summary : "Exact bucket pressure data not available.");
+
+        var concordance = ResolveSelectedConcordanceSignal();
+        AddDeploymentCheck("Concordance",
+            concordance is null || (!concordance.Value.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase) && !concordance.Value.Impact.Contains("capping real edge", StringComparison.OrdinalIgnoreCase)),
+            concordance is not null ? concordance.Value.Summary : "Concordance data not available.");
+
+        AddDeploymentCheck("Strategy enabled",
+            !strategyDisabled,
+            strategyDisabled ? $"{Studio.SelectedBotStrategy} is disabled." : $"{Studio.SelectedBotStrategy} is active.");
     }
 
     private (string Impact, string Summary, Brush Color)? ResolveSelectedExactBucketPressure()
@@ -3761,6 +3825,7 @@ public partial class MainViewModel : ObservableObject
         if (lower.Contains("1m") || lower.Contains("scalp")) MarketOverview.SelectedTimeframe = "1m";
         else if (lower.Contains("daily") || lower.Contains("1d") || lower.Contains("day")) MarketOverview.SelectedTimeframe = "1d";
         else MarketOverview.SelectedTimeframe = "1h"; // fallback
+        UpdatePlainEnglishTranslation();
         AddSystemLog("✅ Semantic Kernel translated intent to configuration.");
         Studio.StrategyPrompt = ""; // Clear input
     }
@@ -3962,11 +4027,7 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private void SetMarketHealth(string status)
-    {
-        ListenerHealth = status == "Online" ? "Online" : "Warning";
-        MarketDataHealth = status;
-    }
+    private void SetMarketHealth(string status) => Monitoring.SetMarketHealth(status);
 
     private async Task UpdateAnalysisResultsAsync(string symbol, string market, List<Candle> candles, TradeDecision decision)
     {
@@ -4049,9 +4110,9 @@ public partial class MainViewModel : ObservableObject
             // Tier 1 & 2 -> Telemetry View
             Telemetry.OrderBookRatio = snapshot.Foundation.BidAskImbalance;
             Telemetry.TickDirectionRatio = snapshot.Foundation.TickDirectionRatio;
-            Telemetry.VwapSigma = (double)snapshot.Patterns.VwapDeviationSigmas;
+            Telemetry.VwapSigma = double.IsNaN(snapshot.Patterns.VwapDeviationSigmas) ? 0d : snapshot.Patterns.VwapDeviationSigmas;
             Telemetry.IchimokuCloudStatus = snapshot.Patterns.IchimokuState.ToString();
-            Telemetry.BollingerWidth = snapshot.Patterns.BollingerPercentB; // Simplified mapping
+            Telemetry.BollingerWidth = double.IsNaN(snapshot.Patterns.BollingerPercentB) ? 0d : snapshot.Patterns.BollingerPercentB;
 
             // Tier 3 -> Strategy Studio (Votes)
             foreach (var vote in snapshot.Votes)
@@ -4223,7 +4284,7 @@ public partial class MainViewModel : ObservableObject
             
             InvokeOnUi(() =>
             {
-                AiServiceHealth = "Online";
+                Monitoring.AiServiceHealth = "Online";
                 AiAnalystView.AiSummary = result.ExecutiveSummary;
                 AiAnalystView.AiTradeRecommendation = result.TradeRecommendation;
                 AiAnalystView.AiRiskSummary = result.RiskSummary;
@@ -4251,7 +4312,7 @@ public partial class MainViewModel : ObservableObject
                 AiAnalystView.TraderSafetyColor = OrangeBrush;
                 TraderWarnings.Clear();
                 TraderWarnings.Add("AI analyst unavailable");
-                AiServiceHealth = "Degraded";
+                Monitoring.AiServiceHealth = "Degraded";
             });
             AddSystemLog($"AI Error: {ex.Message}");
         }
@@ -4352,11 +4413,11 @@ public partial class MainViewModel : ObservableObject
             "There is enough room before the nearest support or resistance.");
         AddChecklistItem(
             "Risk acceptable",
-            !IsKillSwitchArmed && RiskRewardRatio >= 1.4m && decision.PositionSizePercent > 0,
+            !Monitoring.IsKillSwitchArmed && RiskRewardRatio >= 1.4m && decision.PositionSizePercent > 0,
             "Risk, size, and kill-switch controls are inside tolerance.");
         AddChecklistItem(
             "Execution quality",
-            AiAnalystView.ExecutionReadiness >= 55 && QueueHealth != "Critical (Dead-Letter)" && MarketDataHealth == "Online",
+            AiAnalystView.ExecutionReadiness >= 55 && Monitoring.QueueHealth != "Critical (Dead-Letter)" && Monitoring.MarketDataHealth == "Online",
             "Execution conditions and system health are acceptable.");
     }
 
@@ -4396,13 +4457,13 @@ public partial class MainViewModel : ObservableObject
     {
         var passedChecks = EntryChecklist.Count(item => item.IsPassing);
 
-        if (decision.ShouldTrade && AiAnalystView.ExecutionReadiness >= 75 && passedChecks >= 5 && !IsKillSwitchArmed)
+        if (decision.ShouldTrade && AiAnalystView.ExecutionReadiness >= 75 && passedChecks >= 5 && !Monitoring.IsKillSwitchArmed)
         {
             AiAnalystView.TradeReadiness = "Ready";
             AiAnalystView.TradeReadinessColor = GreenBrush;
             AiAnalystView.TradeReadinessReason = "Confluence, execution quality, and controls are all supportive.";
         }
-        else if (AiAnalystView.ExecutionReadiness >= 55 && passedChecks >= 4 && !IsKillSwitchArmed)
+        else if (AiAnalystView.ExecutionReadiness >= 55 && passedChecks >= 4 && !Monitoring.IsKillSwitchArmed)
         {
             AiAnalystView.TradeReadiness = "Caution";
             AiAnalystView.TradeReadinessColor = OrangeBrush;
@@ -4454,7 +4515,7 @@ public partial class MainViewModel : ObservableObject
     {
         var normalizedAtr = ATR <= 0 ? 0.25m : Convert.ToDecimal(ATR);
         var referencePrice = CurrentPrice <= 0 ? 1m : CurrentPrice;
-        var queueMultiplier = GetQueueMultiplier(QueueHealth);
+        var queueMultiplier = GetQueueMultiplier(Monitoring.QueueHealth);
         var readinessMultiplier = AiAnalystView.ExecutionReadiness >= 70 ? 0.75m : AiAnalystView.ExecutionReadiness >= 55 ? 1.0m : 1.25m;
         var volumeMultiplier = VolumeRatio >= 1.2 ? 0.8m : 1.15m;
         return Math.Round((normalizedAtr / referencePrice) * 10000m * queueMultiplier * readinessMultiplier * volumeMultiplier, 1);
@@ -4462,8 +4523,8 @@ public partial class MainViewModel : ObservableObject
 
     private void UpdateHftLabels(int tradeCount, decimal sessionPnl, double sessionWinRate, decimal estimatedSlippageBps, string pressureText, string concordanceText)
     {
-        Telemetry.HftWorkspaceHeadline = $"Execution mode {TradingModeLabel}. Queue {QueueHealth.ToLowerInvariant()}, market data {MarketDataHealth.ToLowerInvariant()}, AI {AiServiceHealth.ToLowerInvariant()}. {pressureText} {concordanceText}";
-        Telemetry.HftLatencySummary = $"API {ApiPing} | Server {ServerLatency} | Listener {ListenerHealth}";
+        Telemetry.HftWorkspaceHeadline = $"Execution mode {TradingModeLabel}. Queue {Monitoring.QueueHealth.ToLowerInvariant()}, market data {Monitoring.MarketDataHealth.ToLowerInvariant()}, AI {Monitoring.AiServiceHealth.ToLowerInvariant()}. {pressureText} {concordanceText}";
+        Telemetry.HftLatencySummary = $"API {Monitoring.ApiPing} | Server {Monitoring.ServerLatency} | Listener {Monitoring.ListenerHealth}";
         Telemetry.HftMicrostructureSummary = $"OFI {Telemetry.HftInferenceStatus} | Z-score {Telemetry.ZScoreStatus} | Volume {(VolumeRatio):F1}x | ATR {ATR:F2}";
         Telemetry.HftEstimatedSlippage = $"~{estimatedSlippageBps:N1} bps";
         Telemetry.HftSessionPnl = sessionPnl >= 0 ? $"+{sessionPnl:N0}" : $"{sessionPnl:N0}";
@@ -4475,7 +4536,7 @@ public partial class MainViewModel : ObservableObject
 
     private void ResolveFillQuality(decimal estimatedSlippageBps)
     {
-        if (estimatedSlippageBps <= 8 && AiAnalystView.ExecutionReadiness >= 70 && QueueHealth == "Optimal")
+        if (estimatedSlippageBps <= 8 && AiAnalystView.ExecutionReadiness >= 70 && Monitoring.QueueHealth == "Optimal")
         {
             Telemetry.HftFillQuality = "Institutional";
             Telemetry.HftFillQualityColor = GreenBrush;
@@ -4505,12 +4566,12 @@ public partial class MainViewModel : ObservableObject
 
     private bool CheckHftBlocked((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pText, string cText)
     {
-        if (DeadLetterCount > 0 || QueueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase))
+        if (Monitoring.DeadLetterCount > 0 || Monitoring.QueueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase))
         {
             SetHftBias("Blocked", RedBrush, $"Dead-letter traffic/queue stress. HFT disabled. {pText} {cText}");
             return true;
         }
-        if (MarketDataHealth != "Online" || StrategyThrottleStatus == "Blocked")
+        if (Monitoring.MarketDataHealth != "Online" || StrategyThrottleStatus == "Blocked")
         {
             SetHftBias("Caution", OrangeBrush, $"Execution degraded by data/throttle constraints. {pText} {cText}");
             return true;
@@ -4543,7 +4604,7 @@ public partial class MainViewModel : ObservableObject
 
     private bool CheckHftReady((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pText, string cText)
     {
-        if (AiAnalystView.ExecutionReadiness >= 70 && QueueHealth == "Optimal" && VolumeRatio >= 1.2)
+        if (AiAnalystView.ExecutionReadiness >= 70 && Monitoring.QueueHealth == "Optimal" && VolumeRatio >= 1.2)
         {
             var summary = ResolveHftReadySummary(pressure, concordance, pText, cText);
             SetHftBias("Ready", GreenBrush, summary);
@@ -4604,7 +4665,7 @@ public partial class MainViewModel : ObservableObject
 
         AiAnalystView.SessionSummary =
             $"Session: {sessionActivity.Count} recent {sessionActivity.SourceLabel}, {sessionActivity.ApprovedCount} approved setups, " +
-            $"queue {QueueHealth.ToLowerInvariant()}. " +
+            $"queue {Monitoring.QueueHealth.ToLowerInvariant()}. " +
             $"Top bucket: {(topStrategy == null ? "n/a" : $"{topStrategy.StrategyTag} ({topStrategy.RegimeTag})")}. " +
             $"Weakest bucket: {(weakestStrategy == null ? "n/a" : $"{weakestStrategy.StrategyTag} ({weakestStrategy.RegimeTag})")}.";
     }
@@ -4876,11 +4937,7 @@ public partial class MainViewModel : ObservableObject
 
 
 
-    private void RefreshRiskPanel()
-    {
-        IsKillSwitchArmed = _riskAgent.IsKillSwitchArmed;
-        RiskGuardStatus = IsKillSwitchArmed ? "Armed: Yes" : "Armed: No";
-    }
+    private void RefreshRiskPanel() => Monitoring.RefreshRiskPanel(_riskAgent.IsKillSwitchArmed);
 
 
     private void NormalizeChart(List<Candle> candles)
@@ -5080,14 +5137,14 @@ public partial class MainViewModel : ObservableObject
 
         UpdatePortfolioStageUi(closedTrades);
 
+        var (windowStart, labelSelector, summary) = ResolvePortfolioGrowthWindow();
+        PortfolioView.PortfolioRangeSummary = summary;
+
         if (closedTrades.Count == 0)
         {
             SetEmptyGrowthState(baseline);
             return;
         }
-
-        var (windowStart, labelSelector, summary) = ResolvePortfolioGrowthWindow();
-        PortfolioView.PortfolioRangeSummary = summary;
 
         var tradesInWindow = closedTrades.Where(t => t.ExitTime!.Value >= windowStart).ToList();
         if (tradesInWindow.Count == 0)
@@ -5171,8 +5228,9 @@ public partial class MainViewModel : ObservableObject
         var last = values.LastOrDefault(baseline);
         var changePercent = Math.Abs(first) < 1e-9 ? 0 : ((last - first) / first) * 100d;
 
+        var storedStageContext = ResolveStoredPromotionStageContext(trades, PortfolioView.PortfolioPromotionStageLabel);
         PortfolioView.PortfolioGrowthHeadline = $"{last:N0}";
-        PortfolioView.PortfolioGrowthSubtext = $"{changePercent:+0.00;-0.00;0.00}% realized | Stage {PortfolioView.PortfolioPromotionStageLabel}";
+        PortfolioView.PortfolioGrowthSubtext = $"{changePercent:+0.00;-0.00;0.00}% realized | Dominant stage: {PortfolioView.PortfolioPromotionStageLabel} | {storedStageContext}";
         PortfolioView.PortfolioGrowthColor = changePercent >= 0 ? GreenBrush : RedBrush;
 
         ApplyPortfolioSeries(labels, values);
@@ -5411,7 +5469,23 @@ public partial class MainViewModel : ObservableObject
 
     private async Task UpdateMultiTimeframeAsync(string symbol, string market)
     {
-        // Stub for multi-timeframe analysis
         await Task.CompletedTask;
+
+        TimeframeConfluences.Clear();
+
+        var snapshot = await _technicalAnalysis.ComputeIndicatorsAsync(
+            await _marketDataService.GetCandlesAsync(symbol, 100, "1h", market));
+
+        var pmaxSignal = snapshot?.PMax?.IsBullish == true ? "Bullish" : "Bearish";
+        var alphaTrendSignal = snapshot?.AlphaTrend?.IsBullish == true ? "Bullish" : "Bearish";
+
+        TimeframeConfluences.Add(new ChecklistItemViewModel
+        {
+            Title = "1H",
+            Value = $"PMAX {pmaxSignal} | AlphaTrend {alphaTrendSignal}",
+            IsPassing = snapshot?.PMax?.IsBullish == true && snapshot?.AlphaTrend?.IsBullish == true,
+            Status = snapshot?.PMax?.IsBullish == true && snapshot?.AlphaTrend?.IsBullish == true ? "Aligned" : "Divergent",
+            Color = snapshot?.PMax?.IsBullish == true && snapshot?.AlphaTrend?.IsBullish == true ? GreenBrush : OrangeBrush
+        });
     }
 }

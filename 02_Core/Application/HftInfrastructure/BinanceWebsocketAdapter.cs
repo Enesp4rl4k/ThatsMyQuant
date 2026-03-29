@@ -4,6 +4,8 @@ using System.Buffers;
 using System.Buffers.Text;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.HftInfrastructure;
 
@@ -12,16 +14,19 @@ public sealed class BinanceWebsocketAdapter : BackgroundService
     private readonly HftRingBuffer<Contracts.Models.Signal> _ringBuffer;
     private readonly AllocationFreeSignalPool _signalPool;
     private readonly ILogger<BinanceWebsocketAdapter> _logger;
-    private readonly string _webSocketUrl = "wss://stream.binance.com:9443/ws/btcusdt@trade";
+    private readonly string _webSocketUrl;
 
     public BinanceWebsocketAdapter(
         HftRingBuffer<Contracts.Models.Signal> ringBuffer,
         AllocationFreeSignalPool signalPool,
-        ILogger<BinanceWebsocketAdapter> logger)
+        ILogger<BinanceWebsocketAdapter> logger,
+        IOptions<WebSocketOptions>? wsOptions = null)
     {
         _ringBuffer = ringBuffer;
         _signalPool = signalPool;
         _logger = logger;
+        var opts = wsOptions?.Value ?? new WebSocketOptions();
+        _webSocketUrl = $"{opts.BinanceBaseUrl}/ws/{opts.DefaultStream}";
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -47,7 +52,7 @@ public sealed class BinanceWebsocketAdapter : BackgroundService
 
                         if (result.MessageType == WebSocketMessageType.Close) break;
 
-                        // SonarQube Fix: Sadece tam mesajlari isle (Partial message protection)
+                        // Only process complete messages (partial message protection)
                         if (result.EndOfMessage)
                         {
                             ParseAndDispatch(buffer.AsSpan(0, result.Count));
@@ -74,11 +79,11 @@ public sealed class BinanceWebsocketAdapter : BackgroundService
 
         while (reader.Read())
         {
-            // SonarQube Fix: reader.ValueTextEquals kullanarak string allocation'i engelle
+            // Avoid string allocation by using reader.ValueTextEquals
             if (reader.TokenType == JsonTokenType.PropertyName && reader.ValueTextEquals("p"))
             {
                 reader.Read();
-                // HFT Optimization: reader.ValueSpan üzerinden dogrudan decimal'e çevir
+                // HFT Optimization: reader.ValueSpan ï¿½zerinden dogrudan decimal'e ï¿½evir
                 if (Utf8Parser.TryParse(reader.ValueSpan, out price, out _)) break;
             }
         }

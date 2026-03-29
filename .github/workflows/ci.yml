@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore ThatsMyQuant.sln
+
+      - name: Build
+        run: dotnet build ThatsMyQuant.sln --no-restore --configuration Release
+
+      - name: Run tests
+        run: dotnet test ThatsMyQuant.sln --no-build --configuration Release --verbosity normal --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: '**/TestResults/*.trx'
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for hardcoded secrets
+        run: |
+          echo "Scanning for potential secrets..."
+          # Check for hardcoded API keys, connection strings with absolute paths, etc.
+          FOUND=0
+
+          # Hardcoded absolute paths in connection strings
+          if grep -rn "Data Source=C:" --include="*.cs" .; then
+            echo "::error::Found hardcoded absolute path in connection string"
+            FOUND=1
+          fi
+
+          # Plaintext API keys (not in appsettings templates)
+          if grep -rn "ApiKey.*=.*\"[A-Za-z0-9]{20,}\"" --include="*.cs" . | grep -v "change-me" | grep -v "placeholder"; then
+            echo "::warning::Potential hardcoded API key found"
+          fi
+
+          # .env files that shouldn't be committed
+          if [ -f ".env" ]; then
+            echo "::error::.env file should not be committed"
+            FOUND=1
+          fi
+
+          if [ $FOUND -ne 0 ]; then
+            exit 1
+          fi
+
+          echo "Secret scan passed."

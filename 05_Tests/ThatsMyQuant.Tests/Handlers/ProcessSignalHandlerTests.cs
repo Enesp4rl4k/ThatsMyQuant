@@ -23,7 +23,7 @@ public class ProcessSignalHandlerTests : IDisposable
     private readonly ISignalRepository _signalRepository;
     private readonly ITradeRepository _tradeRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
-    private readonly AgentCoordinator _agentCoordinator;
+    private readonly IAgentCoordinator _agentCoordinator;
     private readonly RiskAgent _riskAgent;
     private readonly IConfiguration _configuration;
     private readonly ProcessSignalHandler _handler;
@@ -49,13 +49,7 @@ public class ProcessSignalHandlerTests : IDisposable
             .Build();
         _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(Array.Empty<Trade>());
 
-        _agentCoordinator = Substitute.For<AgentCoordinator>(
-            Enumerable.Empty<IFoundationAgent>(),
-            Enumerable.Empty<IPatternAgent>(),
-            Enumerable.Empty<IStrategyAgent>(),
-            Enumerable.Empty<IRiskGuardAgent>(),
-            Enumerable.Empty<IMetaLearningAgent>(),
-            Substitute.For<ILogger<AgentCoordinator>>());
+        _agentCoordinator = Substitute.For<IAgentCoordinator>();
 
         _handler = new ProcessSignalHandler(
             _logger, _mediator, _marketDataService,

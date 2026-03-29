@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace ThatsMyQuant.Contracts.Models;
 
 /// <summary>
@@ -11,3 +13,8 @@ public readonly record struct MarketTick(
     long TimestampMs,
     bool IsBuyerMaker
 );
+
+/// <summary>Source-generated JSON context for zero-reflection tick serialization.</summary>
+[JsonSourceGenerationOptions(WriteIndented = false)]
+[JsonSerializable(typeof(MarketTick))]
+public partial class MarketTickJsonContext : JsonSerializerContext;

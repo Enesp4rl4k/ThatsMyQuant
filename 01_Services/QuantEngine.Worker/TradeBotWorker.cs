@@ -1,8 +1,10 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MediatR;
 using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 
@@ -12,22 +14,42 @@ public class TradeBotWorker : BackgroundService
 {
     private readonly ILogger<TradeBotWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
+    private readonly IStreamingMarketDataService _streamingService;
+    private readonly TickPipeline _tickPipeline;
+    private readonly string[] _symbols;
 
-    public TradeBotWorker(ILogger<TradeBotWorker> logger, IServiceProvider serviceProvider)
+    public TradeBotWorker(
+        ILogger<TradeBotWorker> logger,
+        IServiceProvider serviceProvider,
+        IStreamingMarketDataService streamingService,
+        TickPipeline tickPipeline,
+        IConfiguration configuration)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _streamingService = streamingService;
+        _tickPipeline = tickPipeline;
+        _symbols = configuration.GetSection("Exchange:Symbols").Get<string[]>()
+                   ?? configuration.GetSection("Binance:Symbols").Get<string[]>()
+                   ?? new[] { "BTCUSDT", "ETHUSDT" };
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("QuantEngine Worker starting in CHAOS MODE...");
+        _logger.LogInformation("QuantEngine Worker starting...");
+
+        // Connect Binance WebSocket so FeatureEngineeringAgent gets real tick data
+        // before SwarmOrchestrator runs its ML prediction step
+        await _streamingService.ConnectAsync(_symbols, stoppingToken);
+        _logger.LogInformation("Binance WebSocket connected for symbols: {Symbols}", string.Join(", ", _symbols));
+
+        _tickPipeline.Start(stoppingToken);
         int tickCounter = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             tickCounter++;
-            _logger.LogInformation("Bot Heartbeat at: {time}", DateTimeOffset.UtcNow); // UTC'ye çevrildi
+            _logger.LogInformation("Bot Heartbeat at: {time}", DateTimeOffset.UtcNow);
 
             using (var scope = _serviceProvider.CreateScope())
             {
@@ -48,9 +70,9 @@ public class TradeBotWorker : BackgroundService
                     }
 
                     // 2. Process High-Frequency Signal
-                    // SonarQube Fix: "isPerfectSignal" artık sabit "false" değil.
-                    // Chaos mode için sinyallerin %10'u "PerfectSignal" olarak davranacak şekilde dinamikleştirildi.
-                    bool isPerfectSignal = Random.Shared.NextDouble() > 0.9; 
+                    // Chaos testing: 10% of simulated signals are treated as "PerfectSignal"
+                    // to exercise the high-confidence execution path during dev/staging.
+                    bool isPerfectSignal = Random.Shared.NextDouble() > 0.9;
                     
                     var signal = new Signal
                     {
@@ -78,5 +100,7 @@ public class TradeBotWorker : BackgroundService
 
             await Task.Delay(5000, stoppingToken);
         }
+
+        await _streamingService.DisconnectAsync();
     }
 }

@@ -27,40 +27,58 @@ public class InferenceAgent
     private readonly ConcurrentStack<(PredictionEngine<CandleMlData, CandlePrediction> Engine, CandleMlData Buffer)> _pool = new();
     private readonly int _processorCount;
     private readonly MLContext _mlContext;
+    private readonly bool _isAvailable;
+    private const int MaxPoolSize = 8;
 
     public InferenceAgent(string modelPath = "PredictiveAlphaModel.zip")
     {
         _mlContext = new MLContext(seed: 42);
-        
+
         if (!File.Exists(modelPath))
-            throw new FileNotFoundException($"Cannot start Quantitative AI. Trained Model {modelPath} not found.");
-
-        ITransformer loadedModel = _mlContext.Model.Load(modelPath, out var _);
-
-        _processorCount = Environment.ProcessorCount;
-
-        // 🔥 FULL HARDWARE WARMUP
-        // Spin up the pre-compiler concurrently across every single physical and logical core in the system.
-        // Guarantee extreme JIT tail-latency protection (p99 / p999 execution smoothing).
-        Parallel.For(0, _processorCount, coreId =>
         {
-            var engine = _mlContext.Model.CreatePredictionEngine<CandleMlData, CandlePrediction>(loadedModel);
-            
-            var dummyData = new CandleMlData { Features = new float[5] };
-            engine.Predict(dummyData); // Heat up the JIT compiler memory pipelines
-            
-            // Pool the engine with its own dedicated buffer to ensure zero-allocation thread-safety
-            _pool.Push((engine, new CandleMlData()));
-        });
+            _isAvailable = false;
+            return;
+        }
+
+        try
+        {
+            ITransformer loadedModel = _mlContext.Model.Load(modelPath, out var _);
+
+            _processorCount = Math.Min(Environment.ProcessorCount, MaxPoolSize);
+
+            // 🔥 FULL HARDWARE WARMUP
+            // Spin up the pre-compiler concurrently across cores (capped to avoid OOM on large servers).
+            // Guarantee extreme JIT tail-latency protection (p99 / p999 execution smoothing).
+            Parallel.For(0, _processorCount, coreId =>
+            {
+                var engine = _mlContext.Model.CreatePredictionEngine<CandleMlData, CandlePrediction>(loadedModel);
+
+                var dummyData = new CandleMlData { Features = new float[5] };
+                engine.Predict(dummyData); // Heat up the JIT compiler memory pipelines
+
+                // Pool the engine with its own dedicated buffer to ensure zero-allocation thread-safety
+                _pool.Push((engine, new CandleMlData()));
+            });
+
+            _isAvailable = true;
+        }
+        catch
+        {
+            _isAvailable = false;
+        }
     }
 
     /// <summary>
     /// Predicts the target trajectory using the realtime features.
     /// Operates using a concurrent pool to guarantee thread-safety without lock-contention.
+    /// Returns IsValid=false when no trained model is loaded.
     /// </summary>
     public PredictionResult PredictNextReturn(float[] currentNormalizedFeatures)
     {
-        if (currentNormalizedFeatures == null || currentNormalizedFeatures.Length != 5) 
+        if (!_isAvailable)
+            return new PredictionResult { Value = 0f, IsValid = false };
+
+        if (currentNormalizedFeatures == null || currentNormalizedFeatures.Length != 5)
             return new PredictionResult { Value = 0f, IsValid = false };
 
         // 🧠 Feature Drift & Data Corruption Guard
@@ -79,11 +97,11 @@ public class InferenceAgent
                 item.Buffer.Features = currentNormalizedFeatures;
                 var prediction = item.Engine.Predict(item.Buffer);
                 
-                return new PredictionResult 
-                { 
-                    Value = prediction.PredictedNextClose,
+                return new PredictionResult
+                {
+                    Value = prediction.PredictedReturn,
                     IsValid = true,
-                    Confidence = 0.99f 
+                    Confidence = Math.Abs(prediction.PredictedReturn) > 0.1f ? 0.8f : 0.5f
                 };
             }
             finally

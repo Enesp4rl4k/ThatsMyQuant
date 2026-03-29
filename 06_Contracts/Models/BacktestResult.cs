@@ -38,6 +38,18 @@ public record BacktestResult
     /// <summary>Final equity after all trades.</summary>
     public decimal FinalEquity { get; init; }
 
+    /// <summary>
+    /// Total slippage cost across all entries and exits.
+    /// Includes base spread, Almgren-Chriss impact, depth depletion penalty, and SL urgency premium.
+    /// </summary>
+    public decimal TotalSlippageCost { get; init; }
+
+    /// <summary>Number of entries that were partially filled due to thin liquidity.</summary>
+    public int PartialFillCount { get; init; }
+
+    /// <summary>Average fill ratio across all entries (1.0 = all fully filled).</summary>
+    public double AverageFillRatio { get; init; }
+
     /// <summary>Equity curve — equity value after each trade.</summary>
     public List<decimal> EquityCurve { get; init; } = new();
 

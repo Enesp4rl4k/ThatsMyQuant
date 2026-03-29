@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -15,28 +16,43 @@ public class ExecutionWorker : BackgroundService
     private readonly ILogger<ExecutionWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly TickPipeline _tickPipeline;
+    private readonly IStreamingMarketDataService _streamingService;
+    private readonly string[] _symbols;
 
     public ExecutionWorker(
-        ILogger<ExecutionWorker> logger, 
+        ILogger<ExecutionWorker> logger,
         IServiceProvider serviceProvider,
-        TickPipeline tickPipeline)
+        TickPipeline tickPipeline,
+        IStreamingMarketDataService streamingService,
+        IConfiguration configuration)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
         _tickPipeline = tickPipeline;
+        _streamingService = streamingService;
+        _symbols = configuration.GetSection("Exchange:Symbols").Get<string[]>()
+                   ?? configuration.GetSection("Binance:Symbols").Get<string[]>()
+                   ?? new[] { "BTCUSDT", "ETHUSDT" };
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("Execution.Worker (The Hand) starting...");
-        
-        // Start the zero-allocation tick pipeline (MiroFish Pattern)
+
+        // Connect Binance WebSocket — feeds FeatureEngineeringAgent via TickPipeline
+        await _streamingService.ConnectAsync(_symbols, stoppingToken);
+        _logger.LogInformation("Binance WebSocket connected for symbols: {Symbols}", string.Join(", ", _symbols));
+
+        // Start the zero-allocation tick pipeline
         _tickPipeline.Start(stoppingToken);
+
         while (!stoppingToken.IsCancellationRequested)
         {
             await PollAndProcessSignals(stoppingToken);
             await Task.Delay(1500, stoppingToken);
         }
+
+        await _streamingService.DisconnectAsync();
     }
 
     private async Task PollAndProcessSignals(CancellationToken stoppingToken)

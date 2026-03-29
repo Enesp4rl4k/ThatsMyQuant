@@ -7,10 +7,13 @@ namespace ThatsMyQuant.Infrastructure.Persistence;
 
 public class QuantDbContext : DbContext
 {
+    private static readonly JsonSerializerOptions s_jsonOpts = new();
+
     public DbSet<Signal> Signals => Set<Signal>();
     public DbSet<Trade> Trades => Set<Trade>();
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<WebhookRequestLog> WebhookRequestLogs => Set<WebhookRequestLog>();
+    public DbSet<MetaLearningStateRecord> MetaLearningStates => Set<MetaLearningStateRecord>();
 
     public QuantDbContext(DbContextOptions<QuantDbContext> options) : base(options) { }
 
@@ -33,8 +36,8 @@ public class QuantDbContext : DbContext
             // Store Dictionary<string,string> as JSON column with a comparer
             entity.Property(s => s.Metadata)
                 .HasConversion(
-                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, (JsonSerializerOptions?)null) ?? new())
+                    v => JsonSerializer.Serialize(v, s_jsonOpts),
+                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, s_jsonOpts) ?? new())
                 .Metadata.SetValueComparer(new ValueComparer<Dictionary<string, string>>(
                     (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
                     c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
@@ -105,6 +108,14 @@ public class QuantDbContext : DbContext
             entity.HasIndex(x => x.IdempotencyKey).IsUnique();
             entity.HasIndex(x => x.Nonce).IsUnique();
             entity.HasIndex(x => x.ExpiresAtUtc);
+        });
+
+        modelBuilder.Entity<MetaLearningStateRecord>(entity =>
+        {
+            entity.HasKey(x => x.AgentId);
+            entity.Property(x => x.AgentId).HasMaxLength(100);
+            entity.Property(x => x.StateJson).HasColumnType("TEXT").IsRequired();
+            entity.Property(x => x.UpdatedAt);
         });
     }
 }

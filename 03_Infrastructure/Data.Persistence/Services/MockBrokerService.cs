@@ -22,7 +22,7 @@ public class MockBrokerService : IExchangeService
             SignalId = signal.Id,
             Symbol = signal.Symbol,
             EntryPrice = signal.Price,
-            Quantity = 1.0m,
+            Quantity = signal.Quantity > 0 ? signal.Quantity : 1.0m,
             EntryTime = DateTime.UtcNow
         };
 

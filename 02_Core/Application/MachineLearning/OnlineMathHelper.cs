@@ -22,7 +22,7 @@ public sealed class OnlineMathHelper
 
     public OnlineMathHelper(int period)
     {
-        // Guard clause: Periyot 0 veya negatif olamaz
+        // Guard clause: period must be positive
         _period = period > 0 ? period : 14; 
         _alpha = 2.0 / (_period + 1.0);
     }
@@ -30,7 +30,7 @@ public sealed class OnlineMathHelper
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void UpdateEma(double currentPrice)
     {
-        if (Math.Abs(Ema) < double.Epsilon) // Daha güvenli "sıfır" kontrolü
+        if (Math.Abs(Ema) < double.Epsilon) // Safer zero check
         {
             Ema = currentPrice;
             return;

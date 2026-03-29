@@ -39,20 +39,18 @@ public class MicrosecondPredictionEngine : IDisposable
 
     public float PredictDirection(in OrderBookSnapshot orderBook)
     {
-        // SonarQube Fix: Oturum yoksa veya veri boşsa erken çıkış
+        // Early exit if session is null or data is empty
         if (_session == null || orderBook.Bids.Length == 0 || orderBook.Asks.Length == 0) return 0f;
 
-        // SonarQube Fix (Thread Safety): 
-        // Her çağrı için yerel bir array kullanıyoruz ki thread'ler birbirinin verisini bozmasın.
-        // Stack-allocated (stackalloc) kullanarak performansı koruyabiliriz ama DenseTensor 
-        // managed array beklediği için en güvenlisi yerel array'dir.
+        // Thread safety: use a local array per call so threads don't corrupt each other's data.
+        // Stack-allocated would be faster but DenseTensor requires a managed array.
         float[] features = new float[8];
         
         CalculateFeatures(orderBook, features);
 
         try
         {
-            // Inference için gerekli nesneleri yerel (local) oluşturuyoruz
+            // Create inference objects locally per call
             var inputTensor = new DenseTensor<float>(features, new[] { 1, 8 });
             var inputs = new List<NamedOnnxValue> { NamedOnnxValue.CreateFromTensor(_inputName, inputTensor) };
 
@@ -112,6 +110,6 @@ public class MicrosecondPredictionEngine : IDisposable
     public void Dispose()
     {
         _session?.Dispose();
-        GC.SuppressFinalize(this); // SonarQube standard: Dispose implement ediliyorsa bu eklenmeli.
+        GC.SuppressFinalize(this); // Required when implementing IDisposable
     }
 }

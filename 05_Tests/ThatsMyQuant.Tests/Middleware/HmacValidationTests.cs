@@ -64,10 +64,11 @@ public class HmacValidationTests
             .Build();
     }
 
-    private static string ComputeHmac(string payload, string secret)
+    private static string ComputeHmac(string timestamp, string nonce, string payload, string secret)
     {
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(secret));
-        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
+        var data = $"{timestamp}.{nonce}.{payload}";
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
         return "sha256=" + Convert.ToHexStringLower(hash);
     }
 
@@ -80,13 +81,15 @@ public class HmacValidationTests
         var client = host.GetTestClient();
 
         var body = "{\"Symbol\":\"THYAO\",\"Side\":\"Buy\"}";
-        var signature = ComputeHmac(body, TestSecret);
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString();
+        var nonce = Guid.NewGuid().ToString("N");
+        var signature = ComputeHmac(timestamp, nonce, body, TestSecret);
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/webhook");
         request.Content = new StringContent(body, Encoding.UTF8, "application/json");
         request.Headers.Add("X-Signature-256", signature);
-        request.Headers.Add("X-Timestamp", DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString());
-        request.Headers.Add("X-Nonce", Guid.NewGuid().ToString("N"));
+        request.Headers.Add("X-Timestamp", timestamp);
+        request.Headers.Add("X-Nonce", nonce);
         request.Headers.Add("X-Idempotency-Key", Guid.NewGuid().ToString("N"));
 
         // Act

@@ -4,80 +4,189 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
 public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDisposable
 {
     private readonly ILogger<BinanceWebSocketService> _logger;
+    private readonly string _binanceBaseUrl;
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _cts;
-    
+    private string[] _symbols = Array.Empty<string>();
+    private long _lastFrameReceivedTicks;
+    private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan ReceiveTimeout = TimeSpan.FromSeconds(30);
+
     // HFT Optimization: Markers as static readonly Spans
     private static readonly byte[] AggTradeMarker = Encoding.UTF8.GetBytes("aggTrade");
+    private static readonly byte[] PongPayload = Encoding.UTF8.GetBytes("pong");
 
     public event Action<MarketTick>? OnTickReceived;
     public event Action<OrderBookSnapshot>? OnOrderBookUpdated;
 
-    public BinanceWebSocketService(ILogger<BinanceWebSocketService> logger) => _logger = logger;
+    public BinanceWebSocketService(ILogger<BinanceWebSocketService> logger, IOptions<WebSocketOptions>? wsOptions = null)
+    {
+        _logger = logger;
+        _binanceBaseUrl = wsOptions?.Value?.BinanceBaseUrl ?? "wss://stream.binance.com:9443";
+    }
 
     public async Task ConnectAsync(string[] symbols, CancellationToken cancellationToken)
     {
         if (symbols == null || symbols.Length == 0) return;
 
+        _symbols = symbols;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _webSocket = new ClientWebSocket();
 
-        try
+        _ = ReconnectLoopAsync(_cts.Token);
+        await Task.CompletedTask;
+    }
+
+    private async Task ReconnectLoopAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
         {
-            var streamParams = string.Join("/", symbols.Select(s => 
+            try
             {
-                var f = s.Replace("-", "").ToLowerInvariant();
-                return $"{f}@aggTrade/{f}@depth20@100ms";
-            }));
-            
-            var uri = new Uri($"wss://stream.binance.com:9443/stream?streams={streamParams}");
-            await _webSocket.ConnectAsync(uri, _cts.Token);
-            _logger.LogInformation("Connected to Binance WebSocket.");
+                _webSocket?.Dispose();
+                _webSocket = new ClientWebSocket();
 
-            _ = ReceiveLoopAsync(_cts.Token);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "WS Connection failed.");
+                var streamParams = string.Join("/", _symbols.Select(s =>
+                {
+                    var f = s.Replace("-", "").ToLowerInvariant();
+                    return $"{f}@aggTrade/{f}@depth20@100ms";
+                }));
+
+                var uri = new Uri($"{_binanceBaseUrl}/stream?streams={streamParams}");
+                await _webSocket.ConnectAsync(uri, token);
+                _logger.LogInformation("Connected to Binance WebSocket for streams: {Streams}", streamParams);
+                Volatile.Write(ref _lastFrameReceivedTicks, DateTime.UtcNow.Ticks);
+
+                using var sessionCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                var receiveTask = ReceiveLoopAsync(sessionCts.Token);
+                var heartbeatTask = HeartbeatWatchdogAsync(sessionCts);
+
+                // If either task completes, cancel the other and tear down the session
+                await Task.WhenAny(receiveTask, heartbeatTask).ConfigureAwait(false);
+                await sessionCts.CancelAsync();
+
+                // Await both to observe any exceptions (prevent UnobservedTaskException)
+                try { await receiveTask; } catch (OperationCanceledException) { }
+                try { await heartbeatTask; } catch (OperationCanceledException) { }
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Binance WS disconnected. Reconnecting in {Delay}s...", ReconnectDelay.TotalSeconds);
+            }
+
+            if (!token.IsCancellationRequested)
+                await Task.Delay(ReconnectDelay, token).ConfigureAwait(false);
         }
     }
 
     private async Task ReceiveLoopAsync(CancellationToken token)
     {
-        // SonarQube Fix: ArrayPool kullanarak bellek yönetimini optimize ediyoruz
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(65536); // 64KB Buffer for safety
-        
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(65536);
+        using var accumulator = new System.IO.MemoryStream(65536);
+
         try
         {
             while (_webSocket?.State == WebSocketState.Open && !token.IsCancellationRequested)
             {
-                var result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), token);
+                // Per-receive timeout breaks TCP half-open deadlocks:
+                // if no frame arrives within ReceiveTimeout, the CTS fires and
+                // ReceiveAsync throws OperationCanceledException → reconnect.
+                using var recvCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                recvCts.CancelAfter(ReceiveTimeout);
+
+                var result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), recvCts.Token);
+                Volatile.Write(ref _lastFrameReceivedTicks, DateTime.UtcNow.Ticks);
 
                 if (result.MessageType == WebSocketMessageType.Close) break;
 
-                // SonarQube Fix: Parçalı mesaj desteği eklenmeli (Gerçek HFT için şart)
+                accumulator.Write(buffer, 0, result.Count);
+
                 if (result.EndOfMessage)
                 {
-                    ParseMessageCore(new ReadOnlyMemory<byte>(buffer, 0, result.Count));
+                    ParseMessageCore(new ReadOnlyMemory<byte>(accumulator.GetBuffer(), 0, (int)accumulator.Length));
+                    accumulator.SetLength(0);
                 }
             }
         }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        {
+            // Per-receive timeout fired (not app shutdown) — treat as stale connection
+            _logger.LogWarning("Binance WS receive timed out after {Timeout}s — forcing reconnect.", ReceiveTimeout.TotalSeconds);
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogError(ex, "WS Loop Error.");
+            _logger.LogError(ex, "WS receive loop error — will reconnect.");
+            throw;
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    /// <summary>
+    /// Sends a WebSocket ping every HeartbeatInterval seconds and verifies frames are
+    /// still arriving. Kills the session if the connection is silently dead.
+    /// </summary>
+    private async Task HeartbeatWatchdogAsync(CancellationTokenSource sessionCts)
+    {
+        var token = sessionCts.Token;
+        try
+        {
+            while (!token.IsCancellationRequested && _webSocket?.State == WebSocketState.Open)
+            {
+                await Task.Delay(HeartbeatInterval, token).ConfigureAwait(false);
+
+                // Check: did we receive any frame since last check?
+                var lastTicks = Volatile.Read(ref _lastFrameReceivedTicks);
+                var silenceSec = (DateTime.UtcNow.Ticks - lastTicks) / TimeSpan.TicksPerSecond;
+
+                if (silenceSec >= ReceiveTimeout.TotalSeconds)
+                {
+                    _logger.LogWarning(
+                        "Binance WS heartbeat: no frame for {Silence}s (threshold={Threshold}s) — killing session.",
+                        silenceSec, (int)ReceiveTimeout.TotalSeconds);
+                    await sessionCts.CancelAsync();
+                    return;
+                }
+
+                // Send a WebSocket-level ping to provoke a TCP error on half-open sockets.
+                // If the TCP connection is dead, this write will throw → session dies → reconnect.
+                try
+                {
+                    if (_webSocket?.State == WebSocketState.Open)
+                    {
+                        await _webSocket.SendAsync(
+                            new ArraySegment<byte>(PongPayload),
+                            WebSocketMessageType.Text,
+                            true,
+                            token).ConfigureAwait(false);
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _logger.LogWarning(ex, "Binance WS ping send failed — connection is dead.");
+                    await sessionCts.CancelAsync();
+                    return;
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* normal shutdown */ }
     }
 
     private void ParseMessageCore(ReadOnlyMemory<byte> memory)
@@ -119,7 +228,7 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
 
     private void ParseDepthSnapshotFast(ReadOnlySpan<byte> span)
     {
-        // Depth verisini de Utf8JsonReader ile parse ederek "Zero-Allocation" hedefimize ulaşıyoruz
+        // Parse depth data with Utf8JsonReader for zero-allocation processing
         var reader = new Utf8JsonReader(span);
         string symbol = "UNKNOWN";
         var bids = new List<OrderBookLevel>(20);

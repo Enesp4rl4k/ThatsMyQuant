@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-public sealed class AgentCoordinator
+public sealed class AgentCoordinator : IAgentCoordinator
 {
     private readonly IEnumerable<IFoundationAgent> _foundationAgents;
     private readonly IEnumerable<IPatternAgent> _patternAgents;
@@ -183,7 +183,7 @@ public sealed class AgentCoordinator
 
     private static FoundationSnapshot MergeFoundation(FoundationSnapshot[] snapshots)
     {
-        var valid = snapshots.Where(s => s != FoundationSnapshot.Empty).ToList();
+        var valid = snapshots.Where(s => s != null && s != FoundationSnapshot.Empty).ToList();
         if (valid.Count == 0) return FoundationSnapshot.Empty;
 
         var vwapSources = valid.Where(s => s.Vwap > 0).ToList();
@@ -205,37 +205,43 @@ public sealed class AgentCoordinator
 
     private static PatternSnapshot MergePatterns(PatternSnapshot[] snapshots)
     {
-        var valid = snapshots.Where(s => s != PatternSnapshot.Empty).ToList();
+        var valid = snapshots.Where(s => s != null && s != PatternSnapshot.Empty).ToList();
         if (valid.Count == 0) return PatternSnapshot.Empty;
 
         var tags = valid.SelectMany(s => s.PatternTags).Distinct().ToList();
         var ichimoku = valid.Select(s => s.IchimokuState)
             .FirstOrDefault(s => s != IchimokuState.Unknown);
 
+        // Use NaN as "no data" sentinel — 0.0 is a valid value (price at midline / VWAP).
+        // Downstream agents must check double.IsNaN() before using these fields.
+        var bollingerSources = valid.Where(s => !double.IsNaN(s.BollingerPercentB) && s.BollingerPercentB != 0).ToList();
+        var vwapSources = valid.Where(s => !double.IsNaN(s.VwapDeviationSigmas) && s.VwapDeviationSigmas != 0).ToList();
+
         return new PatternSnapshot
         {
-            BollingerPercentB = valid.Where(s => s.BollingerPercentB != 0).Select(s => s.BollingerPercentB).DefaultIfEmpty().Average(),
+            BollingerPercentB = bollingerSources.Count > 0 ? bollingerSources.Average(s => s.BollingerPercentB) : double.NaN,
             BollingerSqueeze = valid.Any(s => s.BollingerSqueeze),
             FibNearestLevel = valid.Select(s => s.FibNearestLevel).FirstOrDefault(f => f > 0),
             FibRetracementDepth = valid.Select(s => s.FibRetracementDepth).FirstOrDefault(f => f != 0),
             IchimokuState = ichimoku,
-            VwapDeviationSigmas = valid.Where(s => s.VwapDeviationSigmas != 0).Select(s => s.VwapDeviationSigmas).DefaultIfEmpty().Average(),
+            VwapDeviationSigmas = vwapSources.Count > 0 ? vwapSources.Average(s => s.VwapDeviationSigmas) : double.NaN,
             PatternTags = tags
         };
     }
 
     private static MetaAdaptation MergeAdaptations(MetaAdaptation[] adaptations)
     {
-        var merged = new Dictionary<string, float>();
+        var sums = new Dictionary<string, float>();
+        var counts = new Dictionary<string, int>();
         foreach (var adaptation in adaptations)
         {
             foreach (var (tag, weight) in adaptation.StrategyWeights)
             {
-                merged[tag] = merged.TryGetValue(tag, out var existing)
-                    ? (existing + weight) / 2f
-                    : weight;
+                sums[tag] = sums.TryGetValue(tag, out var existing) ? existing + weight : weight;
+                counts[tag] = counts.TryGetValue(tag, out var c) ? c + 1 : 1;
             }
         }
+        var merged = sums.ToDictionary(kvp => kvp.Key, kvp => kvp.Value / counts[kvp.Key]);
 
         var avgBias = adaptations.Length > 0 ? adaptations.Average(a => a.RecommendedRegimeBias) : 1f;
         var avgScalar = adaptations.Length > 0 ? adaptations.Average(a => a.ConfidenceScalar) : 1f;

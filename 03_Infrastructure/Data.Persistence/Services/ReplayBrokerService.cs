@@ -32,7 +32,7 @@ public class ReplayBrokerService : IExchangeService
             SignalId = signal.Id,
             Symbol = signal.Symbol,
             Side = signal.Side,
-            Quantity = 1.0m, // Simulated static allocation size
+            Quantity = signal.Quantity > 0 ? signal.Quantity : 1.0m,
             EntryPrice = signal.Price,
             EntryTime = _clock.UtcNow, 
             Status = TradeStatus.Executed,

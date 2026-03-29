@@ -32,12 +32,27 @@ public sealed class OrderBookDepthAnalyzer : IFoundationAgent
         var imbalance = totalVol > 0 ? (bidVol - askVol) / totalVol : 0.0;
 
         decimal midPrice = candles.Count > 0 ? candles[^1].Close : latest.Price;
-        
+
+        // Estimate bid-ask spread from recent ticks:
+        // Best bid proxy = highest price among seller-initiated (IsBuyerMaker=true) ticks
+        // Best ask proxy = lowest price among buyer-initiated (IsBuyerMaker=false) ticks
+        double spreadBps = 0.0;
+        var recentBids = window.Where(t => t.IsBuyerMaker).Select(t => t.Price).ToList();
+        var recentAsks = window.Where(t => !t.IsBuyerMaker).Select(t => t.Price).ToList();
+        if (recentBids.Count > 0 && recentAsks.Count > 0 && midPrice > 0)
+        {
+            decimal bestBid = recentBids.Max();
+            decimal bestAsk = recentAsks.Min();
+            decimal spread = bestAsk - bestBid;
+            if (spread > 0)
+                spreadBps = (double)(spread / midPrice * 10_000m);
+        }
+
         var snapshot = new FoundationSnapshot
         {
             BidAskImbalance = imbalance,
             Vwap = midPrice,
-            SpreadBps = midPrice > 0 ? (double)((latest.Price - midPrice) / midPrice * 10_000m) : 0.0,
+            SpreadBps = spreadBps,
             WallLevel = DetectWall(window),
             VwapStdDev = 0m,
             TickDirectionRatio = window.Count > 0 ? (double)window.Count(t => !t.IsBuyerMaker) / window.Count : 0.5

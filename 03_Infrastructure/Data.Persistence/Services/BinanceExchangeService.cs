@@ -35,7 +35,13 @@ public class BinanceExchangeService : IExchangeService
 
     public async Task<Trade> ExecuteOrderAsync(Signal signal)
     {
-        _logger.LogInformation("🚀 Initiating LIVE Execution for {Symbol} ({Side}) @ {Price}", 
+        ArgumentNullException.ThrowIfNull(signal);
+        if (string.IsNullOrWhiteSpace(signal.Symbol))
+            throw new ArgumentException("Signal.Symbol is required", nameof(signal));
+        if (signal.Price <= 0)
+            throw new ArgumentException("Signal.Price must be positive", nameof(signal));
+
+        _logger.LogInformation("Initiating LIVE Execution for {Symbol} ({Side}) @ {Price}",
             signal.Symbol, signal.Side, signal.Price);
 
         try
@@ -68,8 +74,12 @@ public class BinanceExchangeService : IExchangeService
             // 4. Parse Execution Result
             using var doc = JsonDocument.Parse(content);
             var root = doc.RootElement;
-            decimal execPrice = decimal.Parse(root.GetProperty("fills")[0].GetProperty("price").GetString()!);
-            decimal execQty = decimal.Parse(root.GetProperty("executedQty").GetString()!);
+            decimal execPrice = decimal.Parse(
+                root.GetProperty("fills")[0].GetProperty("price").GetString()
+                ?? throw new InvalidOperationException("Binance response missing fill price"));
+            decimal execQty = decimal.Parse(
+                root.GetProperty("executedQty").GetString()
+                ?? throw new InvalidOperationException("Binance response missing executedQty"));
 
             _logger.LogInformation("✅ Trade EXECUTED on Binance. OrderId: {OrderId}. Price: {Price}", 
                 root.GetProperty("orderId").GetInt64(), execPrice);

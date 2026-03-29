@@ -13,6 +13,8 @@ public sealed class EdgeScoreService
     private const decimal WeightHistorical = 0.30m;
     private const decimal WeightExecution = 0.25m;
     private const decimal WeightRisk = 0.15m;
+    private const decimal CoreWeight = 0.7m;
+    private const decimal ExecutionBlendWeight = 0.3m;
 
     public EdgeScoreService(MarketExecutionProfileService? executionProfiles = null)
     {
@@ -36,7 +38,9 @@ public sealed class EdgeScoreService
         var finalScore = (metrics.Signal * WeightSignal) + (metrics.Historical * WeightHistorical) +
                          (metrics.Execution * WeightExecution) + (metrics.Risk * WeightRisk);
 
-        var adjustedScore = finalScore * (metrics.Execution / 100m);
+        // Blend execution quality into the score rather than multiplicative penalty
+        // This prevents execution edge from crushing otherwise strong signals
+        var adjustedScore = (finalScore * CoreWeight) + (metrics.Execution * ExecutionBlendWeight);
 
         var reasons = new List<string> {
             $"S:{metrics.Signal:F1}", $"H:{metrics.Historical:F1}", $"E:{metrics.Execution:F1}", $"R:{metrics.Risk:F1}"
@@ -47,7 +51,7 @@ public sealed class EdgeScoreService
 
     private EdgeScoreBreakdown ResolveFinalDecision(ScoreMetrics m, decimal final, decimal adj, List<string> reasons)
     {
-        if (m.Execution < 50m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: Low Execution");
+        if (m.Execution < 60m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: Low Execution (<60)");
         if (m.Risk < 50m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: High Risk");
 
         return adj switch
@@ -86,7 +90,7 @@ public sealed class EdgeScoreService
 
     private static decimal ComputeExecutionEdge(Signal signal, MarketExecutionProfile profile)
     {
-        decimal edge = 78m;
+        decimal edge = 50m; // Neutral baseline — must earn execution edge from real data
         if (signal.Volume24h > 0)
         {
             var ratio = signal.Volume24h / Math.Max(1m, profile.MinHftVolume24h);
@@ -97,10 +101,10 @@ public sealed class EdgeScoreService
 
     private static decimal ComputeRiskContext((bool Approved, string Reason) portfolioGuard, (bool Approved, string Reason, decimal SafeSize) riskVote)
     {
-        decimal score = 80m;
-        if (!portfolioGuard.Approved) score -= 45m;
-        if (!riskVote.Approved) score -= 35m;
-        return Math.Clamp(score, 0m, 100m);
+        // Portfolio guard or risk failure = hard veto, not soft penalty
+        if (!portfolioGuard.Approved) return 0m;
+        if (!riskVote.Approved) return 0m;
+        return 80m;
     }
 }
 

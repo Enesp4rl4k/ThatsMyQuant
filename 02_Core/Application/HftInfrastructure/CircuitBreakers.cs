@@ -59,9 +59,12 @@ public class DeadMansSwitch
 
         IsTriggered = true;
         
-        // 1. Immediately log security audit
-        _auditLogger.LogSecurityEventAsync("SYSTEM", "CIRCUIT_BREAKER", "DEAD_MANS_SWITCH_ENGAGED", reason)
-            .GetAwaiter().GetResult();
+        // 1. Log security audit (fire-and-forget — halt must never block on audit)
+        _ = Task.Run(async () =>
+        {
+            try { await _auditLogger.LogSecurityEventAsync("SYSTEM", "CIRCUIT_BREAKER", "DEAD_MANS_SWITCH_ENGAGED", reason); }
+            catch (Exception ex) { Console.Error.WriteLine($"[CRITICAL] Failed to audit DMS trigger: {ex.Message}"); }
+        });
 
         // 2. Transmit global halt to all IExecutionEngine instances
         Console.WriteLine($"[CRITICAL HALT] Dead Man's Switch Activated. Reason: {reason}");

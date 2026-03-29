@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using ThatsMyQuant.Contracts.Models;
@@ -9,18 +10,20 @@ public class WebhookAlertService : IAlertingService
 {
     private readonly ILogger<WebhookAlertService> _logger;
     private readonly HttpClient _httpClient;
+    private readonly string _webhookUrl;
 
-    private const string WebhookUrl = "";
-
-    public WebhookAlertService(ILogger<WebhookAlertService> logger, HttpClient httpClient)
+    public WebhookAlertService(ILogger<WebhookAlertService> logger, HttpClient httpClient, IConfiguration configuration)
     {
         _logger = logger;
         _httpClient = httpClient;
+        _webhookUrl = configuration["Alerting:_webhookUrl"] ?? "";
+        if (string.IsNullOrWhiteSpace(_webhookUrl))
+            _logger.LogWarning("[WebhookAlert] Alerting:_webhookUrl is not configured — trade alerts will be suppressed.");
     }
 
     public async Task SendTradeAlertAsync(string symbol, TradeDecision decision, IndicatorSnapshot snapshot, AlertAuditContext auditContext)
     {
-        if (string.IsNullOrEmpty(WebhookUrl))
+        if (string.IsNullOrEmpty(_webhookUrl))
         {
             return;
         }
@@ -52,7 +55,7 @@ public class WebhookAlertService : IAlertingService
             var json = JsonSerializer.Serialize(payload);
             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-            var response = await _httpClient.PostAsync(WebhookUrl, content);
+            var response = await _httpClient.PostAsync(_webhookUrl, content);
 
             if (!response.IsSuccessStatusCode)
             {

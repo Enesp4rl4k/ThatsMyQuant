@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
@@ -7,7 +8,7 @@ namespace ThatsMyQuant.Application.Strategy;
 /// A high-performance, in-memory portfolio manager for real-time balance tracking.
 /// Designed for low-latency HFT environments.
 /// </summary>
-public sealed class MemoryPortfolioManager
+public sealed class MemoryPortfolioManager : IPortfolioManager
 {
     private readonly ConcurrentDictionary<string, decimal> _balances = new();
     private readonly ConcurrentDictionary<string, decimal> _lockedBalances = new();

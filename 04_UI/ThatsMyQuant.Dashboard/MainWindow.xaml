@@ -178,7 +178,7 @@
                     <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8,4">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="PING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,6,0" />
-                            <TextBlock Text="{Binding ApiPing}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding Monitoring.ApiPing}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" VerticalAlignment="Center" />
                         </StackPanel>
                     </Border>
                 </StackPanel>
@@ -1129,7 +1129,7 @@
                                 </StackPanel>
                                 <StackPanel>
                                     <TextBlock Text="QUEUE" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
-                                    <TextBlock Text="{Binding Telemetry.QueueHealth}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Margin="0,3,0,0" />
+                                    <TextBlock Text="{Binding Monitoring.QueueHealth}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Margin="0,3,0,0" />
                                 </StackPanel>
                             </UniformGrid>
                         </Border>

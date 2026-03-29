@@ -10,34 +10,52 @@ public sealed class RegimeSwitchingModelAgent : IMetaLearningAgent
     private readonly ILogger<RegimeSwitchingModelAgent> _logger;
 
     private static readonly IReadOnlyDictionary<MarketRegime, IReadOnlyDictionary<string, float>> RegimeWeightTable =
-        new Dictionary<MarketRegime, IReadOnlyDictionary<string, float>>
+        NormalizeWeightTable(new Dictionary<MarketRegime, Dictionary<string, float>>
         {
-            [MarketRegime.Trending] = new Dictionary<string, float>
+            [MarketRegime.Trending] = new()
             {
                 ["Momentum"] = 1.4f, ["Breakout"] = 1.3f, ["StatArb"] = 0.5f,
                 ["Scalping"] = 0.7f, ["HFT-PriceAction"] = 0.9f
             },
-            [MarketRegime.Breakout] = new Dictionary<string, float>
+            [MarketRegime.Breakout] = new()
             {
                 ["Momentum"] = 1.2f, ["Breakout"] = 1.6f, ["StatArb"] = 0.3f,
                 ["Scalping"] = 0.8f, ["HFT-PriceAction"] = 1.1f
             },
-            [MarketRegime.Ranging] = new Dictionary<string, float>
+            [MarketRegime.Ranging] = new()
             {
                 ["Momentum"] = 0.6f, ["Breakout"] = 0.4f, ["StatArb"] = 1.4f,
                 ["Scalping"] = 1.3f, ["HFT-PriceAction"] = 1.0f
             },
-            [MarketRegime.MeanReverting] = new Dictionary<string, float>
+            [MarketRegime.MeanReverting] = new()
             {
                 ["Momentum"] = 0.4f, ["Breakout"] = 0.3f, ["StatArb"] = 1.7f,
                 ["Scalping"] = 1.1f, ["HFT-PriceAction"] = 0.8f
             },
-            [MarketRegime.Volatile] = new Dictionary<string, float>
+            [MarketRegime.Volatile] = new()
             {
                 ["Momentum"] = 0.5f, ["Breakout"] = 0.7f, ["StatArb"] = 0.6f,
                 ["Scalping"] = 0.4f, ["HFT-PriceAction"] = 0.5f
             },
-        };
+        });
+
+    /// <summary>
+    /// Normalizes each regime's weight dictionary so all regimes sum to the same total (number of strategies).
+    /// This prevents implicit regime bias from unequal raw weight sums.
+    /// </summary>
+    private static IReadOnlyDictionary<MarketRegime, IReadOnlyDictionary<string, float>> NormalizeWeightTable(
+        Dictionary<MarketRegime, Dictionary<string, float>> raw)
+    {
+        var result = new Dictionary<MarketRegime, IReadOnlyDictionary<string, float>>();
+        foreach (var (regime, weights) in raw)
+        {
+            float sum = weights.Values.Sum();
+            float targetSum = weights.Count; // normalize so average weight = 1.0
+            float scale = sum > 0 ? targetSum / sum : 1f;
+            result[regime] = weights.ToDictionary(kvp => kvp.Key, kvp => kvp.Value * scale);
+        }
+        return result;
+    }
 
     public string AgentId => "Meta.RegimeSwitching";
 

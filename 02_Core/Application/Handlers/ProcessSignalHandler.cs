@@ -7,6 +7,7 @@ using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Application.Common;
 
 namespace ThatsMyQuant.Application.Handlers;
 
@@ -17,8 +18,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     private readonly ISignalRepository _signalRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly IMarketDataService _marketDataService;
-    private readonly IEnumerable<ISignalValidator> _validators;
-    private readonly AgentCoordinator _agentCoordinator;
+    private readonly ISignalValidator[] _validators;
+    private readonly IAgentCoordinator _agentCoordinator;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
@@ -28,7 +29,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         ISignalRepository signalRepository,
         ITechnicalAnalysisService technicalAnalysis,
         IEnumerable<ISignalValidator> validators,
-        AgentCoordinator agentCoordinator,
+        IAgentCoordinator agentCoordinator,
         IConfiguration configuration)
     {
         _logger = logger;
@@ -36,7 +37,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         _marketDataService = marketDataService;
         _signalRepository = signalRepository;
         _technicalAnalysis = technicalAnalysis;
-        _validators = validators;
+        _validators = validators.OrderBy(v => v.Order).ToArray();
         _agentCoordinator = agentCoordinator;
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
@@ -44,21 +45,27 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
 
     public async Task<bool> Handle(ProcessSignalCommand request, CancellationToken cancellationToken)
     {
+        TradingMetrics.SignalsReceived.Add(1, new KeyValuePair<string, object?>("symbol", request.Signal.Symbol));
         LogSignalStart(request.Signal);
 
         // 0. Persist Signal immediately (audit trail)
         await _signalRepository.AddAsync(request.Signal);
 
         // 0.5: Modular Validation Chain (Volume, Price, Market Hours, etc.)
-        foreach (var validator in _validators.OrderBy(v => v.Order))
+        // Run all validators concurrently, then check results in priority order
+        var validationTasks = _validators.Select(v => v.ValidateAsync(request.Signal)).ToArray();
+        var validationResults = await Task.WhenAll(validationTasks);
+
+        for (int i = 0; i < validationResults.Length; i++)
         {
-            var (isValid, failureReason) = await validator.ValidateAsync(request.Signal);
+            var (isValid, failureReason) = validationResults[i];
             if (!isValid)
             {
                 request.Signal.Status = TradeStatus.Rejected;
                 request.Signal.Reasoning = failureReason;
                 await _signalRepository.UpdateAsync(request.Signal);
-                _logger.LogWarning("❌ Signal Validation Failed: {Reason}", failureReason);
+                TradingMetrics.SignalsRejected.Add(1, new KeyValuePair<string, object?>("reason", "validation"));
+                _logger.LogWarning("Signal Validation Failed: {Reason}", failureReason);
                 return false;
             }
         }
@@ -83,7 +90,13 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         // STEP 3: Swarm Orchestration Decision
         var (finalDecision, swarmApproved) = await NegotiateWithSwarmAsync(
             request.Signal, decision, riskParams, candles, foundation, patterns, regime, cancellationToken);
-        if (!swarmApproved) return false;
+        if (!swarmApproved)
+        {
+            TradingMetrics.SignalsRejected.Add(1, new KeyValuePair<string, object?>("reason", "swarm_veto"));
+            return false;
+        }
+
+        TradingMetrics.SignalsApproved.Add(1, new KeyValuePair<string, object?>("symbol", request.Signal.Symbol));
 
         // STEP 5: Dispatch execution (sync or worker handoff)
         return await DispatchExecutionAsync(request.Signal, finalDecision, cancellationToken);
@@ -91,8 +104,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
 
     private void LogSignalStart(Signal signal)
     {
-        _logger.LogInformation("═══════════════════════════════════════════════════════");
-        _logger.LogInformation("Processing Signal: {Id} | {Symbol} | {Side} | ${Price}",
+        _logger.LogInformation("Processing Signal: {Id} | {Symbol} | {Side} | {Price}",
             signal.Id, signal.Symbol, signal.Side, signal.Price);
     }
 

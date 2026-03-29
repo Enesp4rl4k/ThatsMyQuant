@@ -79,3 +79,24 @@ $RECYCLE.BIN/
 *.log
 worker_log.txt
 tmq-tests.log
+
+# Secrets — never commit credentials
+secrets.json
+appsettings.secrets.json
+.env
+*.env
+
+# Certificates — never commit private keys or certs
+*.pfx
+*.pem
+*.crt
+*.key
+*.p12
+
+# SQLite runtime files
+*.db-shm
+*.db-wal
+*.db-journal
+
+# macOS
+.DS_Store

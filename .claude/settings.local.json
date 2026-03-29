@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs grep:*)",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(grep -E \"\\(error |Oluşturma|Hata$\\)\")",
+      "Bash(dotnet test:*)",
+      "Bash(grep -A 3 \"FAIL]$\")",
+      "Bash(grep -B 1 -A 3 \"FAIL]$\")",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing -name *TechnicalAnalysis* -type f)",
+      "Bash(grep -r class.*TechnicalAnalysis.*Service /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing --include=*.cs)",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing -name \"*.cs\" -exec grep -l \"ITechnicalAnalysisService\" {})",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/05_Tests -name *BacktestResult* -o -name *PerformanceTest*)",
+      "Bash(grep -n \"TODO\\\\|FIXME\\\\|BUG\\\\|HACK\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/02_Core/Application/Strategy/*.cs)",
+      "Bash(grep -r \"RiskParameters\\\\|MaxPositionSize\\\\|MaxDailyLoss\\\\|StopLoss\\\\|TakeProfit\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/06_Contracts/Models --include=*.cs)",
+      "Bash(grep -n \"class.*Tick\\\\|record.*Tick\\\\|class MarketTick\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/06_Contracts/Models/*.cs)",
+      "Bash(grep -n \"FiveTierSnapshot\\\\|FoundationSnapshot\\\\|PatternSnapshot\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/06_Contracts/Models/*.cs)",
+      "Bash(grep -E \"\\\\.cs$\")",
+      "Bash(grep -r \"IFoundationAgent\\\\|IPatternAgent\\\\|IStrategyAgent\\\\|IRiskGuardAgent\\\\|IMetaLearningAgent\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/02_Core/Application --include=*.cs)",
+      "Bash(grep -r \"IFocusedAgent\\\\|IFoundationAgent\\\\|IPatternAgent\\\\|IStrategyAgent\\\\|IRiskGuardAgent\\\\|IMetaLearningAgent\" 02_Core/Application/Strategy/*.cs)",
+      "Bash(grep -r \"VolatilityExpansionOptions\\\\|VolatilityExpansionAgent\" --include=*.cs .)",
+      "Bash(grep -r \"//.*\\\\\\(bu\\\\|için\\\\|veya\\\\|olan\\\\|ile\\\\|bir\\\\|değer\\\\|kontrol\\\\|döndürür\\\\|bağlantı\\\\|ayarları\\\\|gerekli\\\\|işlem\\\\|thread\\\\|yerel\\\\|verisi\\\\|parse\\\\|eder\\\\\\)\" \"C:\\\\Users\\\\parlak\\\\Downloads\\\\ThatsMyQuant\\\\.claude\\\\worktrees\\\\angry-wing\" --include=\"*.cs\" -n)",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/06_Contracts/Models -type f -name *.cs)",
+      "Bash(xargs wc:*)",
+      "Bash(grep -r \"HttpRequestException\\\\|Retry\\\\|Polly\\\\|CircuitBreaker\\\\|exponential\\\\|backoff\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/03_Infrastructure/Data.Persistence/Services/*.cs)",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing -name *Resilience* -o -name *Polly*)",
+      "Bash(grep -r \"ConnectionStrings\\\\|Data Source\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/01_Services/*/appsettings.json)",
+      "Bash(grep -l \"OkxExecutionService\\\\|OkxWebSocketService\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/03_Infrastructure/Data.Persistence/Services/*.cs)",
+      "Bash(grep -l '^public class' /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/06_Contracts/Models/*.cs)",
+      "Bash(grep -r \"Thread.Sleep\\\\|Task.Result\\\\|\\\\.Wait\\(\\)\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/angry-wing/02_Core --include=*.cs)"
+    ]
+  }
+}

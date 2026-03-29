@@ -17,21 +17,21 @@ public class MonteCarloSimulator
             throw new ArgumentException("Requires at least one valid trade to simulate permutations.");
         }
 
-        // SonarQube Fix: Thread-safe koleksiyonlar veya yerel toplama (aggregation)
-        // results ve drawdowns listelerini önceden boyutlandırıyoruz (Pre-allocation)
+        // Thread-safe collections with local aggregation
+        // Pre-allocate results and drawdowns arrays
         var finalEquities = new decimal[iterations];
         var maxDrawdowns = new decimal[iterations];
 
         await Task.Run(() =>
         {
-            // SonarQube Fix: lock yerine dizi indeksleme kullanmak lock contention'ı sıfırlar.
+            // Array indexing instead of lock eliminates lock contention
             Parallel.For(0, iterations, i =>
             {
                 decimal simEquity = startingCapital;
                 decimal peakSimEquity = startingCapital;
                 decimal maxDD = 0;
 
-                // Random.Shared thread-safe'dir, güvenle kullanılabilir.
+                // Random.Shared is thread-safe
                 for (int s = 0; s < stepsPerIteration; s++)
                 {
                     int randomIndex = Random.Shared.Next(historicalPnlTrades.Count);

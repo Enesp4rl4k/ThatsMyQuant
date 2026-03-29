@@ -52,8 +52,12 @@ public sealed class TickRingBuffer
 
     /// <summary>
     /// Returns the oldest value in the current window.
+    /// When the buffer is not yet full, entries start at index 0, so the oldest is _metrics[0].
+    /// When full, _head points to the slot about to be overwritten — which is the current oldest entry.
     /// </summary>
-    public double OldestValue => _count == 0 ? 0 : _metrics[_head];
+    public double OldestValue => _count == 0 ? 0
+        : _count < _capacity ? _metrics[0]
+        : _metrics[_head];
 
     public bool IsFilled => _count == _capacity;
 }

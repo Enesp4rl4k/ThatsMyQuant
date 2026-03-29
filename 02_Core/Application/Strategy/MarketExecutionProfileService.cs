@@ -1,3 +1,4 @@
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 
@@ -12,7 +13,7 @@ public sealed record MarketExecutionProfile(
     decimal MinHftVolume24h,
     long PreferredMaxLatencyMs);
 
-public sealed class MarketExecutionProfileService
+public sealed class MarketExecutionProfileService : IMarketExecutionProfileService
 {
     private static readonly IReadOnlyList<MarketExecutionProfile> Profiles =
     [

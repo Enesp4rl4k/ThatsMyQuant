@@ -7,7 +7,7 @@ namespace ThatsMyQuant.Application.Strategy;
 
 public static class CorrelationService
 {
-    // SonarQube Fix: Sözlüğü readonly yaparak thread-safety sağladık.
+    // Thread-safe: dictionary is readonly
     private static readonly Dictionary<string, string> StockSectors = new(StringComparer.OrdinalIgnoreCase)
     {
         { "GARAN", "Banking" }, { "AKBNK", "Banking" }, { "YKBNK", "Banking" },
@@ -74,7 +74,7 @@ public static class CorrelationService
     {
         if (string.IsNullOrWhiteSpace(symbol)) return "Other";
 
-        // SonarQube Fix: Daha güvenli string parçalama logic'i
+        // Safer string splitting logic
         string cleanSymbol = symbol.Split(new[] { '-', '=', '/' }, StringSplitOptions.RemoveEmptyEntries)[0].ToUpper();
         
         return StockSectors.TryGetValue(cleanSymbol, out var sector) ? sector : "Other";

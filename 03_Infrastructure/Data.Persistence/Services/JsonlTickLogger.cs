@@ -25,7 +25,7 @@ public sealed class JsonlTickLogger : ITickLogger
 
     public async ValueTask LogTickAsync(MarketTick tick)
     {
-        var json = JsonSerializer.Serialize(tick);
+        var json = JsonSerializer.Serialize(tick, MarketTickJsonContext.Default.MarketTick);
         await _writeLock.WaitAsync().ConfigureAwait(false);
         try
         {

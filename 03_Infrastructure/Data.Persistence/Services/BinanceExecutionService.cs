@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
@@ -13,20 +14,34 @@ public sealed class BinanceExecutionService : IExchangeService
     private readonly ILogger<BinanceExecutionService> _logger;
     private readonly HttpClient _httpClient;
     private readonly string _apiKey;
-    private readonly string _apiSecret;
+    private readonly Application.Security.ApiVault _secretVault;
     private const string BaseUrl = "https://api.binance.com";
 
-    public BinanceExecutionService(ILogger<BinanceExecutionService> logger, HttpClient httpClient, string apiKey, string apiSecret)
+    public BinanceExecutionService(
+        ILogger<BinanceExecutionService> logger,
+        IHttpClientFactory httpClientFactory,
+        IConfiguration configuration,
+        Application.Security.ApiVault apiVault)
     {
         _logger = logger;
-        _httpClient = httpClient;
-        _apiKey = apiKey;
-        _apiSecret = apiSecret;
+        _apiKey = configuration["Binance:ApiKey"] ?? throw new InvalidOperationException("Binance:ApiKey is not configured.");
+        var apiSecret = configuration["Binance:ApiSecret"] ?? throw new InvalidOperationException("Binance:ApiSecret is not configured.");
+        _secretVault = apiVault;
+        _secretVault.SecureInboundKey(apiSecret);
+        _httpClient = httpClientFactory.CreateClient("Binance");
         _httpClient.DefaultRequestHeaders.Add("X-MBX-APIKEY", _apiKey);
     }
 
     public async Task<Trade> ExecuteOrderAsync(Signal signal)
     {
+        ArgumentNullException.ThrowIfNull(signal);
+        if (string.IsNullOrWhiteSpace(signal.Symbol))
+            throw new ArgumentException("Signal.Symbol is required", nameof(signal));
+        if (signal.Price <= 0)
+            throw new ArgumentException("Signal.Price must be positive", nameof(signal));
+        if (signal.Quantity <= 0)
+            throw new ArgumentException("Signal.Quantity must be positive", nameof(signal));
+
         _logger.LogInformation("Executing Binance order for {Symbol} @ {Price}", signal.Symbol, signal.Price);
 
         var queryParams = new Dictionary<string, string>
@@ -108,10 +123,17 @@ public sealed class BinanceExecutionService : IExchangeService
 
     private string ComputeSignature(string message)
     {
-        var keyBytes = Encoding.UTF8.GetBytes(_apiSecret);
-        var messageBytes = Encoding.UTF8.GetBytes(message);
-        using var hmac = new HMACSHA256(keyBytes);
-        var hash = hmac.ComputeHash(messageBytes);
-        return BitConverter.ToString(hash).Replace("-", "").ToLower();
+        var keyBytes = _secretVault.GetTransientDecryptedKey();
+        try
+        {
+            var messageBytes = Encoding.UTF8.GetBytes(message);
+            using var hmac = new HMACSHA256(keyBytes);
+            var hash = hmac.ComputeHash(messageBytes);
+            return BitConverter.ToString(hash).Replace("-", "").ToLower();
+        }
+        finally
+        {
+            Array.Clear(keyBytes, 0, keyBytes.Length);
+        }
     }
 }
