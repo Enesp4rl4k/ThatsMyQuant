@@ -649,6 +649,74 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
+    public async Task Evaluate_ShouldDemoteToPaper_WhenCriticalMlDriftPersists()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(120m),
+            CreatePaperPosition(110m),
+            CreatePaperPosition(90m),
+            CreatePaperPosition(100m),
+            CreatePaperPosition(80m),
+            CreatePaperPosition(85m),
+            CreatePaperPosition(-20m),
+            CreatePaperPosition(95m)
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(12m, edgeScore: 84m, modelVersion: "PredictiveAlphaModel@20260328063000", featureDriftDetected: true, featureDriftCritical: true, featureDriftMaxZScore: 5.2m),
+            CreateLiveTrade(10m, edgeScore: 82m, modelVersion: "PredictiveAlphaModel@20260328063000", featureDriftDetected: true, featureDriftCritical: true, featureDriftMaxZScore: 4.9m),
+            CreateLiveTrade(8m, edgeScore: 80m, modelVersion: "PredictiveAlphaModel@20260328063000"),
+            CreateLiveTrade(6m, edgeScore: 78m, modelVersion: "PredictiveAlphaModel@20260328063000")
+        };
+
+        var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.Approved.Should().BeFalse();
+        result.PromotionStage.Should().Be("Paper");
+        result.Reason.Should().Contain("ML drift is blocking promotion");
+        result.Reason.Should().Contain("PredictiveAlphaModel@20260328063000");
+    }
+
+    [Fact]
+    public async Task Evaluate_ShouldHoldInLiveProbe_WhenMlDriftKeepsTrimmingSize()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var service = new StrategyPromotionService(store);
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(120m),
+            CreatePaperPosition(110m),
+            CreatePaperPosition(90m),
+            CreatePaperPosition(100m),
+            CreatePaperPosition(80m),
+            CreatePaperPosition(85m),
+            CreatePaperPosition(-20m),
+            CreatePaperPosition(95m)
+        });
+
+        var liveTrades = new[]
+        {
+            CreateLiveTrade(12m, edgeScore: 84m, modelVersion: "PredictiveAlphaModel@20260328063000", featureDriftDetected: true, featureDriftCritical: false, featureDriftMaxZScore: 4.1m),
+            CreateLiveTrade(10m, edgeScore: 82m, modelVersion: "PredictiveAlphaModel@20260328063000", featureDriftDetected: true, featureDriftCritical: false, featureDriftMaxZScore: 4.0m),
+            CreateLiveTrade(8m, edgeScore: 80m, modelVersion: "PredictiveAlphaModel@20260328063000", featureDriftDetected: true, featureDriftCritical: false, featureDriftMaxZScore: 3.8m),
+            CreateLiveTrade(6m, edgeScore: 78m, modelVersion: "PredictiveAlphaModel@20260328063000")
+        };
+
+        var result = service.Evaluate(CreateSignal(), CreateDecision(), liveTrades);
+
+        result.Approved.Should().BeTrue();
+        result.PromotionStage.Should().Be("LiveProbe");
+        result.SizeMultiplier.Should().BeLessThanOrEqualTo(0.20m);
+        result.Reason.Should().Contain("ML drift is holding");
+    }
+
+    [Fact]
     public async Task Evaluate_ShouldBlock_WhenHighEdgeTradesStillLoseDespiteOkayOverallBucket()
     {
         var store = new InMemoryStrategyPerformanceStore();
@@ -859,7 +927,11 @@ public class StrategyPromotionServiceTests
         string exitPolicyTag = "TrendRunner",
         decimal finalAllocatorBias = 0m,
         string symbol = "THYAO",
-        decimal venueExecutionBias = 0m) => new()
+        decimal venueExecutionBias = 0m,
+        string modelVersion = "",
+        bool featureDriftDetected = false,
+        bool featureDriftCritical = false,
+        decimal featureDriftMaxZScore = 0m) => new()
     {
         Symbol = symbol,
         Side = TradeSide.Buy,
@@ -876,6 +948,11 @@ public class StrategyPromotionServiceTests
         FinalAllocatorScope = finalAllocatorBias > 0m ? "exact symbol-session bucket" : string.Empty,
         VenueExecutionBias = venueExecutionBias,
         VenueExecutionScope = venueExecutionBias > 0m ? "venue execution" : string.Empty,
+        MlModelVersion = modelVersion,
+        FeatureDriftDetected = featureDriftDetected,
+        FeatureDriftCritical = featureDriftCritical,
+        FeatureDriftMaxZScore = featureDriftMaxZScore,
+        FeatureDriftImpactLabel = featureDriftDetected ? (featureDriftCritical ? "ML drift vetoed setup" : "ML drift trimmed size") : string.Empty,
         EntrySlippagePercent = slippagePercent,
         ExecutionLatencyMs = executionLatencyMs,
         ExitTime = new DateTime(2026, 03, 21, 8, 50, 0, DateTimeKind.Utc)

@@ -24,18 +24,18 @@ public sealed class MarketExecutionProfileService
         new("BIST", "BIST", 0.06m, 0.025m, 0.05m, 400_000m, 180),
         new("BIST", "Generic", 0.06m, 0.025m, 0.05m, 400_000m, 180)
     ];
+    private static readonly IReadOnlyDictionary<(string Market, string Venue), MarketExecutionProfile> ProfilesByKey =
+        Profiles.ToDictionary(
+            profile => CreateProfileKey(profile.Market, profile.Venue),
+            profile => profile);
 
     public MarketExecutionProfile ResolveForSymbol(string symbol, IDictionary<string, string>? metadata = null)
     {
         var market = ResolveMarket(symbol);
         var venue = ResolveVenue(market, metadata);
-
-        return Profiles.FirstOrDefault(profile =>
-                   string.Equals(profile.Market, market, StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(profile.Venue, venue, StringComparison.OrdinalIgnoreCase))
-               ?? Profiles.First(profile =>
-                   string.Equals(profile.Market, market, StringComparison.OrdinalIgnoreCase) &&
-                   string.Equals(profile.Venue, "Generic", StringComparison.OrdinalIgnoreCase));
+        return ProfilesByKey.TryGetValue(CreateProfileKey(market, venue), out var profile)
+            ? profile
+            : ProfilesByKey[CreateProfileKey(market, "Generic")];
     }
 
     public decimal ResolveSlippagePercent(string symbol, IDictionary<string, string>? metadata, decimal? overridePercent = null)
@@ -124,4 +124,7 @@ public sealed class MarketExecutionProfileService
             _ => "Generic"
         };
     }
+
+    private static (string Market, string Venue) CreateProfileKey(string market, string venue)
+        => (market.ToUpperInvariant(), venue.ToUpperInvariant());
 }

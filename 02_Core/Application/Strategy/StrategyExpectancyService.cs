@@ -130,7 +130,14 @@ public sealed class StrategyExpectancyService
     }
 
     private static decimal ComputePnl(Trade trade)
-        => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == Contracts.Enums.TradeSide.Sell ? -1 : 1);
+    {
+        var direction = trade.Side == Contracts.Enums.TradeSide.Sell ? -1m : 1m;
+        var grossPnl = (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * direction;
+        var feeRate = 0.0005m; // 5 bps per side, 10 bps round trip
+        var fees = (trade.EntryPrice * trade.Quantity + trade.ExitPrice * trade.Quantity) * feeRate;
+        var slippageCost = trade.EntryPrice * trade.Quantity * (trade.EntrySlippagePercent / 100m);
+        return grossPnl - fees - slippageCost;
+    }
 
     private static string ResolveSessionBucket(DateTime timestamp)
     {

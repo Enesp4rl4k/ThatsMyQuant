@@ -157,6 +157,7 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IStrategyHealthStore, JsonStrategyHealthStore>();
         services.AddSingleton<BinanceExchangeInfoProvider>();
         services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
+        services.AddSingleton<IWebVitalsService, WebVitalsService>();
 
         // Phase 8: HFT & Quantitative Foundation
         services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
@@ -166,9 +167,7 @@ public partial class App : System.Windows.Application
             sp.GetRequiredService<ILogger<ThatsMyQuant.Application.Strategy.MicrosecondPredictionEngine>>()));
 
         // FOCUSED BACKTEST (UI Flow)
-        services.AddTransient<FocusedBacktestViewModel>();
-        services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<RiskAgent>());
-        services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<HftPriceActionAgent>());
+        services.AddSingleton<FocusedBacktestViewModel>();
         services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<SentimentAgent>());
 
         // AI (The Brain)

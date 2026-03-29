@@ -1,6 +1,7 @@
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
 using Microsoft.Extensions.Logging;
+using System.Runtime.InteropServices;
 
 namespace ThatsMyQuant.Infrastructure.Services.Foundation;
 
@@ -21,9 +22,19 @@ public sealed class VolumeProfileAgent : IFoundationAgent
         if (candles.Count == 0)
             return Task.FromResult(FoundationSnapshot.Empty);
 
-        var volumeAtPrice = BuildVolumeAtPrice(candles);
-        var vwap = ComputeVwap(candles);
-        var stdDev = ComputeVwapStdDev(candles, vwap);
+        // Convert to Span for high-performance iteration gracefully
+        ReadOnlySpan<Candle> span;
+        if (candles is List<Candle> candlesList)
+            span = CollectionsMarshal.AsSpan(candlesList);
+        else if (candles is Candle[] candlesArray)
+            span = candlesArray;
+        else
+            span = candles.ToArray();
+        var lastN = span.Length > 100 ? span.Slice(span.Length - 100) : span;
+
+        var volumeAtPrice = BuildVolumeAtPrice(lastN);
+        var vwap = ComputeVwap(lastN);
+        var stdDev = ComputeVwapStdDev(lastN, vwap);
 
         return Task.FromResult(new FoundationSnapshot
         {
@@ -35,10 +46,10 @@ public sealed class VolumeProfileAgent : IFoundationAgent
         });
     }
 
-    private static IReadOnlyDictionary<decimal, decimal> BuildVolumeAtPrice(IReadOnlyList<Candle> candles)
+    private static IReadOnlyDictionary<decimal, decimal> BuildVolumeAtPrice(ReadOnlySpan<Candle> candles)
     {
-        var map = new Dictionary<decimal, decimal>();
-        foreach (var c in candles.TakeLast(100))
+        var map = new Dictionary<decimal, decimal>(128); // Pre-size to avoid resizes
+        foreach (var c in candles)
         {
             var mid = Math.Round(c.Close, 2);
             map[mid] = map.TryGetValue(mid, out var v) ? v + c.Volume : c.Volume;
@@ -46,10 +57,10 @@ public sealed class VolumeProfileAgent : IFoundationAgent
         return map;
     }
 
-    private static decimal ComputeVwap(IReadOnlyList<Candle> candles)
+    private static decimal ComputeVwap(ReadOnlySpan<Candle> candles)
     {
         decimal cumTpv = 0m, cumVol = 0m;
-        foreach (var c in candles.TakeLast(100))
+        foreach (var c in candles)
         {
             var tp = (c.High + c.Low + c.Close) / 3m;
             cumTpv += tp * c.Volume;
@@ -58,11 +69,11 @@ public sealed class VolumeProfileAgent : IFoundationAgent
         return cumVol > 0 ? cumTpv / cumVol : 0m;
     }
 
-    private static decimal ComputeVwapStdDev(IReadOnlyList<Candle> candles, decimal vwap)
+    private static decimal ComputeVwapStdDev(ReadOnlySpan<Candle> candles, decimal vwap)
     {
-        if (candles.Count < 2) return 0m;
+        if (candles.Length < 2) return 0m;
         decimal cumVol = 0m, cumSq = 0m;
-        foreach (var c in candles.TakeLast(100))
+        foreach (var c in candles)
         {
             var tp = (c.High + c.Low + c.Close) / 3m;
             var diff = tp - vwap;
@@ -73,6 +84,19 @@ public sealed class VolumeProfileAgent : IFoundationAgent
     }
 
     private static decimal FindPointOfControl(IReadOnlyDictionary<decimal, decimal> volumeAtPrice)
-        => volumeAtPrice.Count == 0 ? 0m
-            : volumeAtPrice.MaxBy(kvp => kvp.Value).Key;
+    {
+        if (volumeAtPrice.Count == 0) return 0m;
+        decimal maxVol = -1;
+        decimal poc = 0;
+        foreach (var kvp in volumeAtPrice)
+        {
+            if (kvp.Value > maxVol)
+            {
+                maxVol = kvp.Value;
+                poc = kvp.Key;
+            }
+        }
+        return poc;
+    }
 }
+

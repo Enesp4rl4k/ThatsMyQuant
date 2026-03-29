@@ -5,13 +5,13 @@ using Microsoft.Extensions.Logging;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-public sealed class AgentCoordinator
+public class AgentCoordinator : IAgentCoordinator
 {
-    private readonly IEnumerable<IFoundationAgent> _foundationAgents;
-    private readonly IEnumerable<IPatternAgent> _patternAgents;
-    private readonly IEnumerable<IStrategyAgent> _strategyAgents;
-    private readonly IEnumerable<IRiskGuardAgent> _riskGuards;
-    private readonly IEnumerable<IMetaLearningAgent> _metaAgents;
+    private readonly IFoundationAgent[] _foundationAgents;
+    private readonly IPatternAgent[] _patternAgents;
+    private readonly IStrategyAgent[] _strategyAgents;
+    private readonly IRiskGuardAgent[] _riskGuards;
+    private readonly IMetaLearningAgent[] _metaAgents;
     private readonly ILogger<AgentCoordinator> _logger;
 
     public AgentCoordinator(
@@ -22,11 +22,11 @@ public sealed class AgentCoordinator
         IEnumerable<IMetaLearningAgent> metaAgents,
         ILogger<AgentCoordinator> logger)
     {
-        _foundationAgents = foundationAgents;
-        _patternAgents = patternAgents;
-        _strategyAgents = strategyAgents;
-        _riskGuards = riskGuards;
-        _metaAgents = metaAgents;
+        _foundationAgents = foundationAgents.ToArray();
+        _patternAgents = patternAgents.ToArray();
+        _strategyAgents = strategyAgents.ToArray();
+        _riskGuards = riskGuards.OrderBy(g => g.Order).ToArray();
+        _metaAgents = metaAgents.ToArray();
         _logger = logger;
     }
 
@@ -51,8 +51,17 @@ public sealed class AgentCoordinator
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
-        var results = await Task.WhenAll(
-            _foundationAgents.Select(a => RunSafe(a.AgentId, () => a.ComputeAsync(ticks, candles, ct))));
+        var tasks = new Task<FoundationSnapshot>[_foundationAgents.Length];
+        for (var i = 0; i < _foundationAgents.Length; i++)
+        {
+            var agent = _foundationAgents[i];
+            tasks[i] = RunSafe(
+                agent.AgentId,
+                () => agent.ComputeAsync(ticks, candles, ct),
+                FoundationSnapshot.Empty);
+        }
+
+        var results = await Task.WhenAll(tasks);
 
         return MergeFoundation(results);
     }
@@ -63,8 +72,17 @@ public sealed class AgentCoordinator
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
-        var results = await Task.WhenAll(
-            _patternAgents.Select(a => RunSafe(a.AgentId, () => a.AnalyzeAsync(signal, foundation, candles, ct))));
+        var tasks = new Task<PatternSnapshot>[_patternAgents.Length];
+        for (var i = 0; i < _patternAgents.Length; i++)
+        {
+            var agent = _patternAgents[i];
+            tasks[i] = RunSafe(
+                agent.AgentId,
+                () => agent.AnalyzeAsync(signal, foundation, candles, ct),
+                PatternSnapshot.Empty);
+        }
+
+        var results = await Task.WhenAll(tasks);
 
         return MergePatterns(results);
     }
@@ -77,17 +95,40 @@ public sealed class AgentCoordinator
         MarketRegime regime,
         CancellationToken ct = default)
     {
-        var eligible = _strategyAgents
-            .Where(a => a.CanHandle(signal, regime))
-            .ToList();
+        var eligibleCount = 0;
+        for (var i = 0; i < _strategyAgents.Length; i++)
+        {
+            if (_strategyAgents[i].CanHandle(signal, regime))
+            {
+                eligibleCount++;
+            }
+        }
 
         _logger.LogDebug("AgentCoordinator: {Count}/{Total} strategy agents eligible for {Symbol} [{Regime}]",
-            eligible.Count, _strategyAgents.Count(), signal.Symbol, regime);
+            eligibleCount, _strategyAgents.Length, signal.Symbol, regime);
 
-        var votes = await Task.WhenAll(
-            eligible.Select(a => RunSafe(a.StrategyTag,
-                () => a.EvaluateAsync(signal, patterns, foundation, candles, ct),
-                StrategyVote.Abstain(a.StrategyTag))));
+        if (eligibleCount == 0)
+        {
+            return [];
+        }
+
+        var tasks = new Task<StrategyVote>[eligibleCount];
+        var taskIndex = 0;
+        for (var i = 0; i < _strategyAgents.Length; i++)
+        {
+            var agent = _strategyAgents[i];
+            if (!agent.CanHandle(signal, regime))
+            {
+                continue;
+            }
+
+            tasks[taskIndex++] = RunSafe(
+                agent.StrategyTag,
+                () => agent.EvaluateAsync(signal, patterns, foundation, candles, ct),
+                StrategyVote.Abstain(agent.StrategyTag));
+        }
+
+        var votes = await Task.WhenAll(tasks);
 
         return votes;
     }
@@ -127,7 +168,7 @@ public sealed class AgentCoordinator
         IReadOnlyList<Trade> openTrades,
         CancellationToken ct = default)
     {
-        foreach (var guard in _riskGuards.OrderBy(g => g.Order))
+        foreach (var guard in _riskGuards)
         {
             RiskGuardResult result;
             try
@@ -160,15 +201,23 @@ public sealed class AgentCoordinator
         MarketRegime regime,
         CancellationToken ct = default)
     {
-        var adaptations = await Task.WhenAll(
-            _metaAgents.Select(a => RunSafe(a.AgentId,
-                () => a.AdaptAsync(recentHistory, regime, ct),
-                MetaAdaptation.Default)));
+        var tasks = new Task<MetaAdaptation>[_metaAgents.Length];
+        for (var i = 0; i < _metaAgents.Length; i++)
+        {
+            var agent = _metaAgents[i];
+            tasks[i] = RunSafe(
+                agent.AgentId,
+                () => agent.AdaptAsync(recentHistory, regime, ct),
+                MetaAdaptation.Default);
+        }
+
+        var adaptations = await Task.WhenAll(tasks);
 
         return MergeAdaptations(adaptations);
     }
 
-    private async Task<T> RunSafe<T>(string agentId, Func<Task<T>> action, T fallback = default!)
+    private async Task<T> RunSafe<T>(string agentId, Func<Task<T>> action, T fallback)
+        where T : notnull
     {
         try
         {
@@ -183,52 +232,154 @@ public sealed class AgentCoordinator
 
     private static FoundationSnapshot MergeFoundation(FoundationSnapshot[] snapshots)
     {
-        var valid = snapshots.Where(s => s != FoundationSnapshot.Empty).ToList();
-        if (valid.Count == 0) return FoundationSnapshot.Empty;
+        var validCount = 0;
+        var vwapCount = 0;
+        double bidAskImbalanceSum = 0d;
+        double tickDirectionRatioSum = 0d;
+        double spreadBpsSum = 0d;
+        decimal vwapSum = 0m;
+        decimal vwapStdDevSum = 0m;
+        decimal wallLevel = 0m;
+        var volumeAtPrice = new Dictionary<decimal, decimal>();
 
-        var vwapSources = valid.Where(s => s.Vwap > 0).ToList();
-        var volMap = valid.SelectMany(s => s.VolumeAtPrice)
-            .GroupBy(kvp => kvp.Key)
-            .ToDictionary(g => g.Key, g => g.Sum(kvp => kvp.Value));
+        for (var i = 0; i < snapshots.Length; i++)
+        {
+            var snapshot = snapshots[i];
+            if (snapshot == FoundationSnapshot.Empty)
+            {
+                continue;
+            }
+
+            validCount++;
+            bidAskImbalanceSum += snapshot.BidAskImbalance;
+            tickDirectionRatioSum += snapshot.TickDirectionRatio;
+            spreadBpsSum += snapshot.SpreadBps;
+
+            if (snapshot.Vwap > 0)
+            {
+                vwapCount++;
+                vwapSum += snapshot.Vwap;
+                vwapStdDevSum += snapshot.VwapStdDev;
+            }
+
+            if (wallLevel <= 0 && snapshot.WallLevel > 0)
+            {
+                wallLevel = snapshot.WallLevel;
+            }
+
+            foreach (var pair in snapshot.VolumeAtPrice)
+            {
+                volumeAtPrice[pair.Key] = volumeAtPrice.TryGetValue(pair.Key, out var existingVolume)
+                    ? existingVolume + pair.Value
+                    : pair.Value;
+            }
+        }
+
+        if (validCount == 0)
+        {
+            return FoundationSnapshot.Empty;
+        }
 
         return new FoundationSnapshot
         {
-            BidAskImbalance = valid.Average(s => s.BidAskImbalance),
-            TickDirectionRatio = valid.Average(s => s.TickDirectionRatio),
-            Vwap = vwapSources.Count > 0 ? vwapSources.Average(s => s.Vwap) : 0m,
-            VwapStdDev = vwapSources.Count > 0 ? vwapSources.Average(s => s.VwapStdDev) : 0m,
-            SpreadBps = valid.Average(s => s.SpreadBps),
-            WallLevel = valid.Select(s => s.WallLevel).FirstOrDefault(w => w > 0),
-            VolumeAtPrice = volMap
+            BidAskImbalance = bidAskImbalanceSum / validCount,
+            TickDirectionRatio = tickDirectionRatioSum / validCount,
+            Vwap = vwapCount > 0 ? vwapSum / vwapCount : 0m,
+            VwapStdDev = vwapCount > 0 ? vwapStdDevSum / vwapCount : 0m,
+            SpreadBps = spreadBpsSum / validCount,
+            WallLevel = wallLevel,
+            VolumeAtPrice = volumeAtPrice
         };
     }
 
     private static PatternSnapshot MergePatterns(PatternSnapshot[] snapshots)
     {
-        var valid = snapshots.Where(s => s != PatternSnapshot.Empty).ToList();
-        if (valid.Count == 0) return PatternSnapshot.Empty;
+        var validCount = 0;
+        var bollingerPercentBCount = 0;
+        var vwapDeviationCount = 0;
+        double bollingerPercentBSum = 0d;
+        double vwapDeviationSum = 0d;
+        bool bollingerSqueeze = false;
+        decimal fibNearestLevel = 0m;
+        double fibRetracementDepth = 0d;
+        var ichimoku = IchimokuState.Unknown;
+        var tags = new HashSet<string>();
 
-        var tags = valid.SelectMany(s => s.PatternTags).Distinct().ToList();
-        var ichimoku = valid.Select(s => s.IchimokuState)
-            .FirstOrDefault(s => s != IchimokuState.Unknown);
+        for (var i = 0; i < snapshots.Length; i++)
+        {
+            var snapshot = snapshots[i];
+            if (snapshot == PatternSnapshot.Empty)
+            {
+                continue;
+            }
+
+            validCount++;
+
+            if (snapshot.BollingerPercentB != 0)
+            {
+                bollingerPercentBCount++;
+                bollingerPercentBSum += snapshot.BollingerPercentB;
+            }
+
+            if (snapshot.BollingerSqueeze)
+            {
+                bollingerSqueeze = true;
+            }
+
+            if (fibNearestLevel <= 0 && snapshot.FibNearestLevel > 0)
+            {
+                fibNearestLevel = snapshot.FibNearestLevel;
+            }
+
+            if (fibRetracementDepth == 0d && snapshot.FibRetracementDepth != 0d)
+            {
+                fibRetracementDepth = snapshot.FibRetracementDepth;
+            }
+
+            if (ichimoku == IchimokuState.Unknown && snapshot.IchimokuState != IchimokuState.Unknown)
+            {
+                ichimoku = snapshot.IchimokuState;
+            }
+
+            if (snapshot.VwapDeviationSigmas != 0)
+            {
+                vwapDeviationCount++;
+                vwapDeviationSum += snapshot.VwapDeviationSigmas;
+            }
+
+            foreach (var tag in snapshot.PatternTags)
+            {
+                tags.Add(tag);
+            }
+        }
+
+        if (validCount == 0)
+        {
+            return PatternSnapshot.Empty;
+        }
 
         return new PatternSnapshot
         {
-            BollingerPercentB = valid.Where(s => s.BollingerPercentB != 0).Select(s => s.BollingerPercentB).DefaultIfEmpty().Average(),
-            BollingerSqueeze = valid.Any(s => s.BollingerSqueeze),
-            FibNearestLevel = valid.Select(s => s.FibNearestLevel).FirstOrDefault(f => f > 0),
-            FibRetracementDepth = valid.Select(s => s.FibRetracementDepth).FirstOrDefault(f => f != 0),
+            BollingerPercentB = bollingerPercentBCount > 0 ? bollingerPercentBSum / bollingerPercentBCount : 0d,
+            BollingerSqueeze = bollingerSqueeze,
+            FibNearestLevel = fibNearestLevel,
+            FibRetracementDepth = fibRetracementDepth,
             IchimokuState = ichimoku,
-            VwapDeviationSigmas = valid.Where(s => s.VwapDeviationSigmas != 0).Select(s => s.VwapDeviationSigmas).DefaultIfEmpty().Average(),
-            PatternTags = tags
+            VwapDeviationSigmas = vwapDeviationCount > 0 ? vwapDeviationSum / vwapDeviationCount : 0d,
+            PatternTags = [.. tags]
         };
     }
 
     private static MetaAdaptation MergeAdaptations(MetaAdaptation[] adaptations)
     {
         var merged = new Dictionary<string, float>();
+        float biasSum = 0f, scalarSum = 0f;
+
         foreach (var adaptation in adaptations)
         {
+            biasSum += adaptation.RecommendedRegimeBias;
+            scalarSum += adaptation.ConfidenceScalar;
+
             foreach (var (tag, weight) in adaptation.StrategyWeights)
             {
                 merged[tag] = merged.TryGetValue(tag, out var existing)
@@ -237,8 +388,8 @@ public sealed class AgentCoordinator
             }
         }
 
-        var avgBias = adaptations.Length > 0 ? adaptations.Average(a => a.RecommendedRegimeBias) : 1f;
-        var avgScalar = adaptations.Length > 0 ? adaptations.Average(a => a.ConfidenceScalar) : 1f;
+        var avgBias = adaptations.Length > 0 ? biasSum / adaptations.Length : 1f;
+        var avgScalar = adaptations.Length > 0 ? scalarSum / adaptations.Length : 1f;
 
         return new MetaAdaptation
         {

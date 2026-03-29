@@ -5,6 +5,7 @@ using ThatsMyQuant.Infrastructure.Services.Patterns;
 using ThatsMyQuant.Infrastructure.Services.Strategy;
 using ThatsMyQuant.Infrastructure.Services.Risk;
 using ThatsMyQuant.Infrastructure.Services.MetaLearning;
+using ThatsMyQuant.Infrastructure.Services;
 
 namespace ThatsMyQuant.Infrastructure;
 
@@ -12,6 +13,9 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddThatsMyQuantInfrastructure(this IServiceCollection services)
     {
+        services.AddSingleton(sp => MemoryPortfolioManager.Instance);
+        services.AddSingleton<ISharedPortfolioStateManager>(sp => sp.GetRequiredService<MemoryPortfolioManager>());
+
         // Tier 1: Foundation
         services.AddScoped<IFoundationAgent, OrderBookDepthAnalyzer>();
         services.AddScoped<IFoundationAgent, VolumeProfileAgent>();
@@ -38,6 +42,9 @@ public static class DependencyInjection
         services.AddSingleton<IMetaLearningAgent, RegimeSwitchingModelAgent>();
         services.AddSingleton<IMetaLearningAgent, OnlineLearningAdaptorAgent>();
         services.AddSingleton<IMetaLearningAgent, ReinforcementLearningAgent>();
+
+        // Exchange: Multi-exchange routing
+        services.AddSingleton<ExchangeServiceResolver>();
 
         return services;
     }

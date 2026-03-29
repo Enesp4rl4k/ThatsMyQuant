@@ -18,6 +18,8 @@ using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using ThatsMyQuant.Infrastructure.Services.Validators;
+using Listener.Api.Hubs;
+using Listener.Api.Services;
 
 PerformanceBootstrapper.OptimizeForHft();
 
@@ -37,9 +39,11 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // --- Database ---
-builder.Services.AddDbContext<QuantDbContext>(options =>
-    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"));
+builder.Services.AddDbContextPool<QuantDbContext>(options =>
+    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"), poolSize: 128);
 
+builder.Services.AddSingleton<SignalWriterChannel>();
+builder.Services.AddHostedService<QuantPersistenceWorker>();
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
@@ -93,6 +97,20 @@ else
 }
 
 builder.Services.AddHostedService<WebhookCleanupService>();
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<MarketDataBroadcastService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<MarketDataBroadcastService>());
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReact", policy =>
+    {
+        policy.WithOrigins("http://localhost:5173", "http://localhost:3000") // Vite/CRA defaults
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
+});
 
 var app = builder.Build();
 
@@ -111,11 +129,14 @@ using (var scope = app.Services.CreateScope())
 
 app.UseMiddleware<HmacValidationMiddleware>();
 app.UseMiddleware<ApiKeyValidationMiddleware>();
+app.UseCors("AllowReact");
 
 app.MapPost("/webhook", async (Signal signal, IMediator mediator) =>
 {
     await mediator.Send(new ProcessSignalCommand(signal));
     return Results.Accepted();
 });
+
+app.MapHub<MarketDataHub>("/market-hub");
 
 await app.RunAsync();

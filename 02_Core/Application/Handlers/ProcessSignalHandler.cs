@@ -17,8 +17,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     private readonly ISignalRepository _signalRepository;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly IMarketDataService _marketDataService;
-    private readonly IEnumerable<ISignalValidator> _validators;
-    private readonly AgentCoordinator _agentCoordinator;
+    private readonly ISignalValidator[] _validators;
+    private readonly IAgentCoordinator _agentCoordinator;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
@@ -28,7 +28,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         ISignalRepository signalRepository,
         ITechnicalAnalysisService technicalAnalysis,
         IEnumerable<ISignalValidator> validators,
-        AgentCoordinator agentCoordinator,
+        IAgentCoordinator agentCoordinator,
         IConfiguration configuration)
     {
         _logger = logger;
@@ -36,7 +36,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         _marketDataService = marketDataService;
         _signalRepository = signalRepository;
         _technicalAnalysis = technicalAnalysis;
-        _validators = validators;
+        _validators = validators.OrderBy(v => v.Order).ToArray();
         _agentCoordinator = agentCoordinator;
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
@@ -50,7 +50,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         await _signalRepository.AddAsync(request.Signal);
 
         // 0.5: Modular Validation Chain (Volume, Price, Market Hours, etc.)
-        foreach (var validator in _validators.OrderBy(v => v.Order))
+        foreach (var validator in _validators)
         {
             var (isValid, failureReason) = await validator.ValidateAsync(request.Signal);
             if (!isValid)

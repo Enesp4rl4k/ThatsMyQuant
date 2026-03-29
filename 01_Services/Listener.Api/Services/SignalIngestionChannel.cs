@@ -17,7 +17,9 @@ public class SignalIngestionChannel
         // Prevent Webhook DoS attacks by bounding the RAM ingest limit
         var options = new BoundedChannelOptions(10_000)
         {
-            FullMode = BoundedChannelFullMode.DropOldest
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = false
         };
         _channel = Channel.CreateBounded<Signal>(options);
     }

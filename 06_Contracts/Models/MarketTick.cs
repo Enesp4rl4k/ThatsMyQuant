@@ -1,4 +1,12 @@
+using System.Text.Json.Serialization;
+
 namespace ThatsMyQuant.Contracts.Models;
+
+[JsonSourceGenerationOptions(WriteIndented = false)]
+[JsonSerializable(typeof(MarketTick))]
+public partial class MarketTickJsonContext : JsonSerializerContext
+{
+}
 
 /// <summary>
 /// Represents a single real-time market tick.

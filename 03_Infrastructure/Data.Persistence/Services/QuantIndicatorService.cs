@@ -5,6 +5,7 @@ using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Indicators;
+using System.Runtime.InteropServices;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -46,7 +47,7 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         buffer.Add(candle);
     }
 
-    public Task<IndicatorSnapshot> ComputeIndicatorsAsync(List<Candle> candles)
+    public Task<IndicatorSnapshot> ComputeIndicatorsAsync(IReadOnlyList<Candle> candles)
     {
         if (candles.Count < MinimumCandles)
         {
@@ -95,10 +96,16 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         double volumeRatio = avgVolume > 0 ? currentVolume / avgVolume : 1.0;
 
         // --- AlphaTrend (KivancOzbilgic) ---
-        var alphaTrendResults = AlphaTrendCalculator.Calculate(candles, coeff: 1.0, period: 14);
-        var latestAlphaTrend = alphaTrendResults.LastOrDefault();
-        var pmaxResults = PMaxCalculator.Calculate(candles, atrLength: 10, atrMultiplier: 3.0, maLength: 10);
-        var latestPMax = pmaxResults.LastOrDefault();
+        // HFT Optimization: Using Span and stackalloc for small indicator result sets
+        var candleSpan = candles is List<Candle> list ? CollectionsMarshal.AsSpan(list) : candles.ToArray().AsSpan();
+        
+        var alphaTrendResults = new AlphaTrendResult[candles.Count];
+        AlphaTrendCalculator.Calculate(candleSpan, alphaTrendResults, coeff: 1.0, period: 14);
+        var latestAlphaTrend = alphaTrendResults[^1];
+
+        var pmaxResults = new PMaxResult[candles.Count];
+        PMaxCalculator.Calculate(candleSpan, pmaxResults, atrLength: 10, atrMultiplier: 3.0, maLength: 10);
+        var latestPMax = pmaxResults[^1];
 
         // --- Absorbing System (Support/Resistance) ---
         var srLevels = AbsorbingSystemCalculator.Calculate(candles, pivotLen: 10);
@@ -134,15 +141,15 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             "Indicators: RSI={RSI:F1} MACD={MACD:F4} EMA20={EMA20:F2} EMA50={EMA50:F2} ATR={ATR:F2} Vol={Vol:F1}x AT={AT} PMAX={PMAX} PA={PA} S/R={SR}",
             snapshot.RSI, snapshot.MACD, snapshot.EMA20, snapshot.EMA50,
             snapshot.ATR, snapshot.VolumeRatio,
-            latestAlphaTrend?.IsBullish == true ? "BULLISH" : "BEARISH",
-            latestPMax?.IsBullish == true ? "BULLISH" : "BEARISH",
+            latestAlphaTrend.IsBullish ? "BULLISH" : "BEARISH",
+            latestPMax.IsBullish ? "BULLISH" : "BEARISH",
             snapshot.DetectedPattern,
             $"S:{nearestSupport?.Price:F2}|R:{nearestResistance?.Price:F2}");
 
         return Task.FromResult(snapshot);
     }
 
-    public async Task<TradeDecision> AnalyzeAsync(Signal signal, List<Candle> candles, RiskParameters risk)
+    public async Task<TradeDecision> AnalyzeAsync(Signal signal, IReadOnlyList<Candle> candles, RiskParameters risk)
     {
         _logger.LogInformation("Starting full analysis for {Symbol}...", signal.Symbol);
 

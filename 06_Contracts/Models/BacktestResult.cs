@@ -46,6 +46,7 @@ public record BacktestResult
 
     public DateTime StartDate { get; init; }
     public DateTime EndDate { get; init; }
+    public string Reasoning { get; init; } = "";
 }
 
 public record BacktestTradeResult

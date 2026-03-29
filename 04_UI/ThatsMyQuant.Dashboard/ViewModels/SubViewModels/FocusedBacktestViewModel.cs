@@ -11,9 +11,8 @@ namespace ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
 
 public partial class FocusedBacktestViewModel : ObservableObject
 {
-    private readonly AgentCoordinator _agentCoordinator;
+    private readonly IAgentCoordinator _agentCoordinator;
     private readonly IMarketDataService _marketData;
-    private readonly IEnumerable<IFocusedAgent> _focusedAgents;
 
     [ObservableProperty] private string _selectedMarket = "BIST";
     [ObservableProperty] private string _selectedTimeframe = "1h";
@@ -28,13 +27,11 @@ public partial class FocusedBacktestViewModel : ObservableObject
     private CancellationTokenSource? _simCts;
 
     public FocusedBacktestViewModel(
-        AgentCoordinator agentCoordinator, 
-        IMarketDataService marketData,
-        IEnumerable<IFocusedAgent> focusedAgents)
+        IAgentCoordinator agentCoordinator, 
+        IMarketDataService marketData)
     {
         _agentCoordinator = agentCoordinator;
         _marketData = marketData;
-        _focusedAgents = focusedAgents;
     }
 
     [RelayCommand]

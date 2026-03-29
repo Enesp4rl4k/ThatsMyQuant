@@ -26,6 +26,13 @@ public class Trade
     public string VenueImpactLabel { get; set; } = string.Empty;
     public string ConcordanceImpactLabel { get; set; } = string.Empty;
     public string ConcordanceSummary { get; set; } = string.Empty;
+    public bool FeatureDriftDetected { get; set; }
+    public bool FeatureDriftCritical { get; set; }
+    public int DriftedFeatureCount { get; set; }
+    public decimal FeatureDriftMaxZScore { get; set; }
+    public string FeatureDriftImpactLabel { get; set; } = string.Empty;
+    public string FeatureDriftSummary { get; set; } = string.Empty;
+    public string MlModelVersion { get; set; } = string.Empty;
     public string ExecutionMode { get; set; } = "REAL";
     public string PromotionStage { get; set; } = "Backtest";
     public decimal EntrySlippagePercent { get; set; }

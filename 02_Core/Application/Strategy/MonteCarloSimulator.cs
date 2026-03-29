@@ -11,55 +11,48 @@ public class MonteCarloSimulator
         int iterations = 10000, 
         int stepsPerIteration = 252)
     {
-        // Guard Clause
         if (historicalPnlTrades == null || historicalPnlTrades.Count == 0)
-        {
             throw new ArgumentException("Requires at least one valid trade to simulate permutations.");
-        }
 
-        // SonarQube Fix: Thread-safe koleksiyonlar veya yerel toplama (aggregation)
-        // results ve drawdowns listelerini önceden boyutlandırıyoruz (Pre-allocation)
         var finalEquities = new decimal[iterations];
         var maxDrawdowns = new decimal[iterations];
 
         await Task.Run(() =>
         {
-            // SonarQube Fix: lock yerine dizi indeksleme kullanmak lock contention'ı sıfırlar.
             Parallel.For(0, iterations, i =>
             {
-                decimal simEquity = startingCapital;
-                decimal peakSimEquity = startingCapital;
-                decimal maxDD = 0;
-
-                // Random.Shared thread-safe'dir, güvenle kullanılabilir.
-                for (int s = 0; s < stepsPerIteration; s++)
-                {
-                    int randomIndex = Random.Shared.Next(historicalPnlTrades.Count);
-                    decimal randomPnl = (decimal)historicalPnlTrades[randomIndex];
-                    
-                    simEquity += randomPnl;
-
-                    if (simEquity > peakSimEquity) 
-                        peakSimEquity = simEquity;
-                    
-                    decimal currentDD = peakSimEquity - simEquity;
-                    if (currentDD > maxDD) 
-                        maxDD = currentDD;
-
-                    if (simEquity <= 0) 
-                    {
-                        simEquity = 0; // İflas (Ruin)
-                        break;
-                    }
-                }
-
-                // Her thread kendi dizinindeki elemana yazar, kilitlenmeye (lock) gerek kalmaz!
+                var (simEquity, maxDD) = RunSingleIteration(historicalPnlTrades, startingCapital, stepsPerIteration);
                 finalEquities[i] = simEquity;
                 maxDrawdowns[i] = maxDD;
             });
         });
 
-        // Array.Sort, List.Sort'tan daha hızlıdır.
+        return FinalizeResults(finalEquities, maxDrawdowns, iterations);
+    }
+
+    private static (decimal finalEquity, decimal maxDrawdown) RunSingleIteration(List<double> trades, decimal capital, int steps)
+    {
+        decimal simEquity = capital;
+        decimal peak = capital;
+        decimal maxDD = 0;
+
+        for (int s = 0; s < steps; s++)
+        {
+            decimal randomPnl = (decimal)trades[Random.Shared.Next(trades.Count)];
+            simEquity += randomPnl;
+
+            if (simEquity > peak) peak = simEquity;
+            
+            decimal currentDD = peak - simEquity;
+            if (currentDD > maxDD) maxDD = currentDD;
+
+            if (simEquity <= 0) { simEquity = 0; break; }
+        }
+        return (simEquity, maxDD);
+    }
+
+    private static MonteCarloResult FinalizeResults(decimal[] finalEquities, decimal[] maxDrawdowns, int iterations)
+    {
         Array.Sort(finalEquities);
         Array.Sort(maxDrawdowns);
 

@@ -106,15 +106,41 @@ public class RiskAgent : IFocusedAgent
         return available <= 0 ? (false, "Insufficient available balance.") : (true, "");
     }
 
+    private decimal _dailyClosedPnL;
+    private int _activeTradeCount;
+    private DateTime _lastPnLResetDate = DateTime.UtcNow.Date;
+
+    public void NotifyTradeUpdate(Trade trade)
+    {
+        // 🔥 HFT Optimization: Track PnL incrementally to avoid LINQ Sum() on every tick
+        if (trade.ExitTime.HasValue && trade.ExitTime.Value.Date == DateTime.UtcNow.Date && trade.Status == TradeStatus.Executed)
+        {
+            var pnl = (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == TradeSide.Sell ? -1 : 1);
+            InterlockedAdd(ref _dailyClosedPnL, pnl);
+        }
+
+        // Track active trades without LINQ Count()
+        if (trade.Status == TradeStatus.Executed && !trade.IsClosed)
+        {
+            Interlocked.Increment(ref _activeTradeCount);
+        }
+        else if (trade.IsClosed)
+        {
+            Interlocked.Decrement(ref _activeTradeCount);
+        }
+    }
+
     private (bool Approved, string Reason) CheckDailyLossLimit(IReadOnlyList<Trade> recentTrades, RiskParameters riskProfile, decimal assumedStartingEquity)
     {
-        var dayStart = DateTime.UtcNow.Date;
-        var dailyClosedPnL = recentTrades
-            .Where(t => t.ExitTime.HasValue && t.ExitTime.Value >= dayStart && t.Status == TradeStatus.Executed && t.ExitPrice > 0)
-            .Sum(t => (t.ExitPrice - t.EntryPrice) * t.Quantity * (t.Side == TradeSide.Sell ? -1 : 1));
+        // Reset daily PnL if date changed
+        if (DateTime.UtcNow.Date > _lastPnLResetDate)
+        {
+            _dailyClosedPnL = 0;
+            _lastPnLResetDate = DateTime.UtcNow.Date;
+        }
 
         var equity = GetBaseEquityForRiskCheck(assumedStartingEquity, riskProfile);
-        var lossPercent = equity <= 0 ? 0 : Math.Abs(Math.Min(0, dailyClosedPnL) / equity) * 100m;
+        var lossPercent = equity <= 0 ? 0 : Math.Abs(Math.Min(0, _dailyClosedPnL) / equity) * 100m;
 
         if (lossPercent >= riskProfile.MaxDailyLossPercent)
         {
@@ -133,9 +159,11 @@ public class RiskAgent : IFocusedAgent
 
     private (bool Approved, string Reason) CheckConcurrentTradeLimits(IReadOnlyList<Trade> recentTrades, Signal signal)
     {
-        if (recentTrades.Count(t => !t.IsClosed && t.Status == TradeStatus.Executed) >= 5)
+        if (_activeTradeCount >= 5)
             return (false, "Max concurrent open trades reached (5).");
 
+        // Per-symbol check still needs a small loop or a dictionary, but we can optimize it if needed.
+        // For now, eliminating the global count check is already a win.
         var symbolOpenTrades = recentTrades.Count(t =>
             !t.IsClosed && t.Status == TradeStatus.Executed &&
             string.Equals(t.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase));
@@ -143,8 +171,20 @@ public class RiskAgent : IFocusedAgent
         return symbolOpenTrades >= 2 ? (false, $"Max open trades for {signal.Symbol} reached (2).") : (true, "");
     }
 
+    private static void InterlockedAdd(ref decimal location, decimal value)
+    {
+        decimal initial, computed;
+        do
+        {
+            initial = location;
+            computed = initial + value;
+        } while (initial != Interlocked.CompareExchange(ref location, computed, initial));
+    }
+
     private (bool Approved, string Reason) CheckLossStreak(IReadOnlyList<Trade> recentTrades, Signal signal)
     {
+        // Streak check is only performed on entry evaluation, so a small LINQ is acceptable here,
+        // but we take only 3 items to keep it O(1) effectively.
         var symbolRecentTrades = recentTrades
             .Where(t => string.Equals(t.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) && t.IsClosed && t.Status == TradeStatus.Executed)
             .OrderByDescending(t => t.ExitTime)

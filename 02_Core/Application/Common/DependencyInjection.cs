@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Contracts.Interfaces;
@@ -20,6 +21,12 @@ public static class DependencyInjection
         services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
         services.AddSingleton<MarketExecutionProfileService>();
         services.AddSingleton<TickPipeline>();
+        services.AddSingleton<TickReplayEngine>();
+        services.AddSingleton<CircuitBreakerService>();
+        services.AddSingleton<ModelTrainingPipeline>();
+        services.AddSingleton(sp => new FeatureDriftMonitor(
+            featureCount: 5,
+            logger: sp.GetService<ILogger<FeatureDriftMonitor>>()));
 
         // Application Layer Services - Scoped (Logic/Handlers/LLM-Dependent)
         services.AddScoped<SentimentAgent>();
@@ -40,7 +47,7 @@ public static class DependencyInjection
         services.AddScoped<IStrategyRouter, BreakoutStrategyRouter>();
 
         // 5-Tier Agent Hierarchy Orchestrator
-        services.AddScoped<AgentCoordinator>();
+        services.AddScoped<IAgentCoordinator, AgentCoordinator>();
 
         return services;
     }

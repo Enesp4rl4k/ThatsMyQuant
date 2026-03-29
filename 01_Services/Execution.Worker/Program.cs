@@ -62,8 +62,10 @@ else
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
 
 // Persistence
-builder.Services.AddDbContext<QuantDbContext>(options =>
-    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"));
+builder.Services.AddDbContextPool<QuantDbContext>(options =>
+    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"), poolSize: 128);
+builder.Services.AddSingleton<SignalWriterChannel>();
+builder.Services.AddHostedService<QuantPersistenceWorker>();
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();

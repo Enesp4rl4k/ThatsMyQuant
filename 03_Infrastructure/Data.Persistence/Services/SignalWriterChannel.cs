@@ -6,8 +6,8 @@ using ThatsMyQuant.Contracts.Models;
 namespace ThatsMyQuant.Infrastructure.Services;
 
 /// <summary>
-/// A non-blocking asynchronous RAM pipeline protecting the execution threads from SQL Server Latency.
-/// Uses DropOldest bounding to defend the ecosystem from OOM memory corruption during hyper-volatile surges.
+/// A bounded multi-producer write buffer that decouples signal persistence from the request hot path.
+/// Callers can fall back to direct persistence if the buffer is saturated.
 /// </summary>
 public class SignalWriterChannel
 {
@@ -15,10 +15,12 @@ public class SignalWriterChannel
 
     public SignalWriterChannel()
     {
-        // 50,000 tick barrier. Defends the application's Heap topology if the database connection crashes.
+        // Large enough for volatility bursts while still giving callers a clear backpressure signal.
         var options = new BoundedChannelOptions(50_000)
         {
-            FullMode = BoundedChannelFullMode.DropOldest
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = true
         };
         _channel = Channel.CreateBounded<Signal>(options);
     }

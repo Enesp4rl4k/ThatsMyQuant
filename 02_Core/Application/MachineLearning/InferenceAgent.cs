@@ -12,6 +12,11 @@ public struct PredictionResult
     public float Value;
     public bool IsValid;
     public float Confidence; // Distance mapping for stochastic thresholds
+    public string ModelVersion;
+    public bool DriftDetected;
+    public bool DriftIsCritical;
+    public int DriftedFeatureCount;
+    public double MaxFeatureZScore;
 }
 
 /// <summary>
@@ -27,10 +32,31 @@ public class InferenceAgent
     private readonly ConcurrentStack<(PredictionEngine<CandleMlData, CandlePrediction> Engine, CandleMlData Buffer)> _pool = new();
     private readonly int _processorCount;
     private readonly MLContext _mlContext;
+    private readonly FeatureDriftMonitor? _featureDriftMonitor;
+    private readonly string _modelVersion;
 
-    public InferenceAgent(string modelPath = "PredictiveAlphaModel.zip")
+    public string ActiveModelVersion => _modelVersion;
+
+    public InferenceAgent()
+        : this((FeatureDriftMonitor?)null, "PredictiveAlphaModel.zip")
+    {
+    }
+
+    public InferenceAgent(string modelPath)
+        : this((FeatureDriftMonitor?)null, modelPath)
+    {
+    }
+
+    public InferenceAgent(FeatureDriftMonitor featureDriftMonitor)
+        : this(featureDriftMonitor, "PredictiveAlphaModel.zip")
+    {
+    }
+
+    public InferenceAgent(FeatureDriftMonitor? featureDriftMonitor, string modelPath)
     {
         _mlContext = new MLContext(seed: 42);
+        _featureDriftMonitor = featureDriftMonitor;
+        _modelVersion = BuildModelVersion(modelPath);
         
         if (!File.Exists(modelPath))
             throw new FileNotFoundException($"Cannot start Quantitative AI. Trained Model {modelPath} not found.");
@@ -55,9 +81,69 @@ public class InferenceAgent
     }
 
     /// <summary>
-    /// Predicts the target trajectory using the realtime features.
-    /// Operates using a concurrent pool to guarantee thread-safety without lock-contention.
+    /// Predicts the target trajectory using the realtime features from the agent.
+    /// Operates using a concurrent pool and zero-allocation techniques.
     /// </summary>
+    public PredictionResult PredictNextReturn(FeatureEngineeringAgent featureAgent)
+    {
+        if (featureAgent == null) return new PredictionResult { Value = 0f, IsValid = false };
+
+        if (_pool.TryPop(out var item))
+        {
+            try
+            {
+                // 🔥 ZERO-ALLOCATION BRIDGE: Copy directly into the pre-allocated pool buffer
+                featureAgent.CopyTo(item.Buffer.Features);
+
+                // 🧠 Feature Drift & Data Corruption Guard
+                for (int i = 0; i < 5; i++)
+                {
+                    if (float.IsNaN(item.Buffer.Features[i]) || float.IsInfinity(item.Buffer.Features[i]))
+                    {
+                        return new PredictionResult { Value = 0f, IsValid = false };
+                    }
+                }
+
+                var driftReport = _featureDriftMonitor?.UpdateAll(item.Buffer.Features);
+                var driftDetected = driftReport is { DriftedCount: > 0 };
+                if (driftReport is { IsCritical: true })
+                {
+                    return new PredictionResult
+                    {
+                        Value = 0f,
+                        IsValid = false,
+                        ModelVersion = _modelVersion,
+                        DriftDetected = true,
+                        DriftIsCritical = true,
+                        DriftedFeatureCount = driftReport.DriftedCount,
+                        MaxFeatureZScore = driftReport.MaxZScore
+                    };
+                }
+
+                var prediction = item.Engine.Predict(item.Buffer);
+                
+                return new PredictionResult 
+                { 
+                    Value = prediction.PredictedNextClose,
+                    IsValid = true,
+                    Confidence = 0.99f,
+                    ModelVersion = _modelVersion,
+                    DriftDetected = driftDetected,
+                    DriftIsCritical = false,
+                    DriftedFeatureCount = driftReport?.DriftedCount ?? 0,
+                    MaxFeatureZScore = driftReport?.MaxZScore ?? 0
+                };
+            }
+            finally
+            {
+                _pool.Push(item);
+            }
+        }
+
+        return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
+    }
+
+    [Obsolete("Use PredictNextReturn(FeatureEngineeringAgent) for better performance.")]
     public PredictionResult PredictNextReturn(float[] currentNormalizedFeatures)
     {
         if (currentNormalizedFeatures == null || currentNormalizedFeatures.Length != 5) 
@@ -76,14 +162,39 @@ public class InferenceAgent
         {
             try
             {
-                item.Buffer.Features = currentNormalizedFeatures;
+                // This is slightly less efficient as it involves an array assignment (but not a new allocation here)
+                // However, item.Buffer.Features is replaced, which might cause the old array to be GC'd if not careful.
+                // Better to copy the values.
+                currentNormalizedFeatures.CopyTo(item.Buffer.Features, 0); 
+
+                var driftReport = _featureDriftMonitor?.UpdateAll(item.Buffer.Features);
+                var driftDetected = driftReport is { DriftedCount: > 0 };
+                if (driftReport is { IsCritical: true })
+                {
+                    return new PredictionResult
+                    {
+                        Value = 0f,
+                        IsValid = false,
+                        ModelVersion = _modelVersion,
+                        DriftDetected = true,
+                        DriftIsCritical = true,
+                        DriftedFeatureCount = driftReport.DriftedCount,
+                        MaxFeatureZScore = driftReport.MaxZScore
+                    };
+                }
+                
                 var prediction = item.Engine.Predict(item.Buffer);
                 
                 return new PredictionResult 
                 { 
                     Value = prediction.PredictedNextClose,
                     IsValid = true,
-                    Confidence = 0.99f 
+                    Confidence = 0.99f,
+                    ModelVersion = _modelVersion,
+                    DriftDetected = driftDetected,
+                    DriftIsCritical = false,
+                    DriftedFeatureCount = driftReport?.DriftedCount ?? 0,
+                    MaxFeatureZScore = driftReport?.MaxZScore ?? 0
                 };
             }
             finally
@@ -92,7 +203,13 @@ public class InferenceAgent
             }
         }
 
-        // Fallback for extreme burst edge-cases outside pre-warmed pool (unlikely in practice)
-        return new PredictionResult { Value = 0f, IsValid = false };
+        return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
+    }
+
+    private static string BuildModelVersion(string modelPath)
+    {
+        var file = new FileInfo(modelPath);
+        var stamp = file.Exists ? file.LastWriteTimeUtc : DateTime.UtcNow;
+        return $"{Path.GetFileNameWithoutExtension(modelPath)}@{stamp:yyyyMMddHHmmss}";
     }
 }

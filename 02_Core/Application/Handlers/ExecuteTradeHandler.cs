@@ -5,6 +5,7 @@ using ThatsMyQuant.Application.Resilience;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Application.Strategy;
 using System.Globalization;
 
 namespace ThatsMyQuant.Application.Handlers;
@@ -14,15 +15,18 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
     private readonly ILogger<ExecuteTradeHandler> _logger;
     private readonly IExchangeService _exchangeService;
     private readonly ITradeRepository _tradeRepository;
+    private readonly CircuitBreakerService _circuitBreaker;
 
     public ExecuteTradeHandler(
         ILogger<ExecuteTradeHandler> logger, 
         IExchangeService exchangeService,
-        ITradeRepository tradeRepository)
+        ITradeRepository tradeRepository,
+        CircuitBreakerService circuitBreaker)
     {
         _logger = logger;
         _exchangeService = exchangeService;
         _tradeRepository = tradeRepository;
+        _circuitBreaker = circuitBreaker;
     }
 
     public async Task<Trade> Handle(ExecuteTradeCommand request, CancellationToken cancellationToken)
@@ -38,6 +42,19 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
                 request.Signal.Id,
                 existingTrade.Id);
             return existingTrade;
+        }
+
+        var circuitGuard = _circuitBreaker.CheckOrderAllowed();
+        if (!circuitGuard.Allowed)
+        {
+            _logger.LogWarning(
+                "Circuit breaker blocked execution for Signal {SignalId}: {Reason}",
+                request.Signal.Id,
+                circuitGuard.BlockReason);
+
+            var blockedTrade = CreateFailedTradeFromSignal(request.Signal);
+            await _tradeRepository.AddAsync(blockedTrade);
+            return blockedTrade;
         }
 
         // Domain Logic: Reject weak liquidity HFT probes before hitting the venue
@@ -61,25 +78,16 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
 
             trade.Status = TradeStatus.Executed;
             MapSignalMetadataToTrade(request.Signal, trade);
+            _circuitBreaker.RecordSuccess();
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Trade execution FAILED for Signal {Id} after retries + circuit breaker.",
                 request.Signal.Id);
+            _circuitBreaker.RecordError(ex);
 
             // Persist the failed trade for audit
-            trade = new Trade
-            {
-                SignalId = request.Signal.Id,
-                Symbol = request.Signal.Symbol,
-                Side = request.Signal.Side,
-                EntryPrice = request.Signal.Price,
-                Quantity = 0,
-                Status = TradeStatus.Failed,
-                StrategyTag = request.Signal.StrategyTag,
-                RegimeTag = request.Signal.RegimeTag,
-                EntryTime = DateTime.UtcNow
-            };
+            trade = CreateFailedTradeFromSignal(request.Signal);
         }
 
         // Persist trade result
@@ -88,6 +96,25 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         _logger.LogInformation("Trade {Status}: {TradeId} @ {Price}",
             trade.Status, trade.Id, trade.EntryPrice);
 
+        return trade;
+    }
+
+    private Trade CreateFailedTradeFromSignal(Signal signal)
+    {
+        var trade = new Trade
+        {
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            Side = signal.Side,
+            EntryPrice = signal.Price,
+            Quantity = 0,
+            Status = TradeStatus.Failed,
+            StrategyTag = signal.StrategyTag,
+            RegimeTag = signal.RegimeTag,
+            EntryTime = DateTime.UtcNow
+        };
+
+        MapSignalMetadataToTrade(signal, trade);
         return trade;
     }
 
@@ -107,6 +134,13 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         if (signal.Metadata.TryGetValue("ExactBucketSummary", out var ebs)) trade.ExactBucketSummary = ebs;
         if (signal.Metadata.TryGetValue("ConcordanceImpactLabel", out var cil)) trade.ConcordanceImpactLabel = cil;
         if (signal.Metadata.TryGetValue("ConcordanceSummary", out var cs)) trade.ConcordanceSummary = cs;
+        if (signal.Metadata.TryGetValue("FeatureDriftImpactLabel", out var fdil)) trade.FeatureDriftImpactLabel = fdil;
+        if (signal.Metadata.TryGetValue("FeatureDriftSummary", out var fds)) trade.FeatureDriftSummary = fds;
+        if (signal.Metadata.TryGetValue("FeatureDriftDetected", out var fdd) && bool.TryParse(fdd, out var driftDetected)) trade.FeatureDriftDetected = driftDetected;
+        if (signal.Metadata.TryGetValue("FeatureDriftCritical", out var fdc) && bool.TryParse(fdc, out var driftCritical)) trade.FeatureDriftCritical = driftCritical;
+        if (signal.Metadata.TryGetValue("DriftedFeatureCount", out var dfc) && int.TryParse(dfc, out var driftedFeatureCount)) trade.DriftedFeatureCount = driftedFeatureCount;
+        if (signal.Metadata.TryGetValue("FeatureDriftMaxZScore", out var fdz) && decimal.TryParse(fdz, CultureInfo.InvariantCulture, out var driftMaxZScore)) trade.FeatureDriftMaxZScore = driftMaxZScore;
+        if (signal.Metadata.TryGetValue("MlModelVersion", out var modelVersion)) trade.MlModelVersion = modelVersion;
         if (signal.Metadata.TryGetValue("ExitPolicyTag", out var ept)) trade.ExitPolicyTag = ept;
         if (signal.Metadata.TryGetValue("ExecutionMode", out var em)) trade.ExecutionMode = em;
 

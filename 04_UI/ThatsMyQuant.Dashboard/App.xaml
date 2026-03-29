@@ -7,23 +7,248 @@
         <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
         <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
         
-        <!-- Institutional Quantum Palette -->
+        <!-- INSTITUTIONAL GLASS DESIGN SYSTEM -->
+        <Color x:Key="AccentColor">#00BFFF</Color>
+        <Color x:Key="SurfaceColor">#161B22</Color>
+        <Color x:Key="BorderColorValue">#2D333B</Color>
+
         <SolidColorBrush x:Key="AppBg" Color="#0D0E12" />
-        <SolidColorBrush x:Key="SurfaceBg" Color="#161B22" />
+        <SolidColorBrush x:Key="SurfaceBg" Color="{StaticResource SurfaceColor}" />
         <SolidColorBrush x:Key="BgCard" Color="#1A1C24" />
-        <SolidColorBrush x:Key="BorderColor" Color="#2D333B" />
-        <SolidColorBrush x:Key="Accent" Color="#00BFFF" /> <!-- Deep Blue Accent -->
-        <SolidColorBrush x:Key="BuyColor" Color="#00FFBB" /> <!-- Neon Emerald -->
-        <SolidColorBrush x:Key="SellColor" Color="#FF3366" /> <!-- Electric Raspberry -->
+        <SolidColorBrush x:Key="BorderColor" Color="{StaticResource BorderColorValue}" />
+        <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}" />
+        <SolidColorBrush x:Key="BuyColor" Color="#00FFBB" />
+        <SolidColorBrush x:Key="SellColor" Color="#FF3366" />
         <SolidColorBrush x:Key="TextMain" Color="#E6EDF3" />
         <SolidColorBrush x:Key="TextMuted" Color="#7D8590" />
         <SolidColorBrush x:Key="TextSoft" Color="#AFB8C1" />
 
-        <!-- Institutional Typography -->
         <FontFamily x:Key="PrimaryFont">Inter, Segoe UI Variable Display, Segoe UI, sans-serif</FontFamily>
         <FontFamily x:Key="MonoFont">Roboto Mono, Consolas, Courier New, monospace</FontFamily>
 
-        <!-- Professional Card Style -->
+        <!-- GLOBAL SCROLLBAR OVERHAUL (MINIMALIST GLASS) -->
+        <Style x:Key="InstitutionalScrollBarThumb" TargetType="Thumb">
+            <Setter Property="OverridesDefaultStyle" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border x:Name="Rectangle1" CornerRadius="3" Background="#3AFFFFFF" Width="6" Margin="2" />
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Rectangle1" Property="Background" Value="{StaticResource Accent}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="Stylus.IsPressAndHoldEnabled" Value="false" />
+            <Setter Property="Stylus.IsFlicksEnabled" Value="false" />
+            <Setter Property="Width" Value="10" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid x:Name="Bg" SnapsToDevicePixels="true" Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="true" IsEnabled="{TemplateBinding IsEnabled}">
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource InstitutionalScrollBarThumb}" />
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- INSTITUTIONAL GLASS BUTTON ENHANCED -->
+        <Style x:Key="InstitutionalGlassButton" TargetType="Button">
+            <Setter Property="Background" Value="#1AFFFFFF" />
+            <Setter Property="Foreground" Value="{StaticResource TextMain}" />
+            <Setter Property="BorderBrush" Value="#2AFFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="15,8" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}" 
+                                CornerRadius="4" SnapsToDevicePixels="true">
+                            <ContentPresenter x:Name="contentPresenter" Focusable="False" 
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" 
+                                              Margin="{TemplateBinding Padding}" 
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="true">
+                                <Setter Property="Background" TargetName="border" Value="#2AFFFFFF" />
+                                <Setter Property="BorderBrush" TargetName="border" Value="{StaticResource Accent}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="true">
+                                <Setter Property="Background" TargetName="border" Value="#4AFFFFFF" />
+                                <Setter Property="Opacity" Value="0.8" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="InstitutionalActionButton" TargetType="Button" BasedOn="{StaticResource InstitutionalGlassButton}">
+            <Setter Property="Background" Value="#266366F1" />
+            <Setter Property="BorderBrush" Value="#406366F1" />
+            <Setter Property="Foreground" Value="#A5B4FC" />
+            <Style.Triggers>
+                <EventTrigger RoutedEvent="Loaded">
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <ColorAnimation Storyboard.TargetProperty="(Button.BorderBrush).(SolidColorBrush.Color)"
+                                            From="#406366F1" To="#806366F1" Duration="0:0:1.5"
+                                            AutoReverse="True" RepeatBehavior="Forever" />
+                        </Storyboard>
+                    </BeginStoryboard>
+                </EventTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="InstitutionalPanicButton" TargetType="Button" BasedOn="{StaticResource InstitutionalGlassButton}">
+            <Setter Property="Background" Value="#26EF4444" />
+            <Setter Property="BorderBrush" Value="#40EF4444" />
+            <Setter Property="Foreground" Value="#FCA5A5" />
+            <Style.Triggers>
+                <EventTrigger RoutedEvent="Loaded">
+                    <BeginStoryboard>
+                        <Storyboard>
+                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                             From="1" To="0.7" Duration="0:0:0.8"
+                                             AutoReverse="True" RepeatBehavior="Forever" />
+                        </Storyboard>
+                    </BeginStoryboard>
+                </EventTrigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- INSTITUTIONAL GLASS COMBOBOX -->
+        <Style x:Key="InstitutionalGlassComboBox" TargetType="ComboBox">
+            <Setter Property="Background" Value="#1AFFFFFF" />
+            <Setter Property="BorderBrush" Value="#2AFFFFFF" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Name="ToggleButton" 
+                                          Background="{TemplateBinding Background}"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          BorderThickness="1"
+                                          Focusable="false"
+                                          IsChecked="{Binding Path=IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border CornerRadius="4" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+                                            <Grid HorizontalAlignment="Right">
+                                                <Path x:Name="Arrow" Fill="{StaticResource TextSoft}" Data="M 0 0 L 4 4 L 8 0 Z" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False" Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              Margin="10,3,30,3" VerticalAlignment="Center" />
+                            <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Grid Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <Border x:Name="DropDownBorder" Background="#E6161B22" BorderThickness="1" BorderBrush="{StaticResource Accent}" CornerRadius="0,0,4,4" />
+                                    <ScrollViewer Margin="4,6,4,6" SnapsToDevicePixels="True">
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Grid>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ToggleButton" Property="BorderBrush" Value="{StaticResource Accent}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- INSTITUTIONAL GLASS SLIDER -->
+        <Style x:Key="InstitutionalGlassSlider" TargetType="Slider">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid>
+                            <Border Height="4" Background="#1AFFFFFF" CornerRadius="2" VerticalAlignment="Center">
+                                <Border x:Name="TrackHighlight" Height="4" HorizontalAlignment="Left" CornerRadius="2">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                            <GradientStop Color="{StaticResource AccentColor}" Offset="0" />
+                                            <GradientStop Color="#8000BFFF" Offset="1" />
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                            </Border>
+                            <Track x:Name="PART_Track">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb">
+                                                <Grid Width="14" Height="14">
+                                                    <Ellipse Fill="{StaticResource Accent}" />
+                                                    <Ellipse Stroke="White" StrokeThickness="2" Margin="3" />
+                                                    <Grid.Effect>
+                                                        <DropShadowEffect Color="{StaticResource AccentColor}" BlurRadius="8" ShadowDepth="0" />
+                                                    </Grid.Effect>
+                                                </Grid>
+                                            </ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- GLASS INPUTS -->
+        <Style x:Key="GlassTextBoxStyle" TargetType="TextBox">
+            <Setter Property="Background" Value="#0AFFFFFF" />
+            <Setter Property="BorderBrush" Value="#2AFFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}" 
+                                CornerRadius="4">
+                            <ScrollViewer x:Name="PART_ContentHost" Focusable="false" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsFocused" Value="true">
+                                <Setter Property="BorderBrush" TargetName="border" Value="{StaticResource Accent}" />
+                                <Setter Property="Background" TargetName="border" Value="#15FFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- REUSABLE GLASS PANEL -->
         <Style x:Key="TerminalCardStyle" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource BgCard}" />
             <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
@@ -31,30 +256,9 @@
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="12" />
             <Setter Property="Margin" Value="4" />
-            <Setter Property="Effect">
-                <Setter.Value>
-                    <DropShadowEffect BlurRadius="12" ShadowDepth="2" Color="Black" Opacity="0.15" />
-                </Setter.Value>
-            </Setter>
         </Style>
 
-        <!-- Glassmorphism Simulation -->
-        <Style x:Key="GlassStyle" TargetType="Border">
-            <Setter Property="Background" Value="#1AFFFFFF" /> <!-- 10% Opacity White -->
-            <Setter Property="BorderBrush" Value="#2AFFFFFF" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="12" />
-            <Setter Property="Effect">
-                <Setter.Value>
-                    <BlurEffect Radius="2" />
-                </Setter.Value>
-            </Setter>
-        </Style>
-
-        <!-- Keep backward compatibility for existing styles -->
+        <!-- Compatibility -->
         <Style x:Key="CardStyle" TargetType="Border" BasedOn="{StaticResource TerminalCardStyle}" />
-        <Style x:Key="CompactCardStyle" TargetType="Border" BasedOn="{StaticResource TerminalCardStyle}">
-            <Setter Property="Padding" Value="8" />
-        </Style>
     </Application.Resources>
 </Application>

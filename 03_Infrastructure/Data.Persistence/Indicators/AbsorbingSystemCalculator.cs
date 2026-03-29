@@ -15,7 +15,7 @@ namespace ThatsMyQuant.Infrastructure.Indicators;
 /// </summary>
 public static class AbsorbingSystemCalculator
 {
-    public static List<SupportResistanceLevel> Calculate(List<Candle> candles, int pivotLen = 10)
+    public static List<SupportResistanceLevel> Calculate(IReadOnlyList<Candle> candles, int pivotLen = 10)
     {
         var levels = new List<SupportResistanceLevel>();
         if (candles.Count < pivotLen * 2 + 1) return levels;
@@ -29,7 +29,7 @@ public static class AbsorbingSystemCalculator
         return levels;
     }
 
-    private static List<int> FindAbsorptionPivotIndexes(List<Candle> candles, int pivotLen, bool isHigh)
+    private static List<int> FindAbsorptionPivotIndexes(IReadOnlyList<Candle> candles, int pivotLen, bool isHigh)
     {
         var indexes = new List<int>();
         int count = candles.Count;
@@ -45,7 +45,7 @@ public static class AbsorbingSystemCalculator
         return indexes;
     }
 
-    private static bool IsPivot(List<Candle> candles, int index, int pivotLen, bool isHigh)
+    private static bool IsPivot(IReadOnlyList<Candle> candles, int index, int pivotLen, bool isHigh)
     {
         for (int j = 1; j <= pivotLen; j++)
         {
@@ -74,7 +74,7 @@ public static class AbsorbingSystemCalculator
             : lowerWick > upperWick && lowerWick > body;
     }
 
-    private static void AddLevels(List<Candle> candles, List<int> indexes, SRType type, List<SupportResistanceLevel> levels)
+    private static void AddLevels(IReadOnlyList<Candle> candles, List<int> indexes, SRType type, List<SupportResistanceLevel> levels)
     {
         foreach (var idx in indexes)
         {
@@ -93,7 +93,7 @@ public static class AbsorbingSystemCalculator
         }
     }
 
-    private static (bool IsBroken, int TestCount) DetectBreakdown(List<Candle> candles, int startIdx, decimal price, SRType type)
+    private static (bool IsBroken, int TestCount) DetectBreakdown(IReadOnlyList<Candle> candles, int startIdx, decimal price, SRType type)
     {
         bool isBroken = false;
         int testCount = 0;

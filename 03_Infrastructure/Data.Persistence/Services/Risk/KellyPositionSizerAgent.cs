@@ -11,6 +11,7 @@ public sealed class KellyPositionSizerAgent : IRiskGuardAgent
     private const double FractionalKelly = 0.25;
     private const double MinEdge = 0.02;
     private const double MaxPositionFraction = 0.20;
+    private const double TotalTransactionCostBps = 0.001; // 0.1% baseline total cost (spread + commission)
 
     public string GuardId => "Risk.Kelly";
     public int Order => 0;
@@ -27,9 +28,20 @@ public sealed class KellyPositionSizerAgent : IRiskGuardAgent
         var p = (double)decision.Confidence / 100.0;
         var q = 1.0 - p;
         
-        // Odds ratio (b): Profit / Loss
-        var takeProfitDist = Math.Abs((double)(decision.TakeProfit - signal.Price));
-        var stopLossDist = Math.Abs((double)(decision.StopLoss - signal.Price));
+        // Odds ratio (b): Net Profit / Net Loss
+        var rawTakeProfitDist = Math.Abs((double)(decision.TakeProfit - signal.Price));
+        var rawStopLossDist = Math.Abs((double)(decision.StopLoss - signal.Price));
+        var estimatedCost = (double)signal.Price * TotalTransactionCostBps;
+
+        var takeProfitDist = rawTakeProfitDist - estimatedCost;
+        var stopLossDist = rawStopLossDist + estimatedCost;
+
+        if (takeProfitDist <= 0)
+        {
+            return Task.FromResult(RiskGuardResult.Block(GuardId, SignalReasonFlags.KellyVeto,
+                $"Negative edge after transaction costs (Cost={estimatedCost:F4})"));
+        }
+
         var b = stopLossDist > 0 ? takeProfitDist / stopLossDist : 1.5;
 
         // Full Kelly = (bp - q) / b

@@ -41,4 +41,6 @@ public class MockBrokerService : IExchangeService
             Equity = 10000m
         });
     }
+
+    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side) => Task.FromResult(0m);
 }

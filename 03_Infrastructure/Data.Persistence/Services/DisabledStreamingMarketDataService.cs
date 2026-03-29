@@ -24,6 +24,9 @@ public class DisabledStreamingMarketDataService : IStreamingMarketDataService
             "HFT streaming is disabled. Configure a real streaming market data service before starting HFT workflows.");
     }
 
+    public Task SubscribeAsync(string symbol) => Task.CompletedTask;
+    public Task UnsubscribeAsync(string symbol) => Task.CompletedTask;
+
     public Task DisconnectAsync()
     {
         return Task.CompletedTask;

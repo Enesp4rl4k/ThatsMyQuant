@@ -7,6 +7,8 @@ namespace ThatsMyQuant.Infrastructure.Persistence;
 
 public class QuantDbContext : DbContext
 {
+    private static readonly JsonSerializerOptions s_jsonOpts = new();
+
     public DbSet<Signal> Signals => Set<Signal>();
     public DbSet<Trade> Trades => Set<Trade>();
     public DbSet<Account> Accounts => Set<Account>();
@@ -33,8 +35,8 @@ public class QuantDbContext : DbContext
             // Store Dictionary<string,string> as JSON column with a comparer
             entity.Property(s => s.Metadata)
                 .HasConversion(
-                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, (JsonSerializerOptions?)null) ?? new())
+                    v => JsonSerializer.Serialize(v, s_jsonOpts),
+                    v => JsonSerializer.Deserialize<Dictionary<string, string>>(v, s_jsonOpts) ?? new())
                 .Metadata.SetValueComparer(new ValueComparer<Dictionary<string, string>>(
                     (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
                     c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
@@ -71,6 +73,9 @@ public class QuantDbContext : DbContext
             entity.Property(t => t.Status).HasConversion<string>().HasMaxLength(20);
             entity.Property(t => t.StrategyTag).HasMaxLength(50);
             entity.Property(t => t.RegimeTag).HasMaxLength(30);
+            entity.Property(t => t.FeatureDriftImpactLabel).HasMaxLength(120);
+            entity.Property(t => t.FeatureDriftSummary).HasMaxLength(500);
+            entity.Property(t => t.MlModelVersion).HasMaxLength(120);
             entity.Ignore(t => t.IsClosed); // Computed property, not stored
 
             entity.HasIndex(t => t.SignalId).IsUnique();

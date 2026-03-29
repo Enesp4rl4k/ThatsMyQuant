@@ -39,11 +39,17 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     private readonly FeatureEngineeringAgent _featureAgent;
     private readonly IPortfolioStateCache _portfolioCache;
     private readonly OFIExecutionAgent _ofiAgent;
-    private readonly AgentCoordinator _agentCoordinator;
+    private readonly IAgentCoordinator _agentCoordinator;
     private readonly ILogger<SwarmOrchestrator> _logger;
 
     private const float MlDownsideThreshold = -0.01f;
     private const float SuccessThreshold = 0.6f;
+    private const float ElevatedDriftPenalty = 0.15f;
+    private const decimal ElevatedDriftSizeMultiplier = 0.65m;
+
+    private int _consecutiveFailures;
+    private const int MaxConsecutiveFailures = 3;
+    private bool _isSystemHalted;
 
     public SwarmOrchestrator(
         RiskAgent riskAgent,
@@ -52,7 +58,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         FeatureEngineeringAgent featureAgent,
         IPortfolioStateCache portfolioCache,
         OFIExecutionAgent ofiAgent,
-        AgentCoordinator agentCoordinator,
+        IAgentCoordinator agentCoordinator,
         ILogger<SwarmOrchestrator> logger)
     {
         _riskAgent = riskAgent;
@@ -67,15 +73,22 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
 
     public async Task<SwarmConsensusResult> Handle(SwarmNegotiationRequest request, CancellationToken cancellationToken)
     {
+        if (_isSystemHalted)
+        {
+            _logger.LogCritical("Swarm Orchestrator is HALTED due to repeated failures. Manual intervention required.");
+            return new SwarmConsensusResult { Approved = false, RejectionFlags = SignalReasonFlags.SystemError };
+        }
+
         var result = new SwarmConsensusResult { Approved = false };
 
         try
         {
             var regime = MarketRegimeDetector.Detect(request.Candles);
             var riskParams = ResolveRegimeAdjustedRisk(request.Risk, regime);
+            var recentTrades = _portfolioCache.GetRecentTrades();
 
             var portfolioGuard = await _riskAgent.EvaluatePortfolioGuardrailsAsync(
-                _portfolioCache.GetRecentTrades(),
+                recentTrades,
                 request.Signal,
                 request.InitialDecision.PositionSizePercent,
                 riskParams);
@@ -87,14 +100,18 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
             }
 
             var (sentimentVote, riskVote) = await RunConcurrentAgents(request, riskParams, cancellationToken);
-            var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent.GetSnapshot());
+
+            // Wire foundation-layer market microstructure into ML feature tensor
+            _featureAgent.ApplyFoundationData(request.Foundation);
+            var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent);
+            AppendModelMetadata(request.Signal, mlPrediction);
 
             var strategyVotes = await _agentCoordinator.CollectStrategyVotesAsync(
                 request.Signal, request.Patterns, request.Foundation,
                 request.Candles, regime.Regime, cancellationToken);
 
             var metaAdaptation = await _agentCoordinator.RunMetaAdaptationAsync(
-                _portfolioCache.GetRecentTrades(), regime.Regime, cancellationToken);
+                recentTrades, regime.Regime, cancellationToken);
 
             float confidenceScore = CalculateConfidence(
                 sentimentVote, riskVote, mlPrediction, request.InitialDecision,
@@ -103,7 +120,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
             confidenceScore = await ApplyMicrostructureInjection(request.Signal, result, confidenceScore, cancellationToken);
 
             var riskGauntletResult = await _agentCoordinator.RunRiskGauntletAsync(
-                request.Signal, request.InitialDecision, _portfolioCache.GetRecentTrades(), cancellationToken);
+                request.Signal, request.InitialDecision, recentTrades, cancellationToken);
 
             if (!riskGauntletResult.Approved)
             {
@@ -114,15 +131,35 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
 
             FinalizeConsensus(confidenceScore, riskVote, mlPrediction, request.InitialDecision,
                 riskGauntletResult.SizeMultiplier, result);
+
+            // 🔥 Reset failure counter on successful end-to-end execution
+            Interlocked.Exchange(ref _consecutiveFailures, 0);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Swarm Orchestration CRITICAL FAILURE for {Symbol}", request.Signal.Symbol);
+            
+            var failures = Interlocked.Increment(ref _consecutiveFailures);
+            if (failures >= MaxConsecutiveFailures)
+            {
+                TriggerEmergencyShutdown();
+            }
+
             result.Approved = false;
             result.RejectionFlags |= SignalReasonFlags.SystemError;
         }
 
         return result;
+    }
+
+    private void TriggerEmergencyShutdown()
+    {
+        _isSystemHalted = true;
+        _logger.LogCritical("!!! EMERGENCY SHUTDOWN TRIGGERED !!! 3 consecutive orchestration failures.");
+        
+        // In a real HFT system, this would also call a 'CancelAllOrders' command to the exchange.
+        // For now, we arm the RiskAgent's kill switch as a secondary safety layer.
+        _riskAgent.ArmKillSwitch("Global Orchestration Failure Threshold Reached (3 Strikes).");
     }
 
     private RiskParameters ResolveRegimeAdjustedRisk(RiskParameters current, MarketRegimeDetector.RegimeResult regime)
@@ -142,7 +179,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, ct);
         var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, riskParams, request.Signal.Volume24h);
         await Task.WhenAll(sentimentTask, riskTask).WaitAsync(ct);
-        return (await sentimentTask, await riskTask);
+        return (sentimentTask.Result, riskTask.Result);
     }
 
     private float CalculateConfidence(
@@ -158,6 +195,15 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         if (sentiment.Approved) score += 0.3f; else result.RejectionFlags |= SignalReasonFlags.SentimentVeto;
         if (risk.Approved) score += 0.4f; else result.RejectionFlags |= SignalReasonFlags.RiskVeto;
 
+        if (ml.DriftIsCritical)
+        {
+            result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
+            _logger.LogWarning(
+                "Critical ML feature drift vetoed {DriftedCount} features (max z-score {MaxZ:F2})",
+                ml.DriftedFeatureCount,
+                ml.MaxFeatureZScore);
+            score -= 0.35f;
+        }
         if (ml.IsValid)
         {
             if (ml.Value < MlDownsideThreshold && decision.Side == TradeSide.Buy)
@@ -165,7 +211,23 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
                 result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
                 score -= 0.5f;
             }
-            else score += 0.3f;
+            else
+            {
+                score += ml.DriftDetected ? 0.15f : 0.3f;
+
+                if (ml.DriftDetected)
+                {
+                    _logger.LogInformation(
+                        "Elevated ML feature drift reduced model confidence contribution for {DriftedCount} features (max z-score {MaxZ:F2})",
+                        ml.DriftedFeatureCount,
+                        ml.MaxFeatureZScore);
+                    score -= ElevatedDriftPenalty;
+                }
+            }
+        }
+        else if (ml.DriftDetected)
+        {
+            result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
         }
 
         if (strategyVotes.Count > 0)
@@ -184,8 +246,9 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     {
         float weightedSum = 0f, totalWeight = 0f;
 
-        foreach (var vote in votes)
+        for (var i = 0; i < votes.Count; i++)
         {
+            var vote = votes[i];
             if (vote.Vote == VoteOutcome.Abstain) continue;
 
             var baseWeight = 1.0f;
@@ -217,9 +280,43 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         if (score >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
         {
             result.Approved = true;
-            result.AdjustedKellyFraction = risk.Size * (decimal)(1.0f + ml.Value) * sizeMultiplier;
+            var driftAdjustedSizeMultiplier = ml.DriftDetected ? sizeMultiplier * ElevatedDriftSizeMultiplier : sizeMultiplier;
+            result.AdjustedKellyFraction = risk.Size * (decimal)(1.0f + ml.Value) * driftAdjustedSizeMultiplier;
             result.AdjustedTakeProfit = decision.TakeProfit;
             if (result.ExecutionAction == ExecutionActionType.None) result.ExecutionAction = ExecutionActionType.MarketTaker;
         }
+    }
+
+    private static void AppendModelMetadata(Signal signal, PredictionResult mlPrediction)
+    {
+        if (!string.IsNullOrWhiteSpace(mlPrediction.ModelVersion))
+        {
+            signal.Metadata["MlModelVersion"] = mlPrediction.ModelVersion;
+        }
+
+        if (!mlPrediction.DriftDetected)
+        {
+            signal.Metadata.Remove("FeatureDriftDetected");
+            signal.Metadata.Remove("FeatureDriftCritical");
+            signal.Metadata.Remove("DriftedFeatureCount");
+            signal.Metadata.Remove("FeatureDriftMaxZScore");
+            signal.Metadata.Remove("FeatureDriftImpactLabel");
+            signal.Metadata.Remove("FeatureDriftSummary");
+            return;
+        }
+
+        var impactLabel = mlPrediction.DriftIsCritical
+            ? "ML drift vetoed setup"
+            : "ML drift trimmed size";
+        var summary = mlPrediction.DriftIsCritical
+            ? $"Critical ML feature drift invalidated the setup ({mlPrediction.DriftedFeatureCount} features, max z-score {mlPrediction.MaxFeatureZScore:F2})."
+            : $"Elevated ML feature drift reduced model influence and trimmed size ({mlPrediction.DriftedFeatureCount} features, max z-score {mlPrediction.MaxFeatureZScore:F2}).";
+
+        signal.Metadata["FeatureDriftDetected"] = "true";
+        signal.Metadata["FeatureDriftCritical"] = mlPrediction.DriftIsCritical ? "true" : "false";
+        signal.Metadata["DriftedFeatureCount"] = mlPrediction.DriftedFeatureCount.ToString();
+        signal.Metadata["FeatureDriftMaxZScore"] = mlPrediction.MaxFeatureZScore.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+        signal.Metadata["FeatureDriftImpactLabel"] = impactLabel;
+        signal.Metadata["FeatureDriftSummary"] = summary;
     }
 }

@@ -54,4 +54,5 @@ public class ChaosExchangeDecorator : IExchangeService
             throw new TimeoutException($"[CHAOS_ERROR] Simulated exchange Timeout/Disconnect in {methodName}");
         }
     }
+    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side) => _inner.GetQueuePositionAsync(symbol, price, side);
 }

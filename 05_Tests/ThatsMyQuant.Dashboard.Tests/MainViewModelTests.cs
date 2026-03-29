@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using System.IO;
+using System.Linq;
 using ThatsMyQuant.Dashboard.Services;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Dashboard.ViewModels;
@@ -657,7 +658,7 @@ public class MainViewModelTests
     [Fact]
     public async Task RefreshStrategyLeaderboardAsync_ShouldPushExactBucketPressureIntoLaunchGuard()
     {
-        var now = DateTime.UtcNow;
+        var now = new DateTime(2025, 1, 1, 6, 0, 0, DateTimeKind.Utc); // TST 09:00, all -1h to -4h fall in Asia session (>=3 and <10)
         var tradeRepository = Substitute.For<ITradeRepository>();
         tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
         {
@@ -1181,12 +1182,262 @@ public class MainViewModelTests
         viewModel.SelectedTradeReview.Should().Contain("Allocator boosted size (1.04x)");
     }
 
+    [Fact]
+    public async Task RefreshStrategyLeaderboardAsync_ShouldSurfaceStoredMlDriftInAnalyticsAndOperatorText()
+    {
+        var now = DateTime.UtcNow;
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 107m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                PromotionStage = "LiveProbe",
+                EdgeScore = 74m,
+                EdgeBand = "Reduced",
+                ExitPolicyTag = "BreakoutExpansion",
+                FeatureDriftDetected = true,
+                FeatureDriftCritical = false,
+                DriftedFeatureCount = 3,
+                FeatureDriftMaxZScore = 4.10m,
+                FeatureDriftImpactLabel = "ML drift trimmed size",
+                FeatureDriftSummary = "Elevated ML feature drift reduced model influence and trimmed size (3 features, max z-score 4.10).",
+                ExitTime = now.AddMinutes(-20)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Failed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                PromotionStage = "Paper",
+                FeatureDriftDetected = true,
+                FeatureDriftCritical = true,
+                DriftedFeatureCount = 5,
+                FeatureDriftMaxZScore = 6.25m,
+                FeatureDriftImpactLabel = "ML drift vetoed setup",
+                FeatureDriftSummary = "Critical ML feature drift invalidated the setup (5 features, max z-score 6.25).",
+                EntryTime = now.AddMinutes(-5)
+            }
+        });
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository);
+
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.MlDriftAnalyticsRows.Should().NotBeEmpty();
+        viewModel.MlDriftAnalyticsRows[0].Impact.Should().Be("ML drift trimmed size");
+        viewModel.MlDriftAnalyticsRows[0].Summary.Should().Contain("Elevated ML feature drift");
+        viewModel.MlFeatureDriftSummary.Should().Contain("Elevated ML feature drift");
+        viewModel.EdgeAnalyticsStatus.Should().Contain("ML drift");
+        viewModel.EdgeFailureConditions.Should().Contain(row => row.Condition == "ML feature drift");
+
+        viewModel.TradeJournal.Should().Contain(row => row.MlDriftImpact == "ML drift vetoed setup");
+        viewModel.OperatorAuditAlerts.Should().NotBeEmpty();
+        viewModel.OperatorAuditAlerts[0].Detail.Should().Contain("ML drift vetoed setup");
+
+        var vetoRow = viewModel.TradeJournal.First(row => row.MlDriftImpact == "ML drift vetoed setup");
+        vetoRow.MlDriftImpact = "fake drift";
+
+        await viewModel.ReviewTradeCommand.ExecuteAsync(vetoRow);
+
+        viewModel.SelectedTradeReview.Should().Contain("ML drift vetoed setup");
+        viewModel.SelectedTradeReview.Should().Contain("Critical ML feature drift invalidated the setup");
+    }
+
+    [Fact]
+    public async Task RefreshStrategyLeaderboardAsync_ShouldBuildModelGovernanceAnalyticsAndRetrainTriggers()
+    {
+        var now = DateTime.UtcNow;
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 96m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260328063000",
+                FeatureDriftDetected = true,
+                FeatureDriftCritical = false,
+                FeatureDriftImpactLabel = "ML drift trimmed size",
+                ExitTime = now.AddMinutes(-20)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 95m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260328063000",
+                FeatureDriftDetected = true,
+                FeatureDriftCritical = true,
+                FeatureDriftImpactLabel = "ML drift vetoed setup",
+                ExitTime = now.AddMinutes(-10)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 94m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260328063000",
+                FeatureDriftDetected = true,
+                FeatureDriftCritical = false,
+                FeatureDriftImpactLabel = "ML drift trimmed size",
+                ExitTime = now.AddMinutes(-30)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 93m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260328063000",
+                FeatureDriftDetected = true,
+                FeatureDriftCritical = false,
+                FeatureDriftImpactLabel = "ML drift trimmed size",
+                ExitTime = now.AddMinutes(-40)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 112m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260327090000",
+                ExitTime = now.AddHours(-3)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 109m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260327090000",
+                ExitTime = now.AddHours(-4)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 111m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260327090000",
+                ExitTime = now.AddHours(-5)
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                Status = TradeStatus.Executed,
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                ExitPrice = 108m,
+                Quantity = 1,
+                ExecutionMode = "REAL",
+                MlModelVersion = "PredictiveAlphaModel@20260327090000",
+                ExitTime = now.AddHours(-6)
+            }
+        });
+
+        var signalRepository = Substitute.For<ISignalRepository>();
+        signalRepository.GetStatusCountsAsync().Returns(new Dictionary<TradeStatus, int>());
+        signalRepository.GetRecentAsync(Arg.Any<int>()).Returns(Enumerable.Range(0, 12)
+            .Select(index =>
+            {
+                var signal = new Signal
+                {
+                    Symbol = "BTCUSDT",
+                    Timestamp = now.AddMinutes(-index),
+                    Status = index < 4 ? TradeStatus.Rejected : TradeStatus.Executed,
+                    ReasonFlags = index < 4 ? SignalReasonFlags.MachineLearningVeto : SignalReasonFlags.None
+                };
+                signal.Metadata["MlModelVersion"] = "PredictiveAlphaModel@20260328063000";
+                signal.Metadata["FeatureDriftDetected"] = "true";
+                signal.Metadata["FeatureDriftCritical"] = index < 4 ? "true" : "false";
+                signal.Metadata["FeatureDriftImpactLabel"] = index < 4 ? "ML drift vetoed setup" : "ML drift trimmed size";
+                return signal;
+            })
+            .Concat(new[]
+            {
+                new Signal
+                {
+                    Symbol = "BTCUSDT",
+                    Timestamp = now.AddHours(-2),
+                    Status = TradeStatus.Executed,
+                    Metadata = new Dictionary<string, string> { ["MlModelVersion"] = "PredictiveAlphaModel@20260327090000" }
+                }
+            })
+            .ToList());
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository, signalRepository: signalRepository);
+
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.ModelPerformanceRows.Should().NotBeEmpty();
+        viewModel.ModelPerformanceRows[0].ModelVersion.Should().Be("PredictiveAlphaModel@20260328063000");
+        viewModel.MlModelAnalyticsSummary.Should().Contain("Per-model analytics");
+        viewModel.MlRetrainingTriggerSummary.Should().Contain("Retraining is recommended");
+        viewModel.StrategyLeaderboardStatus.Should().Contain("Retraining is recommended");
+    }
+
     private static MainViewModel CreateViewModel(
         IMarketDataService? marketDataService = null,
         ITechnicalAnalysisService? technicalAnalysis = null,
         IAiAnalystService? aiAnalyst = null,
         ITradeRepository? tradeRepository = null,
-        IStrategyHealthStore? strategyHealthStore = null)
+        IStrategyHealthStore? strategyHealthStore = null,
+        ISignalRepository? signalRepository = null)
     {
         if (marketDataService == null)
         {
@@ -1234,8 +1485,9 @@ public class MainViewModelTests
             Substitute.For<ILogger<AgentCoordinator>>());
 
         var backtestEngine = new BacktestEngineApp(technicalAnalysis, agentCoordinator, Substitute.For<ILogger<BacktestEngineApp>>());
-        var signalRepository = Substitute.For<ISignalRepository>();
+        signalRepository ??= Substitute.For<ISignalRepository>();
         signalRepository.GetStatusCountsAsync().Returns(new Dictionary<TradeStatus, int>());
+        signalRepository.GetRecentAsync(Arg.Any<int>()).Returns(Array.Empty<Signal>());
         if (tradeRepository == null)
         {
             tradeRepository = Substitute.For<ITradeRepository>();
@@ -1260,7 +1512,8 @@ public class MainViewModelTests
             new TradingLoopService(Substitute.For<ILogger<TradingLoopService>>()),
             strategyHealthStore,
             agentCoordinator,
-            new FocusedBacktestViewModel(agentCoordinator, marketDataService, Array.Empty<IFocusedAgent>()),
+            new FocusedBacktestViewModel(agentCoordinator, marketDataService),
+            Substitute.For<IWebVitalsService>(),
             enableBackgroundTimers: false,
             enableAutomaticAnalysis: false);
     }

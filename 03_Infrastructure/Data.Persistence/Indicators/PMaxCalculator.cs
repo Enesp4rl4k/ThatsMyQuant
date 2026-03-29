@@ -1,57 +1,80 @@
+using System.Buffers;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 
 namespace ThatsMyQuant.Infrastructure.Indicators;
 
 /// <summary>
-/// Lightweight C# port of the PMax indicator using EMA and ATR.
+/// High-performance C# port of the PMax indicator.
+/// Optimized for zero-allocation hotspots using Spans and ArrayPool.
 /// </summary>
 public static class PMaxCalculator
 {
-    public static List<PMaxResult> Calculate(
-        List<Candle> candles,
+    public static void Calculate(
+        ReadOnlySpan<Candle> candles,
+        Span<PMaxResult> results,
         int atrLength = 10,
         double atrMultiplier = 3.0,
         int maLength = 10)
     {
-        var results = new List<PMaxResult>();
-        if (candles.Count == 0) return results;
+        if (candles.Length == 0) return;
+        if (results.Length < candles.Length) 
+            throw new ArgumentException("Results span must be at least as long as candles span.");
 
-        var hl2 = candles.Select(c => (double)((c.High + c.Low) / 2m)).ToList();
-        var ema = ComputeEma(hl2, maLength);
-        var atr = ComputeAtr(candles, atrLength);
+        int count = candles.Length;
+        var pool = ArrayPool<double>.Shared;
+        
+        double[] hl2 = pool.Rent(count);
+        double[] ema = pool.Rent(count);
+        double[] atr = pool.Rent(count);
+        double[] longStop = pool.Rent(count);
+        double[] shortStop = pool.Rent(count);
+        int[] dir = ArrayPool<int>.Shared.Rent(count);
+        double[] pmax = pool.Rent(count);
 
-        var longStop = new double[candles.Count];
-        var shortStop = new double[candles.Count];
-        var dir = new int[candles.Count];
-        var pmax = new double[candles.Count];
-
-        for (int i = 0; i < candles.Count; i++)
+        try
         {
-            UpdateStops(i, ema[i], atr[i], atrMultiplier, longStop, shortStop);
-            
-            if (i > 0)
-            {
-                ApplyTrailingLogic(i, ema[i], longStop, shortStop, dir);
-            }
-            else
-            {
-                dir[i] = 1;
-            }
+            for (int i = 0; i < count; i++)
+                hl2[i] = (double)((candles[i].High + candles[i].Low) / 2m);
 
-            pmax[i] = dir[i] == 1 ? longStop[i] : shortStop[i];
-            TradeSide? signal = DetectSignal(i, ema, pmax);
+            ComputeEma(hl2.AsSpan(0, count), ema.AsSpan(0, count), maLength);
+            ComputeAtr(candles, atr.AsSpan(0, count), atrLength);
 
-            results.Add(new PMaxResult
+            for (int i = 0; i < count; i++)
             {
-                MovingAverage = ema[i],
-                Value = pmax[i],
-                Signal = signal,
-                IsBullish = ema[i] >= pmax[i]
-            });
+                UpdateStops(i, ema[i], atr[i], atrMultiplier, longStop, shortStop);
+                
+                if (i > 0)
+                {
+                    ApplyTrailingLogic(i, ema[i], longStop, shortStop, dir);
+                }
+                else
+                {
+                    dir[i] = 1;
+                }
+
+                pmax[i] = dir[i] == 1 ? longStop[i] : shortStop[i];
+                TradeSide? signal = DetectSignal(i, ema, pmax);
+
+                results[i] = new PMaxResult
+                {
+                    MovingAverage = ema[i],
+                    Value = pmax[i],
+                    Signal = signal,
+                    IsBullish = ema[i] >= pmax[i]
+                };
+            }
         }
-
-        return results;
+        finally
+        {
+            pool.Return(hl2);
+            pool.Return(ema);
+            pool.Return(atr);
+            pool.Return(longStop);
+            pool.Return(shortStop);
+            ArrayPool<int>.Shared.Return(dir);
+            pool.Return(pmax);
+        }
     }
 
     private static void UpdateStops(int i, double ma, double atrValue, double atrMultiplier, double[] longStop, double[] shortStop)
@@ -92,35 +115,31 @@ public static class PMaxCalculator
         return null;
     }
 
-    private static double[] ComputeEma(List<double> values, int length)
+    private static void ComputeEma(ReadOnlySpan<double> values, Span<double> result, int length)
     {
-        var result = new double[values.Count];
-        if (values.Count == 0) return result;
+        if (values.Length == 0) return;
 
         var alpha = 2.0 / (length + 1);
         result[0] = values[0];
 
-        for (int i = 1; i < values.Count; i++)
+        for (int i = 1; i < values.Length; i++)
         {
             result[i] = (alpha * values[i]) + ((1 - alpha) * result[i - 1]);
         }
-        return result;
     }
 
-    private static double[] ComputeAtr(List<Candle> candles, int length)
+    private static void ComputeAtr(ReadOnlySpan<Candle> candles, Span<double> atr, int length)
     {
-        var tr = new double[candles.Count];
-        var atr = new double[candles.Count];
-
-        for (int i = 0; i < candles.Count; i++)
+        double prevAtr = 0;
+        for (int i = 0; i < candles.Length; i++)
         {
-            tr[i] = CalculateTrueRange(candles, i);
-            atr[i] = i == 0 ? tr[i] : ((atr[i - 1] * (length - 1)) + tr[i]) / length;
+            double tr = CalculateTrueRange(candles, i);
+            atr[i] = i == 0 ? tr : ((prevAtr * (length - 1)) + tr) / length;
+            prevAtr = atr[i];
         }
-        return atr;
     }
 
-    private static double CalculateTrueRange(List<Candle> candles, int i)
+    private static double CalculateTrueRange(ReadOnlySpan<Candle> candles, int i)
     {
         if (i == 0) return (double)(candles[i].High - candles[i].Low);
 

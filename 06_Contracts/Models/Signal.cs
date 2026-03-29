@@ -39,6 +39,9 @@ public class Signal : INotification
     /// <summary>The market this signal belongs to. Used for market hours and routing decisions.</summary>
     public MarketType MarketType { get; set; } = MarketType.BIST;
 
+    /// <summary>Target exchange for execution routing: "Binance", "OKX", "Mock". Defaults to "Binance".</summary>
+    public string Exchange { get; set; } = "Binance";
+
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
 
     /// <summary>The rolling 24-hour volume for the asset. 0 means unknown — volume checks will be skipped.</summary>

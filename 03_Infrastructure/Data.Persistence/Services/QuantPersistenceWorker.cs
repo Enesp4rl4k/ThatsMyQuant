@@ -16,6 +16,9 @@ namespace ThatsMyQuant.Infrastructure.Services;
 /// </summary>
 public class QuantPersistenceWorker : BackgroundService
 {
+    private const int MaxBatchSize = 128;
+    private static readonly TimeSpan MaxBatchDelay = TimeSpan.FromMilliseconds(5);
+
     private readonly SignalWriterChannel _channel;
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<QuantPersistenceWorker> _logger;
@@ -32,21 +35,23 @@ public class QuantPersistenceWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        // Limit EF Core parameterized batch inserts to 1000 parameters to respect TCP Frame geometries
-        var batch = new List<Signal>(1000);
+        var batch = new List<Signal>(MaxBatchSize);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                // Await lock-free until the memory array notifies us of incoming elements
                 var hasData = await _channel.WaitToReadAsync(stoppingToken);
-                if (!hasData) break;
-
-                // Sync-drain the array locally (up to 1,000 array elements immediately)
-                while (batch.Count < 1000 && _channel.TryRead(out var signal))
+                if (!hasData)
                 {
-                    batch.Add(signal);
+                    break;
+                }
+
+                DrainBatch(batch);
+                if (batch.Count < MaxBatchSize)
+                {
+                    await Task.Delay(MaxBatchDelay, stoppingToken);
+                    DrainBatch(batch);
                 }
 
                 if (batch.Count > 0)
@@ -62,16 +67,32 @@ public class QuantPersistenceWorker : BackgroundService
                 await Task.Delay(1000, stoppingToken); // Fallback heartbeat sleep to prevent crash-looping
             }
         }
+
+        DrainBatch(batch);
+        if (batch.Count > 0)
+        {
+            await FlushBatchAsync(batch, CancellationToken.None);
+        }
     }
 
     private async Task FlushBatchAsync(List<Signal> batch, CancellationToken ct)
     {
         using var scope = _serviceProvider.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
+        var latestBySignalId = new Dictionary<Guid, Signal>(batch.Count);
+        foreach (var signal in batch)
+        {
+            latestBySignalId[signal.Id] = signal;
+        }
 
-        await db.Signals.AddRangeAsync(batch, ct);
-        await db.SaveChangesAsync(ct);
-        
-        // _logger.LogInformation($"[PERSISTENCE] Successfully bulk-inserted {batch.Count} Signals out of the main execution thread.");
+        await SignalPersistenceBatchWriter.FlushAsync(db, latestBySignalId.Values.ToArray(), ct);
+    }
+
+    private void DrainBatch(List<Signal> batch)
+    {
+        while (batch.Count < MaxBatchSize && _channel.TryRead(out var signal))
+        {
+            batch.Add(signal);
+        }
     }
 }

@@ -17,6 +17,9 @@ public class ExecuteTradeHandlerTests
     private readonly ILogger<ExecuteTradeHandler> _logger;
     private readonly IExchangeService _exchangeService;
     private readonly ITradeRepository _tradeRepository;
+    private readonly ILogger<CircuitBreakerService> _circuitBreakerLogger;
+    private readonly MemoryPortfolioManager _portfolio;
+    private readonly CircuitBreakerService _circuitBreaker;
     private readonly ExecuteTradeHandler _handler;
 
     public ExecuteTradeHandlerTests()
@@ -24,8 +27,12 @@ public class ExecuteTradeHandlerTests
         _logger = Substitute.For<ILogger<ExecuteTradeHandler>>();
         _exchangeService = Substitute.For<IExchangeService>();
         _tradeRepository = Substitute.For<ITradeRepository>();
+        _circuitBreakerLogger = Substitute.For<ILogger<CircuitBreakerService>>();
+        _portfolio = new MemoryPortfolioManager();
+        _portfolio.SetBalance("USDT", 100_000m);
+        _circuitBreaker = new CircuitBreakerService(_circuitBreakerLogger, _portfolio);
 
-        _handler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository);
+        _handler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, _circuitBreaker);
     }
 
 
@@ -236,6 +243,84 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistFeatureDriftMetadata()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["FeatureDriftImpactLabel"] = "ML drift trimmed size";
+        signal.Metadata["FeatureDriftSummary"] = "Elevated ML feature drift reduced model influence and trimmed size (3 features, max z-score 4.10).";
+        signal.Metadata["FeatureDriftDetected"] = "true";
+        signal.Metadata["FeatureDriftCritical"] = "false";
+        signal.Metadata["DriftedFeatureCount"] = "3";
+        signal.Metadata["FeatureDriftMaxZScore"] = "4.10";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.FeatureDriftImpactLabel.Should().Be("ML drift trimmed size");
+        result.FeatureDriftSummary.Should().Contain("Elevated ML feature drift");
+        result.FeatureDriftDetected.Should().BeTrue();
+        result.FeatureDriftCritical.Should().BeFalse();
+        result.DriftedFeatureCount.Should().Be(3);
+        result.FeatureDriftMaxZScore.Should().Be(4.10m);
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.FeatureDriftImpactLabel == "ML drift trimmed size" &&
+            trade.FeatureDriftDetected &&
+            !trade.FeatureDriftCritical &&
+            trade.DriftedFeatureCount == 3 &&
+            trade.FeatureDriftMaxZScore == 4.10m));
+    }
+
+    [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistModelVersion()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["MlModelVersion"] = "PredictiveAlphaModel@20260328063000";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.MlModelVersion.Should().Be("PredictiveAlphaModel@20260328063000");
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.MlModelVersion == "PredictiveAlphaModel@20260328063000"));
+    }
+
+    [Fact]
     public async Task Handle_SuccessfulExecution_ShouldPersistExitPolicyTag()
     {
         var signal = new Signal
@@ -288,6 +373,30 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_HaltedCircuitBreaker_ShouldFailBeforeVenueCall()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+
+        _circuitBreaker.Halt("Manual emergency stop");
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.Status.Should().Be(TradeStatus.Failed);
+        result.Symbol.Should().Be("BTC-USD");
+        await _exchangeService.DidNotReceive().ExecuteOrderAsync(Arg.Any<Signal>());
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.Status == TradeStatus.Failed &&
+            trade.SignalId == signal.Id));
+    }
+
+    [Fact]
     public async Task Handle_ExchangeFailure_ShouldPersistFailedTradeAndNotThrow()
     {
         // Arrange
@@ -312,5 +421,35 @@ public class ExecuteTradeHandlerTests
         result.Symbol.Should().Be("THYAO");
         result.Quantity.Should().Be(0); // Failed trade, no quantity executed
         await _tradeRepository.Received(1).AddAsync(Arg.Any<Trade>());
+    }
+
+    [Fact]
+    public async Task Handle_RepeatedExchangeFailures_ShouldTripCircuitBreaker()
+    {
+        var strictCircuitBreaker = new CircuitBreakerService(
+            _circuitBreakerLogger,
+            _portfolio,
+            maxConsecutiveErrors: 3);
+        var strictHandler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, strictCircuitBreaker);
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>())
+            .ThrowsAsync(new Exception("Venue rejected request"));
+
+        for (var i = 0; i < 3; i++)
+        {
+            var signal = new Signal
+            {
+                Id = Guid.NewGuid(),
+                Symbol = $"BTC-USD-{i}",
+                Side = TradeSide.Buy,
+                Price = 100m,
+                Source = "Manual"
+            };
+
+            await strictHandler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+        }
+
+        strictCircuitBreaker.IsHalted.Should().BeTrue();
+        strictCircuitBreaker.HaltReason.Should().Contain("Error cascade halt");
     }
 }

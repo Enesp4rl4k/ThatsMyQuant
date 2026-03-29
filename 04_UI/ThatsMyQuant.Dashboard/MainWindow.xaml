@@ -11,7 +11,11 @@
         FontFamily="{StaticResource PrimaryFont}"
         WindowStartupLocation="CenterScreen"
         xmlns:controls="clr-namespace:ThatsMyQuant.Dashboard.Controls"
-    xmlns:converters="clr-namespace:ThatsMyQuant.Dashboard.Converters">
+    xmlns:converters="clr-namespace:ThatsMyQuant.Dashboard.Converters"
+    xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="40" GlassFrameThickness="0" CornerRadius="0" ResizeBorderThickness="8" />
+    </WindowChrome.WindowChrome>
     <Window.Resources>
         <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
         <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
@@ -20,48 +24,66 @@
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="0" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabControl">
-                        <Grid KeyboardNavigation.TabNavigation="Local">
+                        <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
-                            <TabPanel Grid.Row="0" Background="Transparent" IsItemsHost="True" Margin="0,0,0,10" />
-                            <Border Grid.Row="1" Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8">
-                                <ContentPresenter x:Name="PART_SelectedContentHost" Margin="0" ContentSource="SelectedContent" />
+                            <Border Background="#1A000000" CornerRadius="8,8,0,0" Margin="0,0,0,-1" Padding="10,5,10,0">
+                                <TabPanel IsItemsHost="True" />
+                            </Border>
+                            <Border Grid.Row="1" Background="Transparent" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,1,0,0">
+                                <ContentPresenter x:Name="PART_SelectedContentHost" ContentSource="SelectedContent" />
                             </Border>
                         </Grid>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>
+
         <Style TargetType="TabItem">
-            <Setter Property="Background" Value="{StaticResource SurfaceBg}" />
+            <Setter Property="Background" Value="#0AFFFFFF" />
             <Setter Property="Foreground" Value="{StaticResource TextSoft}" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
-            <Setter Property="BorderThickness" Value="1,1,1,0" />
-            <Setter Property="Padding" Value="20,10" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="24,12" />
             <Setter Property="Margin" Value="0,0,4,0" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="Black" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="TabItem">
-                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="4,4,0,0" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid x:Name="RootGrid" Cursor="Hand">
+                            <Border x:Name="Blade" Background="{TemplateBinding Background}" BorderBrush="Transparent" BorderThickness="0" CornerRadius="4,15,0,0" Margin="2,0">
+                                <Border.LayoutTransform>
+                                    <SkewTransform AngleX="-15" />
+                                </Border.LayoutTransform>
+                            </Border>
+                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="10,0">
+                                <ContentPresenter.LayoutTransform>
+                                    <SkewTransform AngleX="0" />
+                                </ContentPresenter.LayoutTransform>
+                            </ContentPresenter>
+                            <Border x:Name="Indicator" Height="2" Background="{StaticResource Accent}" VerticalAlignment="Bottom" Opacity="0" Margin="5,0,15,0" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Chrome" Property="Background" Value="{StaticResource AppBg}" />
-                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource Accent}" />
-                                <Setter TargetName="Chrome" Property="BorderThickness" Value="1,2,1,0" />
-                                <Setter Property="Foreground" Value="{StaticResource TextMain}" />
+                                <Setter TargetName="Blade" Property="Background" Value="#2600BFFF" />
+                                <Setter TargetName="Blade" Property="BorderBrush" Value="{StaticResource Accent}" />
+                                <Setter TargetName="Blade" Property="BorderThickness" Value="0,0,0,1" />
+                                <Setter TargetName="Indicator" Property="Opacity" Value="1" />
+                                <Setter Property="Foreground" Value="White" />
+                                <Setter TargetName="RootGrid" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="{StaticResource AccentColor}" BlurRadius="10" ShadowDepth="0" Opacity="0.5" />
+                                    </Setter.Value>
+                                </Setter>
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Chrome" Property="BorderBrush" Value="{StaticResource TextSoft}" />
+                                <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource Self}}" Value="False" />
+                                <Setter TargetName="Blade" Property="Background" Value="#1AFFFFFF" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -119,6 +141,20 @@
             <Setter Property="Cursor" Value="Hand" />
         </Style>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        
+        <!-- LUXURY GRADIENTS & SHADOWS -->
+        <LinearGradientBrush x:Key="HeaderGlassEffect" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#1A1E26" Offset="0" />
+            <GradientStop Color="#0B0E13" Offset="1" />
+        </LinearGradientBrush>
+        
+        <DropShadowEffect x:Key="NeonGlowCyan" Color="#00FFFF" BlurRadius="12" ShadowDepth="0" Opacity="0.5" />
+        <DropShadowEffect x:Key="NeonGlowIndigo" Color="#6366F1" BlurRadius="20" ShadowDepth="0" Opacity="0.4" />
+        
+        <!-- HEARTBEAT ANIMATION -->
+        <Storyboard x:Key="HeartbeatPulse" RepeatBehavior="Forever">
+            <DoubleAnimation Storyboard.TargetProperty="Opacity" From="1" To="0.4" Duration="0:0:1" AutoReverse="True" />
+        </Storyboard>
     </Window.Resources>
 
     <Grid Background="{StaticResource AppBg}">
@@ -127,7 +163,10 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <Border Grid.Row="0" Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="16,8">
+        <Border Grid.Row="0" Background="{StaticResource HeaderGlassEffect}" BorderBrush="{StaticResource Accent}" BorderThickness="0,0,0,1" Padding="16,8">
+            <Border.Effect>
+                <DropShadowEffect Color="#6366F1" BlurRadius="15" ShadowDepth="1" Opacity="0.15" Direction="270" />
+            </Border.Effect>
             <Border.Style>
                 <Style TargetType="Border">
                     <Style.Triggers>
@@ -148,8 +187,11 @@
                 </Grid.ColumnDefinitions>
                 <!-- 1. Logo Section -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
-                    <Border Width="32" Height="32" CornerRadius="4" Background="{StaticResource AppBg}" BorderBrush="{StaticResource Accent}" BorderThickness="1" Margin="0,0,12,0">
-                        <TextBlock Text="Q" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="18" FontWeight="Bold" Foreground="{StaticResource Accent}" />
+                    <Border Width="32" Height="32" CornerRadius="4" Background="#05070A" BorderBrush="{StaticResource Accent}" BorderThickness="1.5" Margin="0,0,12,0">
+                        <Border.Effect>
+                            <StaticResource ResourceKey="NeonGlowCyan" />
+                        </Border.Effect>
+                        <TextBlock Text="Q" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="18" FontWeight="Black" Foreground="{StaticResource Accent}" />
                     </Border>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock Text="THATSMYQUANT TERMINAL" FontSize="15" FontWeight="Black" Foreground="{StaticResource TextMain}" />
@@ -162,15 +204,33 @@
                     <Border Background="{StaticResource BgCard}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8,4" Margin="0,0,8,0">
                         <StackPanel Orientation="Horizontal">
                             <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
-                                <Ellipse Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <Ellipse x:Name="SysIndicator" Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center">
+                                    <Ellipse.Triggers>
+                                        <EventTrigger RoutedEvent="Loaded">
+                                            <BeginStoryboard Storyboard="{StaticResource HeartbeatPulse}" />
+                                        </EventTrigger>
+                                    </Ellipse.Triggers>
+                                </Ellipse>
                                 <TextBlock Text="SYS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,12,0">
-                                <Ellipse Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <Ellipse x:Name="ApiIndicator" Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center">
+                                    <Ellipse.Triggers>
+                                        <EventTrigger RoutedEvent="Loaded">
+                                            <BeginStoryboard Storyboard="{StaticResource HeartbeatPulse}" />
+                                        </EventTrigger>
+                                    </Ellipse.Triggers>
+                                </Ellipse>
                                 <TextBlock Text="API" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal">
-                                <Ellipse Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center" />
+                                <Ellipse x:Name="AiIndicator" Width="6" Height="6" Fill="#3FB950" Margin="0,0,4,0" VerticalAlignment="Center">
+                                    <Ellipse.Triggers>
+                                        <EventTrigger RoutedEvent="Loaded">
+                                            <BeginStoryboard Storyboard="{StaticResource HeartbeatPulse}" />
+                                        </EventTrigger>
+                                    </Ellipse.Triggers>
+                                </Ellipse>
                                 <TextBlock Text="AI" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
                             </StackPanel>
                         </StackPanel>
@@ -204,7 +264,10 @@
                     </StackPanel>
                 </Border>
                 
-                <Button Grid.Column="5" Command="{Binding ToggleZenModeCommand}" Background="Transparent" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" Padding="12,4" Margin="12,0,0,0">
+                <Button Grid.Column="5" Command="{Binding ToggleZenModeCommand}" Background="#0B1630" BorderBrush="{StaticResource Accent}" BorderThickness="1" Padding="12,4" Margin="12,0,0,0">
+                    <Button.Effect>
+                        <DropShadowEffect Color="#6366F1" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
+                    </Button.Effect>
                     <TextBlock Text="ZEN MODE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
                 </Button>
             </Grid>
@@ -393,22 +456,52 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
-                                <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="12,8">
+                                <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="12,8" CornerRadius="8,8,0,0">
                                     <DockPanel>
                                         <TextBlock Text="LIVE COMMAND CENTER / ACTIVE POSITIONS" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="Black" VerticalAlignment="Center" />
-                                        <Button Content="PANIC: CLOSE ALL POSITIONS" Command="{Binding CloseAllPositionsCommand}" Background="#7A2F45" Foreground="White" BorderThickness="0" FontSize="9" FontWeight="Black" Padding="12,4" HorizontalAlignment="Right" DockPanel.Dock="Right" />
+                                        <Button Content="PANIC: CLOSE ALL" Command="{Binding CloseAllPositionsCommand}" Style="{StaticResource InstitutionalPanicButton}" FontSize="9" FontWeight="Black" Padding="12,4" HorizontalAlignment="Right" DockPanel.Dock="Right" />
                                     </DockPanel>
                                 </Border>
-                                <DataGrid Grid.Row="1" ItemsSource="{Binding PortfolioView.ActivePositions}" AutoGenerateColumns="False" Background="{StaticResource AppBg}" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{StaticResource BorderColor}" CanUserAddRows="False" RowBackground="{StaticResource AppBg}" AlternatingRowBackground="{StaticResource SurfaceBg}" Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}">
+                                <DataGrid Grid.Row="1" ItemsSource="{Binding PortfolioView.ActivePositions}" 
+                                          AutoGenerateColumns="False" Background="Transparent" 
+                                          BorderThickness="0" HeadersVisibility="Column" 
+                                          GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#0DFFFFFF" 
+                                          CanUserAddRows="False" SelectionMode="Single"
+                                          RowBackground="Transparent" AlternatingRowBackground="#05FFFFFF" 
+                                          Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}">
                                     <DataGrid.Resources>
+                                        <!-- HOLOGRAPHIC HEADER -->
                                         <Style TargetType="DataGridColumnHeader">
-                                            <Setter Property="Background" Value="{StaticResource SurfaceBg}" />
-                                            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
-                                            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+                                            <Setter Property="Background" Value="#1AFFFFFF" />
+                                            <Setter Property="Foreground" Value="{StaticResource TextMain}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource Accent}" />
                                             <Setter Property="BorderThickness" Value="0,0,0,1" />
-                                            <Setter Property="FontWeight" Value="Bold" />
+                                            <Setter Property="FontWeight" Value="Black" />
                                             <Setter Property="FontSize" Value="9" />
-                                            <Setter Property="Padding" Value="8,6" />
+                                            <Setter Property="Padding" Value="12,10" />
+                                            <Setter Property="HorizontalContentAlignment" Value="Center" />
+                                        </Style>
+
+                                        <!-- SCANLINE ROW STYLE -->
+                                        <Style TargetType="DataGridRow">
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="BorderThickness" Value="0" />
+                                            <Setter Property="SnapsToDevicePixels" Value="true"/>
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background">
+                                                        <Setter.Value>
+                                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                                <GradientStop Color="#00FFFFFF" Offset="0" />
+                                                                <GradientStop Color="#1A00BFFF" Offset="0.5" />
+                                                                <GradientStop Color="#00FFFFFF" Offset="1" />
+                                                            </LinearGradientBrush>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                    <Setter Property="BorderBrush" Value="{StaticResource Accent}" />
+                                                    <Setter Property="BorderThickness" Value="0,0,0,1" />
+                                                </Trigger>
+                                            </Style.Triggers>
                                         </Style>
                                         <Style TargetType="DataGridCell">
                                             <Setter Property="Background" Value="Transparent" />
@@ -623,11 +716,11 @@
                                         </Grid.ColumnDefinitions>
                                         <StackPanel Margin="0,0,6,0">
                                             <TextBlock Text="STRATEGY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding Studio.BotStrategies}" SelectedItem="{Binding Studio.SelectedBotStrategy}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotStrategies}" SelectedItem="{Binding Studio.SelectedBotStrategy}" Style="{StaticResource InstitutionalGlassComboBox}" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Margin="6,0,0,0">
                                             <TextBlock Text="OBJECTIVE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding Studio.BotObjectives}" SelectedItem="{Binding Studio.SelectedBotObjective}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotObjectives}" SelectedItem="{Binding Studio.SelectedBotObjective}" Style="{StaticResource InstitutionalGlassComboBox}" Margin="0,4,0,0" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>
@@ -644,19 +737,19 @@
                                         </Grid.RowDefinitions>
                                         <StackPanel Margin="0,0,6,12">
                                             <TextBlock Text="BASE ASSET" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding Studio.BotBaseAssets}" SelectedItem="{Binding Studio.SelectedBotBaseAsset}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotBaseAssets}" SelectedItem="{Binding Studio.SelectedBotBaseAsset}" Style="{StaticResource InstitutionalGlassComboBox}" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Column="1" Margin="6,0,0,12">
                                             <TextBlock Text="QUOTE ASSET" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding Studio.BotQuoteAssets}" SelectedItem="{Binding Studio.SelectedBotQuoteAsset}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.BotQuoteAssets}" SelectedItem="{Binding Studio.SelectedBotQuoteAsset}" Style="{StaticResource InstitutionalGlassComboBox}" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Row="1" Margin="0,0,6,0">
                                             <TextBlock Text="FUNDING" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <TextBox Text="{Binding Studio.BotFundingAmount}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
+                                            <TextBox Text="{Binding Studio.BotFundingAmount}" Style="{StaticResource GlassTextBoxStyle}" Margin="0,4,0,0" />
                                         </StackPanel>
                                         <StackPanel Grid.Row="1" Grid.Column="1" Margin="6,0,0,0">
                                             <TextBlock Text="GRID DENSITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                            <ComboBox ItemsSource="{Binding Studio.GridDensityOptions}" SelectedItem="{Binding Studio.GridDensity}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                            <ComboBox ItemsSource="{Binding Studio.GridDensityOptions}" SelectedItem="{Binding Studio.GridDensity}" Style="{StaticResource InstitutionalGlassComboBox}" Margin="0,4,0,0" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>
@@ -671,15 +764,15 @@
                                             </Grid.ColumnDefinitions>
                                             <StackPanel Margin="0,0,6,0">
                                                 <TextBlock Text="UPPER %" Foreground="{StaticResource TextSoft}" FontSize="9" />
-                                                <TextBox Text="{Binding Studio.GridUpperLimit}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
+                                                <TextBox Text="{Binding Studio.GridUpperLimit}" Style="{StaticResource GlassTextBoxStyle}" Margin="0,4,0,0" />
                                             </StackPanel>
                                             <StackPanel Grid.Column="1" Margin="6,0,0,0">
                                                 <TextBlock Text="LOWER %" Foreground="{StaticResource TextSoft}" FontSize="9" />
-                                                <TextBox Text="{Binding Studio.GridLowerLimit}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10,8" Margin="0,4,0,0" />
+                                                <TextBox Text="{Binding Studio.GridLowerLimit}" Style="{StaticResource GlassTextBoxStyle}" Margin="0,4,0,0" />
                                             </StackPanel>
                                         </Grid>
                                         <TextBlock Text="GRID SLOPE" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,10,0,0" />
-                                        <Slider Value="{Binding Studio.GridSlopeBias}" Minimum="0" Maximum="100" Margin="0,6,0,0" />
+                                        <Slider Value="{Binding Studio.GridSlopeBias}" Minimum="0" Maximum="100" Style="{StaticResource InstitutionalGlassSlider}" Margin="0,6,0,0" />
                                     </StackPanel>
                                 </Border>
 
@@ -690,11 +783,9 @@
                                     </StackPanel>
                                 </Border>
 
-                                <Button Content="START BOT"
+                                <Button Content="LAUNCH INSTITUTIONAL BOT"
                                         Command="{Binding StartTradingCommand}"
-                                        Background="{StaticResource Accent}"
-                                        Foreground="White"
-                                        BorderThickness="0"
+                                        Style="{StaticResource InstitutionalActionButton}"
                                         Padding="0,14"
                                         FontSize="15"
                                         FontWeight="Black" />
@@ -807,6 +898,40 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+
+                            <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1,0,0,0" Padding="12" Margin="0,12,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="MODEL GOVERNANCE ANALYTICS" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
+                                    <TextBlock Text="{Binding MlModelAnalyticsSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding MlRetrainingTriggerSummary}" Foreground="{StaticResource SellColor}" FontSize="10" FontWeight="Bold" Margin="0,6,0,0" TextWrapping="Wrap" />
+
+                                    <ItemsControl ItemsSource="{Binding ModelPerformanceRows}" Margin="0,10,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="10" Margin="0,0,0,6">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="1.5*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding ModelVersion}" Foreground="{Binding StatusColor}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Black" TextWrapping="Wrap" />
+                                                            <TextBlock Text="{Binding Summary}" Foreground="{StaticResource TextSoft}" FontSize="9" Margin="0,4,0,0" TextWrapping="Wrap" />
+                                                        </StackPanel>
+                                                        <StackPanel Grid.Column="1" HorizontalAlignment="Right" Margin="16,0,0,0">
+                                                            <TextBlock Text="{Binding WinRate, StringFormat=WR {0:F1}%}" Foreground="{StaticResource BuyColor}" FontFamily="{StaticResource MonoFont}" FontSize="9" HorizontalAlignment="Right" />
+                                                            <TextBlock Text="{Binding ExpectedValue, StringFormat=EV {0:F2}}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="9" HorizontalAlignment="Right" />
+                                                            <TextBlock Text="{Binding DriftRate, StringFormat=DRIFT {0:F1}%}" Foreground="{StaticResource SellColor}" FontFamily="{StaticResource MonoFont}" FontSize="9" HorizontalAlignment="Right" />
+                                                            <TextBlock Text="{Binding VetoRate, StringFormat=VETO {0:F1}%}" Foreground="{StaticResource SellColor}" FontFamily="{StaticResource MonoFont}" FontSize="9" HorizontalAlignment="Right" />
+                                                            <TextBlock Text="{Binding SizeTrimRate, StringFormat=TRIM {0:F1}%}" Foreground="{StaticResource Accent}" FontFamily="{StaticResource MonoFont}" FontSize="9" HorizontalAlignment="Right" />
+                                                        </StackPanel>
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </Border>
                             </StackPanel>
                         </Border>
 
@@ -820,7 +945,47 @@
                                         <Button Content="EXPORT TO CSV" Command="{Binding ExportLedgerCommand}" Background="{StaticResource BgCard}" Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" FontSize="9" FontWeight="Bold" Padding="12,4" HorizontalAlignment="Right" DockPanel.Dock="Right" />
                                     </DockPanel>
                                 </Border>
-                                <DataGrid Grid.Row="1" ItemsSource="{Binding TradeJournal}" SelectedItem="{Binding SelectedTradeJournalEntry}" AutoGenerateColumns="False" Background="Transparent" BorderThickness="0" HeadersVisibility="Column" GridLinesVisibility="None" VerticalScrollBarVisibility="Auto">
+                                <DataGrid Grid.Row="1" ItemsSource="{Binding TradeJournal}" SelectedItem="{Binding SelectedTradeJournalEntry}" 
+                                          AutoGenerateColumns="False" Background="Transparent" 
+                                          BorderThickness="0" HeadersVisibility="Column" 
+                                          GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="#0DFFFFFF" 
+                                          CanUserAddRows="False" SelectionMode="Single"
+                                          RowBackground="Transparent" AlternatingRowBackground="#05FFFFFF" 
+                                          Foreground="{StaticResource TextMain}" BorderBrush="{StaticResource BorderColor}">
+                                    <DataGrid.Resources>
+                                        <!-- HOLOGRAPHIC HEADER -->
+                                        <Style TargetType="DataGridColumnHeader">
+                                            <Setter Property="Background" Value="#1AFFFFFF" />
+                                            <Setter Property="Foreground" Value="{StaticResource TextMain}" />
+                                            <Setter Property="BorderBrush" Value="{StaticResource Accent}" />
+                                            <Setter Property="BorderThickness" Value="0,0,0,1" />
+                                            <Setter Property="FontWeight" Value="Black" />
+                                            <Setter Property="FontSize" Value="9" />
+                                            <Setter Property="Padding" Value="12,10" />
+                                        </Style>
+
+                                        <!-- SCANLINE ROW STYLE -->
+                                        <Style TargetType="DataGridRow">
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="BorderThickness" Value="0" />
+                                            <Setter Property="SnapsToDevicePixels" Value="true"/>
+                                            <Style.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background">
+                                                        <Setter.Value>
+                                                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                                                                <GradientStop Color="#00FFFFFF" Offset="0" />
+                                                                <GradientStop Color="#1A00BFFF" Offset="0.5" />
+                                                                <GradientStop Color="#00FFFFFF" Offset="1" />
+                                                            </LinearGradientBrush>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                    <Setter Property="BorderBrush" Value="{StaticResource Accent}" />
+                                                    <Setter Property="BorderThickness" Value="0,0,0,1" />
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </DataGrid.Resources>
                                     <DataGrid.Columns>
                                         <DataGridTextColumn Header="TIME" Binding="{Binding Time, StringFormat={}{0:dd MMM HH:mm}}" Width="120">
                                             <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="FontFamily" Value="{StaticResource MonoFont}"/><Setter Property="Foreground" Value="{StaticResource TextMuted}"/></Style></DataGridTextColumn.ElementStyle>
@@ -1035,6 +1200,10 @@
                     </Grid>
                 </TabItem>
 
+                <TabItem Header="Global Analytics">
+                    <controls:MarketAnalyticsControl />
+                </TabItem>
+
                 <TabItem Header="System Settings">
                     <Grid Margin="0,8,0,0">
                         <Grid.ColumnDefinitions>
@@ -1117,6 +1286,7 @@
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="STUDIO" Tag="Strategy &amp; AI Studio" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="BACKTEST" Tag="Backtest Engine" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="LEDGER" Tag="Trade Ledger &amp; Analytics" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
+                            <Button Style="{StaticResource PageNavButtonStyle}" Content="ANALYTICS" Tag="Global Analytics" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Accent}" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="SETTINGS" Tag="System Settings" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                         </WrapPanel>
 

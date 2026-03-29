@@ -10,11 +10,6 @@ public interface ITechnicalAnalysisService
     /// <summary>
     /// Compute all indicators (RSI, MACD, EMA, Bollinger, ATR, Volume) from candle data.
     /// </summary>
-    Task<IndicatorSnapshot> ComputeIndicatorsAsync(List<Candle> candles);
-
-    /// <summary>
-    /// Full analysis: compute indicators → run confluence strategy → apply risk management.
-    /// Returns a typed TradeDecision with confidence, reasoning, stop-loss, take-profit, and position size.
-    /// </summary>
-    Task<TradeDecision> AnalyzeAsync(Signal signal, List<Candle> candles, RiskParameters risk);
+    Task<IndicatorSnapshot> ComputeIndicatorsAsync(IReadOnlyList<Candle> candles);
+    Task<TradeDecision> AnalyzeAsync(Signal signal, IReadOnlyList<Candle> candles, RiskParameters risk);
 }

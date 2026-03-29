@@ -39,6 +39,9 @@ public sealed class StrategyPromotionService
             var capitalBiasMultiplier = ComputeCapitalBiasMultiplier(backtestMatch, paperMatch, liveMatch);
             var capitalBiasLabel = BuildCapitalBiasLabel(backtestMatch, paperMatch, liveMatch, capitalBiasMultiplier);
             
+            var mlDriftRes = CheckMlDrift(liveTrades, capitalBiasMultiplier, capitalBiasLabel);
+            if (mlDriftRes != null) return mlDriftRes.Value;
+
             var res = PerformPromotionGuardChecks(signal, decision, backtestMatch, paperMatch, liveMatch, capitalBiasMultiplier, capitalBiasLabel);
             if (res != null) return res.Value;
 
@@ -294,6 +297,49 @@ public sealed class StrategyPromotionService
                     0.55,
                     "LiveProbe");
             }
+        }
+
+        return null;
+    }
+
+    private static PromotionGuardResult? CheckMlDrift(IReadOnlyList<Trade> liveTrades, decimal capitalBiasMultiplier, string capitalBiasLabel)
+    {
+        if (liveTrades == null || liveTrades.Count == 0) return null;
+
+        int driftCount = 0;
+        int criticalCount = 0;
+        string modelVersion = "Unknown";
+
+        // Examine the recent execution window
+        foreach (var t in liveTrades.TakeLast(10))
+        {
+            if (t.FeatureDriftDetected) driftCount++;
+            if (t.FeatureDriftCritical) criticalCount++;
+            if (!string.IsNullOrEmpty(t.MlModelVersion)) modelVersion = t.MlModelVersion;
+        }
+
+        // Severe regime shift: immediately pause live full-size execution
+        if (criticalCount >= 2)
+        {
+            return new PromotionGuardResult(
+                false,
+                0m,
+                $"ML drift is blocking promotion. Critical feature anomalies detected in {modelVersion}. {capitalBiasLabel}",
+                false,
+                0,
+                "Paper");
+        }
+
+        // Soft drift: keep taking live probes, but slash capital allocation severely
+        if (driftCount >= 3)
+        {
+            return new PromotionGuardResult(
+                true,
+                ApplyCapitalBiasToStage(0.15m, "LiveProbe", capitalBiasMultiplier), // Max 15% size
+                $"ML drift is holding size. Model features are drifting against {modelVersion}. {capitalBiasLabel}",
+                false,
+                0,
+                "LiveProbe");
         }
 
         return null;
@@ -1531,7 +1577,14 @@ public sealed class StrategyPromotionService
     }
 
     private static decimal GetLivePnl(Trade trade)
-        => (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * (trade.Side == TradeSide.Sell ? -1 : 1);
+    {
+        var direction = trade.Side == TradeSide.Sell ? -1m : 1m;
+        var grossPnl = (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * direction;
+        var feeRate = 0.0005m; // 5 bps per side, 10 bps round trip
+        var fees = (trade.EntryPrice * trade.Quantity + trade.ExitPrice * trade.Quantity) * feeRate;
+        var slippageCost = trade.EntryPrice * trade.Quantity * (trade.EntrySlippagePercent / 100m);
+        return grossPnl - fees - slippageCost;
+    }
 
     private static Trade MapToTrade(BacktestTradeResult br) => new Trade
     {
@@ -1549,7 +1602,13 @@ public sealed class StrategyPromotionService
         ExitTime = br.ExitTime
     };
 
-    private static decimal GetPaperPnl(PaperPosition position) => position.RealizedPnL;
+    private static decimal GetPaperPnl(PaperPosition position)
+    {
+        var feeRate = 0.0005m; // 5 bps per side
+        var exitPrice = position.CurrentPrice > 0 ? position.CurrentPrice : position.EntryPrice;
+        var fees = (position.EntryPrice * position.Quantity + exitPrice * position.Quantity) * feeRate;
+        return position.RealizedPnL - fees;
+    }
 
     private static bool IsHighEdgeBand(string? edgeBand, decimal edgeScore)
     {

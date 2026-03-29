@@ -122,8 +122,15 @@ public class HmacValidationMiddleware
 
     private bool IsSignatureValid(string body, string timestamp, string nonce, string receivedSignature)
     {
-        var expected = ComputeSignature(timestamp, nonce, body);
-        return CryptographicEquals(expected, receivedSignature);
+        var canonical = ComputeCanonicalSignature(timestamp, nonce, body);
+        if (CryptographicEquals(canonical, receivedSignature))
+        {
+            return true;
+        }
+
+        // Backward compatibility for existing local senders that still sign the raw body.
+        var legacy = ComputeLegacySignature(body);
+        return CryptographicEquals(legacy, receivedSignature);
     }
 
     private async Task<bool> IsDuplicateRequest(string nonce, string idempotency, QuantDbContext db)
@@ -157,11 +164,18 @@ public class HmacValidationMiddleware
         await db.SaveChangesAsync();
     }
 
-    private string ComputeSignature(string timestamp, string nonce, string payload)
+    private string ComputeCanonicalSignature(string timestamp, string nonce, string payload)
     {
         using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_secret!));
         var data = $"{timestamp}.{nonce}.{payload}";
         var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(data));
+        return "sha256=" + Convert.ToHexStringLower(hash);
+    }
+
+    private string ComputeLegacySignature(string payload)
+    {
+        using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(_secret!));
+        var hash = hmac.ComputeHash(Encoding.UTF8.GetBytes(payload));
         return "sha256=" + Convert.ToHexStringLower(hash);
     }
 

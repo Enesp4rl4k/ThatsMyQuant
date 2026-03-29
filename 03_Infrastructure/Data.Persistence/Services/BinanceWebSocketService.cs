@@ -11,9 +11,14 @@ namespace ThatsMyQuant.Infrastructure.Services;
 
 public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDisposable
 {
+    private const int DepthLevelsCapacity = 20;
     private readonly ILogger<BinanceWebSocketService> _logger;
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _cts;
+    private readonly HashSet<string> _activeSymbols = new();
+    private readonly OrderBookLevel[] _bidScratch = new OrderBookLevel[DepthLevelsCapacity];
+    private readonly OrderBookLevel[] _askScratch = new OrderBookLevel[DepthLevelsCapacity];
+    private int _requestId = 0;
     
     // HFT Optimization: Markers as static readonly Spans
     private static readonly byte[] AggTradeMarker = Encoding.UTF8.GetBytes("aggTrade");
@@ -32,7 +37,9 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
 
         try
         {
-            var streamParams = string.Join("/", symbols.Select(s => 
+            foreach (var s in symbols) _activeSymbols.Add(s);
+
+            var streamParams = string.Join("/", _activeSymbols.Select(s => 
             {
                 var f = s.Replace("-", "").ToLowerInvariant();
                 return $"{f}@aggTrade/{f}@depth20@100ms";
@@ -40,7 +47,7 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
             
             var uri = new Uri($"wss://stream.binance.com:9443/stream?streams={streamParams}");
             await _webSocket.ConnectAsync(uri, _cts.Token);
-            _logger.LogInformation("Connected to Binance WebSocket.");
+            _logger.LogInformation("Connected to Binance WebSocket with {Count} symbols.", _activeSymbols.Count);
 
             _ = ReceiveLoopAsync(_cts.Token);
         }
@@ -48,6 +55,48 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
         {
             _logger.LogError(ex, "WS Connection failed.");
         }
+    }
+
+    public async Task SubscribeAsync(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol) || _activeSymbols.Contains(symbol)) return;
+        
+        _activeSymbols.Add(symbol);
+        if (_webSocket?.State == WebSocketState.Open)
+        {
+            var f = symbol.Replace("-", "").ToLowerInvariant();
+            await SendCommandAsync("SUBSCRIBE", new[] { $"{f}@aggTrade", $"{f}@depth20@100ms" });
+            _logger.LogInformation("Subscribed to {Symbol} dynamically.", symbol);
+        }
+    }
+
+    public async Task UnsubscribeAsync(string symbol)
+    {
+        if (string.IsNullOrWhiteSpace(symbol) || !_activeSymbols.Contains(symbol)) return;
+
+        _activeSymbols.Remove(symbol);
+        if (_webSocket?.State == WebSocketState.Open)
+        {
+            var f = symbol.Replace("-", "").ToLowerInvariant();
+            await SendCommandAsync("UNSUBSCRIBE", new[] { $"{f}@aggTrade", $"{f}@depth20@100ms" });
+            _logger.LogInformation("Unsubscribed from {Symbol} dynamically.", symbol);
+        }
+    }
+
+    private async Task SendCommandAsync(string method, string[] streams)
+    {
+        if (_webSocket == null || _webSocket.State != WebSocketState.Open) return;
+
+        var command = new
+        {
+            method = method,
+            @params = streams,
+            id = Interlocked.Increment(ref _requestId)
+        };
+
+        var json = JsonSerializer.Serialize(command);
+        var bytes = Encoding.UTF8.GetBytes(json);
+        await _webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
     }
 
     private async Task ReceiveLoopAsync(CancellationToken token)
@@ -122,24 +171,37 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
         // Depth verisini de Utf8JsonReader ile parse ederek "Zero-Allocation" hedefimize ulaşıyoruz
         var reader = new Utf8JsonReader(span);
         string symbol = "UNKNOWN";
-        var bids = new List<OrderBookLevel>(20);
-        var asks = new List<OrderBookLevel>(20);
+        var bidCount = 0;
+        var askCount = 0;
 
         while (reader.Read())
         {
             if (reader.TokenType == JsonTokenType.PropertyName)
             {
                 if (reader.ValueTextEquals("stream")) { reader.Read(); symbol = ExtractSymbol(reader.ValueSpan); }
-                else if (reader.ValueTextEquals("bids")) ParseLevelsFast(ref reader, bids);
-                else if (reader.ValueTextEquals("asks")) ParseLevelsFast(ref reader, asks);
+                else if (reader.ValueTextEquals("bids")) ParseLevelsFast(ref reader, _bidScratch, out bidCount);
+                else if (reader.ValueTextEquals("asks")) ParseLevelsFast(ref reader, _askScratch, out askCount);
             }
         }
 
-        OnOrderBookUpdated?.Invoke(new OrderBookSnapshot(symbol, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), bids.ToArray(), asks.ToArray()));
+        var bids = bidCount == 0 ? Array.Empty<OrderBookLevel>() : new OrderBookLevel[bidCount];
+        if (bidCount > 0)
+        {
+            Array.Copy(_bidScratch, bids, bidCount);
+        }
+
+        var asks = askCount == 0 ? Array.Empty<OrderBookLevel>() : new OrderBookLevel[askCount];
+        if (askCount > 0)
+        {
+            Array.Copy(_askScratch, asks, askCount);
+        }
+
+        OnOrderBookUpdated?.Invoke(new OrderBookSnapshot(symbol, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), bids, asks));
     }
 
-    private static void ParseLevelsFast(ref Utf8JsonReader reader, List<OrderBookLevel> target)
+    private static void ParseLevelsFast(ref Utf8JsonReader reader, OrderBookLevel[] target, out int count)
     {
+        count = 0;
         reader.Read(); // Start Array
         while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
         {
@@ -148,7 +210,10 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
             reader.Read();
             Utf8Parser.TryParse(reader.ValueSpan, out decimal q, out _);
             reader.Read(); // End inner array
-            target.Add(new OrderBookLevel(p, q));
+            if (count < target.Length)
+            {
+                target[count++] = new OrderBookLevel(p, q);
+            }
         }
     }
 

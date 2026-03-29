@@ -6,49 +6,128 @@
         WindowStartupLocation="CenterScreen" AllowsTransparency="True"
         FontFamily="{StaticResource PrimaryFont}" MouseLeftButtonDown="Window_MouseLeftButtonDown">
 
-    <Window.Resources>
-        <Viewbox x:Key="LogoIcon" x:Shared="False">
-            <Canvas Width="24" Height="24">
-                <Path Fill="{StaticResource Accent}" Data="M12 2L2 22h20L12 2zm0 4.2L18.2 19H5.8L12 6.2z"/>
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="5" />
+    </WindowChrome.WindowChrome>
+
+    <Grid>
+        <!-- BACKGROUND ATMOSPHERE -->
+        <Border Background="#05070A">
+            <Canvas x:Name="AtmosphereCanvas" IsHitTestVisible="False">
+                <Ellipse Fill="{StaticResource Accent}" Width="300" Height="300" Margin="-150,-150,0,0" Opacity="0.1">
+                    <Ellipse.Effect>
+                        <BlurEffect Radius="100"/>
+                    </Ellipse.Effect>
+                    <Ellipse.Triggers>
+                        <EventTrigger RoutedEvent="Loaded">
+                            <BeginStoryboard>
+                                <Storyboard>
+                                    <ThicknessAnimation Storyboard.TargetProperty="Margin" 
+                                                        From="-150,-150,0,0" To="150,150,0,0" 
+                                                        Duration="0:0:10" AutoReverse="True" RepeatBehavior="Forever" />
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </EventTrigger>
+                    </Ellipse.Triggers>
+                </Ellipse>
+                <Ellipse Fill="#6366F1" Width="200" Height="200" Margin="250,350,0,0" Opacity="0.08">
+                    <Ellipse.Effect>
+                        <BlurEffect Radius="80"/>
+                    </Ellipse.Effect>
+                    <Ellipse.Triggers>
+                        <EventTrigger RoutedEvent="Loaded">
+                            <BeginStoryboard>
+                                <Storyboard>
+                                    <ThicknessAnimation Storyboard.TargetProperty="Margin" 
+                                                        From="250,350,0,0" To="50,-50,0,0" 
+                                                        Duration="0:0:15" AutoReverse="True" RepeatBehavior="Forever" />
+                                </Storyboard>
+                            </BeginStoryboard>
+                        </EventTrigger>
+                    </Ellipse.Triggers>
+                </Ellipse>
             </Canvas>
-        </Viewbox>
-    </Window.Resources>
+        </Border>
 
-    <Border Background="{StaticResource SurfaceBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="8">
-        <Grid Margin="30">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="Auto"/> <!-- Logo -->
-                <RowDefinition Height="Auto"/> <!-- Title -->
-                <RowDefinition Height="*"/>    <!-- Form -->
-            </Grid.RowDefinitions>
+        <!-- MAIN TERMINAL FRAME -->
+        <Border Background="#1AFFFFFF" BorderBrush="#2AFFFFFF" BorderThickness="1" CornerRadius="12" Margin="20">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="30" ShadowDepth="0" Color="Black" Opacity="0.5" />
+            </Border.Effect>
+            
+            <Grid Margin="40">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/> <!-- Logo -->
+                    <RowDefinition Height="Auto"/> <!-- Header -->
+                    <RowDefinition Height="*"/>    <!-- Content -->
+                </Grid.RowDefinitions>
 
-            <!-- Close Button -->
-            <Button Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" 
-                    Background="Transparent" Foreground="{StaticResource TextMuted}" BorderThickness="0" 
-                    Click="Close_Click" FontWeight="Bold" Margin="0,-15,-15,0" />
+                <!-- Draggable Header -->
+                <Border Grid.RowSpan="3" Background="Transparent" MouseLeftButtonDown="Window_MouseLeftButtonDown" VerticalAlignment="Top" Height="40" Margin="-40,-40,-40,0" WindowChrome.IsHitTestVisibleInChrome="True"/>
 
-            <Border Grid.Row="0" Width="48" Height="48" CornerRadius="4" Background="{StaticResource AppBg}" BorderBrush="{StaticResource Accent}" BorderThickness="1" Margin="0,20,0,10">
-                <TextBlock Text="Q" HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="26" FontWeight="Black" Foreground="{StaticResource Accent}" />
-            </Border>
+                <!-- Close -->
+                <Button Content="✕" HorizontalAlignment="Right" VerticalAlignment="Top" 
+                        Background="Transparent" Foreground="{StaticResource TextMuted}" BorderThickness="0" 
+                        Click="Close_Click" FontWeight="Bold" Margin="0,-25,-25,0" Cursor="Hand"
+                        WindowChrome.IsHitTestVisibleInChrome="True"/>
 
-            <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,0,0,30">
-                <TextBlock Text="QUANTUM TERMINAL" Foreground="{StaticResource TextMain}" FontSize="20" FontWeight="Black" HorizontalAlignment="Center"/>
-                <TextBlock Text="SECURE INSTITUTIONAL ACCESS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-            </StackPanel>
+                <!-- LOGO SECTION -->
+                <Grid Grid.Row="0" Margin="0,10,0,30">
+                    <Ellipse Width="70" Height="70" Stroke="{StaticResource Accent}" StrokeThickness="1" Opacity="0.3" StrokeDashArray="4,4">
+                        <Ellipse.Triggers>
+                            <EventTrigger RoutedEvent="Loaded">
+                                <BeginStoryboard>
+                                    <Storyboard>
+                                        <DoubleAnimation Storyboard.TargetProperty="(RenderTransform).(RotateTransform.Angle)" From="0" To="360" Duration="0:0:20" RepeatBehavior="Forever" />
+                                    </Storyboard>
+                                </BeginStoryboard>
+                            </EventTrigger>
+                        </Ellipse.Triggers>
+                        <Ellipse.RenderTransform>
+                            <RotateTransform CenterX="35" CenterY="35" />
+                        </Ellipse.RenderTransform>
+                    </Ellipse>
+                    
+                    <Border Width="56" Height="56" CornerRadius="28" Background="#1A00BFFF" BorderBrush="{StaticResource Accent}" BorderThickness="2">
+                        <Border.Effect>
+                            <DropShadowEffect Color="#00BFFF" BlurRadius="15" ShadowDepth="0" />
+                        </Border.Effect>
+                        <TextBlock Text="Q" HorizontalAlignment="Center" VerticalAlignment="Center" 
+                                   FontSize="28" FontWeight="Black" Foreground="{StaticResource Accent}" />
+                    </Border>
+                </Grid>
 
-            <StackPanel Grid.Row="2">
-                <TextBlock Text="OPERATOR IDENTIFIER" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6"/>
-                <TextBox x:Name="EmailBox" Height="42" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="12,0" VerticalContentAlignment="Center" Margin="0,0,0,20" Text="admin@thatsmyquant.com" FontFamily="{StaticResource MonoFont}" FontSize="11"/>
-                
-                <TextBlock Text="ACCESS TOKEN" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6"/>
-                <PasswordBox x:Name="PasswordBox" Height="42" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="12,0" VerticalContentAlignment="Center" Margin="0,0,0,30" Password="admin" FontFamily="{StaticResource MonoFont}" FontSize="11"/>
+                <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,0,0,35">
+                    <TextBlock Text="QUANTUM TERMINAL" Foreground="White" FontSize="22" FontWeight="Black">
+                        <TextBlock.Effect>
+                            <DropShadowEffect Color="White" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
+                        </TextBlock.Effect>
+                    </TextBlock>
+                    <TextBlock Text="SECURE INSTITUTIONAL ACCESS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Black" HorizontalAlignment="Center" Margin="0,5,0,0"/>
+                </StackPanel>
 
-                <TextBlock x:Name="ErrorText" Foreground="{StaticResource SellColor}" FontSize="10" FontWeight="Bold" Margin="0,-20,0,10" Visibility="Collapsed" HorizontalAlignment="Center"/>
+                <StackPanel Grid.Row="2" VerticalAlignment="Top">
+                    <TextBlock Text="OPERATOR IDENTIFIER" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Black" Margin="2,0,0,8"/>
+                    <TextBox x:Name="EmailBox" Style="{StaticResource GlassTextBoxStyle}" Height="45" Margin="0,0,0,25" 
+                             Text="admin@thatsmyquant.com" FontFamily="{StaticResource MonoFont}"/>
+                    
+                    <TextBlock Text="ACCESS TOKEN" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Black" Margin="2,0,0,8"/>
+                    <PasswordBox x:Name="PasswordBox"  Height="45" Background="#0AFFFFFF" BorderBrush="#2AFFFFFF" BorderThickness="1" Foreground="White" 
+                                 Padding="12,0" VerticalContentAlignment="Center" Margin="0,0,0,40" Password="admin" FontFamily="{StaticResource MonoFont}">
+                        <!-- PasswordBox doesn't support Style directly easily like TextBox for ControlTemplate, keeping it simple but matching colors -->
+                    </PasswordBox>
 
-                <Button Content="INITIALIZE SESSION" Click="Login_Click" Height="48" Background="{StaticResource Accent}" Foreground="White" FontSize="12" FontWeight="Black" BorderThickness="0"/>
-                
-                <TextBlock Text="RESET CREDENTIALS" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,24,0,0" Cursor="Hand"/>
-            </StackPanel>
-        </Grid>
-    </Border>
+                    <TextBlock x:Name="ErrorText" Foreground="{StaticResource SellColor}" FontSize="10" FontWeight="Bold" Margin="0,-25,0,15" Visibility="Collapsed" HorizontalAlignment="Center"/>
+
+                    <Button Content="INITIALIZE CORE" Click="Login_Click" Style="{StaticResource InstitutionalGlassButton}" Height="52" FontWeight="Black" FontSize="13">
+                        <Button.Effect>
+                            <DropShadowEffect Color="#00BFFF" BlurRadius="20" ShadowDepth="0" Opacity="0.4" />
+                        </Button.Effect>
+                    </Button>
+                    
+                    <TextBlock Text="RECOVER ACCESS" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" HorizontalAlignment="Center" Margin="0,25,0,0" Cursor="Hand" Opacity="0.7"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
 </Window>

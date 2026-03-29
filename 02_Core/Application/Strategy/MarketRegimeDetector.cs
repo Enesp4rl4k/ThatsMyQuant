@@ -43,13 +43,17 @@ public static class MarketRegimeDetector
         double avgPrice = recentCandles.Average(c => (double)c.Close);
         double atrPercent = avgPrice > 0 ? avgAtr / avgPrice * 100 : 0;
 
-        // Compute directional movement for trend assessment
+        // Compute directional movement AND Shannon Entropy
         double trendStrength = ComputeTrendStrength(recentCandles);
+        double normalizedEntropy = ComputeShannonEntropy(recentCandles);
+        double garchVolatilityForecast = ComputeGarchVolatility(recentCandles);
 
-        // ADX proxy: strong trend if consecutive higher closes or lower closes AND low volatility
-        // Require atrPercent < 1.5 so a "choppy" volatile market doesn't get the Trending regime bonus.
-        bool isTrending = trendStrength > 0.55 && atrPercent < 1.5;
-        bool isVolatile = atrPercent > 3.0; // ATR > 3% of price = volatile
+        // Shannon Entropy: < 0.82 means the returns distribution is organized (trending).
+        // > 0.90 means it's mostly random noise (ranging).
+        bool isTrending = normalizedEntropy < 0.82 && atrPercent < 1.5 && garchVolatilityForecast < 1.0;
+        
+        // Trigger volatile regime if ATR is huge OR if GARCH(1,1) forecasts an impending volatility cluster.
+        bool isVolatile = atrPercent > 3.0 || garchVolatilityForecast > 1.5;
 
         if (isVolatile)
         {
@@ -61,7 +65,7 @@ public static class MarketRegimeDetector
                 AdaptedEmaSlow = 50,
                 StopLossMultiplier = 3.0,  // Wider stops in volatile markets
                 TakeProfitMultiplier = 4.5,
-                Description = $"VOLATILE — ATR={atrPercent:F1}% of price. Wider stops, smaller positions."
+                Description = $"VOLATILE — ATR={atrPercent:F1}%, GARCH={garchVolatilityForecast:F2}%. Impending/active volatility cluster detected."
             };
         }
 
@@ -75,7 +79,7 @@ public static class MarketRegimeDetector
                 AdaptedEmaSlow = 40,
                 StopLossMultiplier = 2.0,
                 TakeProfitMultiplier = 4.0, // Let winners run longer in trends
-                Description = $"TRENDING — {trendStrength:P0} directional consistency. Riding the trend."
+                Description = $"TRENDING — Entropy={normalizedEntropy:F2}. Organized structure. Riding the trend."
             };
         }
 
@@ -87,7 +91,7 @@ public static class MarketRegimeDetector
             AdaptedEmaSlow = 50,
             StopLossMultiplier = 1.5,  // Tighter stops in range
             TakeProfitMultiplier = 2.0,
-            Description = $"RANGING — {trendStrength:P0} directional. Mean-reversion mode."
+            Description = $"RANGING — Entropy={normalizedEntropy:F2}. High noise {trendStrength:P0} directional. Mean-reversion mode."
         };
     }
 
@@ -114,5 +118,101 @@ public static class MarketRegimeDetector
         }
         int total = upBars + downBars;
         return total > 0 ? Math.Max(upBars, downBars) / (double)total : 0.5;
+    }
+
+    private static double ComputeShannonEntropy(IReadOnlyList<Candle> candles)
+    {
+        if (candles.Count < 2) return 1.0;
+
+        // 1. Calculate log returns
+        var returns = new List<double>();
+        for (int i = 1; i < candles.Count; i++)
+        {
+            double prevClose = (double)candles[i - 1].Close;
+            double currClose = (double)candles[i].Close;
+            if (prevClose <= 0) continue;
+            returns.Add(Math.Log(currClose / prevClose));
+        }
+
+        if (returns.Count == 0) return 1.0;
+
+        // 2. Compute standard deviation to form bins
+        double avgReturn = returns.Average();
+        double variance = returns.Sum(r => Math.Pow(r - avgReturn, 2)) / returns.Count;
+        double stdDev = Math.Sqrt(variance);
+
+        if (stdDev == 0) return 0.0; // Perfect flat line has 0 entropy (perfect order)
+
+        // 3. Discretize into 5 bins:
+        // Bin 0: r < -1.5*stdDev (Strong Down)
+        // Bin 1: -1.5*stdDev <= r <= -0.5*stdDev (Down)
+        // Bin 2: -0.5*stdDev < r < 0.5*stdDev (Flat)
+        // Bin 3: 0.5*stdDev <= r <= 1.5*stdDev (Up)
+        // Bin 4: r > 1.5*stdDev (Strong Up)
+        var counts = new int[5];
+        foreach (var r in returns)
+        {
+            if (r < -1.5 * stdDev) counts[0]++;
+            else if (r <= -0.5 * stdDev) counts[1]++;
+            else if (r < 0.5 * stdDev) counts[2]++;
+            else if (r <= 1.5 * stdDev) counts[3]++;
+            else counts[4]++;
+        }
+
+        // 4. Compute probability p_i for each bin, and Shannon Entropy = -sum(p_i * log2(p_i))
+        double entropy = 0.0;
+        double total = returns.Count;
+        foreach (int count in counts)
+        {
+            if (count > 0)
+            {
+                double p = count / total;
+                entropy -= p * Math.Log2(p);
+            }
+        }
+
+        // 5. Normalize Entropy: max entropy for 5 bins is log2(5)
+        double maxEntropy = Math.Log2(5);
+        return entropy / maxEntropy;
+    }
+
+    /// <summary>
+    /// Computes forecasted period volatility using a GARCH(1,1) process.
+    /// Captures volatility clustering which ATR often lags.
+    /// \sigma^2_t = \omega + \alpha \cdot r_{t-1}^2 + \beta \cdot \sigma^2_{t-1}
+    /// </summary>
+    private static double ComputeGarchVolatility(IReadOnlyList<Candle> candles)
+    {
+        if (candles.Count < 2) return 0;
+        
+        // High-frequency GARCH(1,1) parameters (fast reacting)
+        double omega = 0.000005;
+        double alpha = 0.15;
+        double beta = 0.80; 
+
+        var returns = new List<double>(candles.Count);
+        for (int i = 1; i < candles.Count; i++)
+        {
+            double prev = (double)candles[i - 1].Close;
+            double curr = (double)candles[i].Close;
+            if (prev > 0)
+            {
+                returns.Add((curr - prev) / prev);
+            }
+        }
+
+        if (returns.Count == 0) return 0;
+
+        // Initialize variance
+        double variance = returns.Average(r => r * r);
+
+        // Iteratively compute GARCH variance
+        foreach (double r in returns)
+        {
+            variance = omega + alpha * (r * r) + beta * variance;
+        }
+
+        // Return forecasted volatility percentage for the next step
+        return Math.Sqrt(variance) * 100.0;
     }
 }

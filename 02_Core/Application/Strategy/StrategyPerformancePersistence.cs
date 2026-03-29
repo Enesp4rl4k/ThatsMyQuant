@@ -116,6 +116,14 @@ public sealed class StrategyBucketPerformanceSnapshot
     public decimal TrimmedVenueExecutionExpectedValue { get; set; }
     public decimal AverageEntrySlippagePercent { get; set; }
     public double AverageExecutionLatencyMs { get; set; }
+    public string DominantMlModelVersion { get; set; } = string.Empty;
+    public int FeatureDriftTrades { get; set; }
+    public int CriticalFeatureDriftTrades { get; set; }
+    public int SizeTrimmedByDriftTrades { get; set; }
+    public double FeatureDriftRate { get; set; }
+    public double CriticalFeatureDriftRate { get; set; }
+    public double SizeTrimmedByDriftRate { get; set; }
+    public decimal AverageFeatureDriftMaxZScore { get; set; }
     public bool BacktestPass { get; set; }
     public bool PaperPass { get; set; }
     public bool LiveProbePass { get; set; }

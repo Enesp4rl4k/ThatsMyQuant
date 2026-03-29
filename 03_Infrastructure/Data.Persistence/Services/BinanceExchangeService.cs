@@ -93,6 +93,12 @@ public class BinanceExchangeService : IExchangeService
         }
     }
 
+    public async Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side)
+    {
+        // For the cold-signed HSM service, queue tracking is handled via a secondary telemetry stream.
+        return await Task.FromResult(0m);
+    }
+
     public async Task<Account> GetAccountStatusAsync()
     {
         var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();

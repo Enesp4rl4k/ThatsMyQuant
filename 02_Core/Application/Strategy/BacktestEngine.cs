@@ -8,14 +8,20 @@ namespace ThatsMyQuant.Application.Strategy;
 public class BacktestEngineApp
 {
     private readonly ITechnicalAnalysisService _technicalAnalysis;
-    private readonly AgentCoordinator _agentCoordinator;
+    private readonly IAgentCoordinator _agentCoordinator;
+    private readonly TickReplayEngine? _tickReplayEngine;
     private readonly ILogger<BacktestEngineApp> _logger;
 
-    public BacktestEngineApp(ITechnicalAnalysisService technicalAnalysis, AgentCoordinator agentCoordinator, ILogger<BacktestEngineApp> logger)
+    public BacktestEngineApp(
+        ITechnicalAnalysisService technicalAnalysis,
+        IAgentCoordinator agentCoordinator,
+        ILogger<BacktestEngineApp> logger,
+        TickReplayEngine? tickReplayEngine = null)
     {
         _technicalAnalysis = technicalAnalysis ?? throw new ArgumentNullException(nameof(technicalAnalysis));
         _agentCoordinator = agentCoordinator ?? throw new ArgumentNullException(nameof(agentCoordinator));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _tickReplayEngine = tickReplayEngine;
     }
 
     public async Task<BacktestResult> RunAsync(List<Candle> historicalCandles, string symbol, decimal startingCapital = 100_000m)
@@ -31,9 +37,12 @@ public class BacktestEngineApp
         var fullTradeHistory = new List<Trade>();
         PaperPosition? openPosition = null;
 
+        // 🔥 HFT Optimization: Use a shared array and ArraySegment for zero-copy sliding windows
+        var candlesArray = historicalCandles.ToArray();
+
         for (int i = 60; i < historicalCandles.Count; i++)
         {
-            var candle = historicalCandles[i];
+            var candle = candlesArray[i];
             
             if (openPosition != null)
             {
@@ -41,12 +50,29 @@ public class BacktestEngineApp
             }
             else
             {
-                var openTrades = openPosition != null ? new List<Trade> { MapToTrade(openPosition) } : new List<Trade>();
-                openPosition = await TryEntry(symbol, historicalCandles, i, state.Equity, openTrades, fullTradeHistory).ConfigureAwait(false);
+                var window = new ArraySegment<Candle>(candlesArray, i - 60, 61);
+                openPosition = await TryEntry(symbol, window, state.Equity, fullTradeHistory).ConfigureAwait(false);
             }
         }
 
         return BuildFinalResult(symbol, trades, state, startingCapital);
+    }
+
+    public async Task<BacktestResult> RunTickReplayAsync(
+        List<MarketTick> ticks,
+        List<Candle> baseCandles,
+        string symbol,
+        decimal capital = 100_000m,
+        List<OrderBookSnapshot>? orderBooks = null)
+    {
+        if (_tickReplayEngine == null)
+        {
+            _logger.LogWarning("TickReplayEngine not available. Register it in DI to enable L2 backtesting.");
+            return new BacktestResult { Symbol = symbol, Reasoning = "TickReplayEngine not configured" };
+        }
+
+        _logger.LogInformation("Delegating to L2 TickReplayEngine for {Symbol}...", symbol);
+        return await _tickReplayEngine.ReplayAsync(ticks, baseCandles, symbol, capital, orderBooks);
     }
 
     private PaperPosition? ProcessExit(Candle candle, PaperPosition pos, BacktestState state, List<BacktestTradeResult> trades, List<Trade> fullHistory)
@@ -94,53 +120,52 @@ public class BacktestEngineApp
         return side == TradeSide.Sell ? -rawPercent : rawPercent;
     }
 
-    private async Task<PaperPosition?> TryEntry(string symbol, List<Candle> candles, int index, decimal currentEquity, IReadOnlyList<Trade> openTrades, IReadOnlyList<Trade> history)
+    private async Task<PaperPosition?> TryEntry(string symbol, IReadOnlyList<Candle> window, decimal currentEquity, IReadOnlyList<Trade> history)
     {
-        var window = candles.Skip(index - 60).Take(61).ToList();
-        var signal = new Signal { Symbol = symbol, Price = candles[index].Close };
+        var candle = window[^1];
+        var signal = new Signal { Symbol = symbol, Price = candle.Close };
         
         // 1. Technical Baseline
         var decision = await _technicalAnalysis.AnalyzeAsync(signal, window, RiskParameters.Default).ConfigureAwait(false);
+        if (decision is null) return null;
         if (!decision.ShouldTrade || decision.Confidence < 55) return null;
 
-        // 2. Agent Intelligence Layer
+        // 2. Agent Intelligence Layer (Simplified for Backtest Context)
         var snapshot = await _agentCoordinator.RunFullPipelineAsync(
             signal, 
             new List<MarketTick>(), 
             window, 
             MarketRegime.Trending, 
-            openTrades, 
-            history).ConfigureAwait(false);
+            new List<Trade>(), 
+            history).ConfigureAwait(false)
+            ?? new FiveTierSnapshot();
 
         // 3. Consensus Logic (Multi-Agent Synthesis)
-        float agentAdjustment = snapshot.Votes
+        float agentAdjustment = (snapshot.Votes ?? Array.Empty<StrategyVote>())
             .Where(v => v.Vote != VoteOutcome.Abstain)
             .Sum(v => v.ConfidenceAdjustment);
 
         var consensusConfidence = (double)decision.Confidence + agentAdjustment;
         
         // Apply Metadata Adaptation (Tier 5)
-        if (snapshot.Meta != null)
-        {
-            consensusConfidence *= snapshot.Meta.ConfidenceScalar;
-        }
+        consensusConfidence *= snapshot.Meta?.ConfidenceScalar ?? 1f;
 
         if (snapshot.RiskGauntlet != null && !snapshot.RiskGauntlet.Approved) return null;
-        if (consensusConfidence < 55) return null; // Final threshold after agent synthesis
+        if (consensusConfidence < 55) return null; 
 
-        decimal price = candles[index].Close;
+        decimal price = candle.Close;
         decimal qty = price > 0 ? Math.Floor((currentEquity * decision.PositionSizePercent) / price) : 0;
         
         if (qty <= 0) return null;
 
-        var primaryPattern = snapshot.Patterns.PatternTags.FirstOrDefault() ?? "No Pattern";
-        var voteSummary = snapshot.Votes.Any(v => v.Vote == VoteOutcome.Approve) ? " (Voted Approve)" : "";
+        var primaryPattern = snapshot.Patterns?.PatternTags?.FirstOrDefault() ?? "No Pattern";
+        var voteSummary = (snapshot.Votes ?? Array.Empty<StrategyVote>()).Any(v => v.Vote == VoteOutcome.Approve) ? " (Voted Approve)" : "";
 
         return new PaperPosition 
         { 
             Symbol = symbol, Side = decision.Side, EntryPrice = price, 
             Quantity = qty, StopLoss = decision.StopLoss, TakeProfit = decision.TakeProfit, 
-            EntryTime = candles[index].Timestamp,
+            EntryTime = candle.Timestamp,
             OptimalPriceSinceEntry = price,
             Reasoning = $"Engine Consensus: {primaryPattern}{voteSummary}. {decision.Reasoning}",
             Confidence = Math.Min(99, Math.Max(10, (int)consensusConfidence))

@@ -12,7 +12,7 @@ public static class CandlestickPatternDetector
     private const decimal IndecisionThreshold = 0.3m;
     private const decimal StrongBodyThreshold = 0.5m;
 
-    public static string DetectPattern(List<Candle> candles, int index = -1)
+    public static string DetectPattern(IReadOnlyList<Candle> candles, int index = -1)
     {
         if (candles == null || candles.Count < 3) return "None";
         if (index == -1) index = candles.Count - 1;

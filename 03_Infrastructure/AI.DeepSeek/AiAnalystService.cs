@@ -137,75 +137,60 @@ public class AiAnalystService : IAiAnalystService
 
         foreach (var line in lines)
         {
-            if (line.StartsWith("SUMMARY:", StringComparison.OrdinalIgnoreCase))
-            {
-                result.ExecutiveSummary = line.Substring("SUMMARY:".Length).Trim();
-            }
-            else if (line.StartsWith("SENTIMENT:", StringComparison.OrdinalIgnoreCase))
-            {
-                var valStr = line.Substring("SENTIMENT:".Length).Trim();
-                if (double.TryParse(valStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsedScore))
-                {
-                    result.SentimentScore = parsedScore;
-                }
-            }
-            else if (line.StartsWith("RECOMMENDATION:", StringComparison.OrdinalIgnoreCase))
-            {
-                result.TradeRecommendation = line.Substring("RECOMMENDATION:".Length).Trim();
-            }
-            else if (line.StartsWith("READINESS:", StringComparison.OrdinalIgnoreCase))
-            {
-                var valStr = line.Substring("READINESS:".Length).Trim();
-                if (int.TryParse(valStr, out var readiness))
-                {
-                    result.ExecutionReadinessScore = Math.Clamp(readiness, 0, 100);
-                }
-            }
-            else if (line.StartsWith("RISK:", StringComparison.OrdinalIgnoreCase))
-            {
-                result.RiskSummary = line.Substring("RISK:".Length).Trim();
-            }
-            else if (line.StartsWith("FLAGS:", StringComparison.OrdinalIgnoreCase))
-            {
-                result.RiskFlags = line.Substring("FLAGS:".Length)
-                    .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-            }
+            ParseAiLine(line, result);
         }
 
-        if (string.IsNullOrEmpty(result.ExecutiveSummary))
-        {
-            result.ExecutiveSummary = heuristicFallback.ExecutiveSummary;
-        }
-
-        if (result.ExecutionReadinessScore == 0)
-        {
-            result.ExecutionReadinessScore = heuristicFallback.ExecutionReadinessScore;
-        }
-
-        if (string.IsNullOrWhiteSpace(result.TradeRecommendation))
-        {
-            result.TradeRecommendation = heuristicFallback.TradeRecommendation;
-        }
-
-        if (string.IsNullOrWhiteSpace(result.RiskSummary))
-        {
-            result.RiskSummary = heuristicFallback.RiskSummary;
-        }
-
-        if (result.RiskFlags.Count == 0)
-        {
-            result.RiskFlags = heuristicFallback.RiskFlags;
-        }
-
-        if (Math.Abs(result.SentimentScore) < double.Epsilon)
-        {
-            result.SentimentScore = heuristicFallback.SentimentScore;
-        }
-
+        ApplyHeuristicFallbacks(result, heuristicFallback);
         return result;
+    }
+
+    private void ParseAiLine(string line, AiAnalysisResult result)
+    {
+        if (line.StartsWith("SUMMARY:", StringComparison.OrdinalIgnoreCase))
+            result.ExecutiveSummary = line.Substring(8).Trim();
+        else if (line.StartsWith("SENTIMENT:", StringComparison.OrdinalIgnoreCase))
+            ParseSentiment(line, result);
+        else if (line.StartsWith("RECOMMENDATION:", StringComparison.OrdinalIgnoreCase))
+            result.TradeRecommendation = line.Substring(15).Trim();
+        else if (line.StartsWith("READINESS:", StringComparison.OrdinalIgnoreCase))
+            ParseReadiness(line, result);
+        else if (line.StartsWith("RISK:", StringComparison.OrdinalIgnoreCase))
+            result.RiskSummary = line.Substring(5).Trim();
+        else if (line.StartsWith("FLAGS:", StringComparison.OrdinalIgnoreCase))
+            result.RiskFlags = ParseFlags(line);
+    }
+
+    private void ParseSentiment(string line, AiAnalysisResult result)
+    {
+        var valStr = line.Substring(10).Trim();
+        if (double.TryParse(valStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double parsedScore))
+            result.SentimentScore = parsedScore;
+    }
+
+    private void ParseReadiness(string line, AiAnalysisResult result)
+    {
+        var valStr = line.Substring(10).Trim();
+        if (int.TryParse(valStr, out var readiness))
+            result.ExecutionReadinessScore = Math.Clamp(readiness, 0, 100);
+    }
+
+    private List<string> ParseFlags(string line)
+    {
+        return line.Substring(6)
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void ApplyHeuristicFallbacks(AiAnalysisResult result, AiAnalysisResult fallback)
+    {
+        if (string.IsNullOrEmpty(result.ExecutiveSummary)) result.ExecutiveSummary = fallback.ExecutiveSummary;
+        if (result.ExecutionReadinessScore == 0) result.ExecutionReadinessScore = fallback.ExecutionReadinessScore;
+        if (string.IsNullOrWhiteSpace(result.TradeRecommendation)) result.TradeRecommendation = fallback.TradeRecommendation;
+        if (string.IsNullOrWhiteSpace(result.RiskSummary)) result.RiskSummary = fallback.RiskSummary;
+        if (result.RiskFlags.Count == 0) result.RiskFlags = fallback.RiskFlags;
+        if (Math.Abs(result.SentimentScore) < double.Epsilon) result.SentimentScore = fallback.SentimentScore;
     }
 
     private static AiAnalysisResult BuildHeuristicOverlay(IndicatorSnapshot snapshot)
@@ -214,6 +199,27 @@ public class AiAnalystService : IAiAnalystService
         var readiness = 50;
         var sentiment = 0.0;
 
+        EvaluateTrend(snapshot, ref readiness, ref sentiment, flags);
+        EvaluateMomentum(snapshot, ref readiness, ref sentiment, flags);
+        EvaluateVolume(snapshot, ref readiness, flags);
+        EvaluateVolatilityAndLevels(snapshot, ref readiness, flags);
+
+        readiness = Math.Clamp(readiness, 5, 95);
+        sentiment = Math.Clamp(sentiment, -1.0, 1.0);
+
+        return new AiAnalysisResult
+        {
+            ExecutiveSummary = "Rule-based overlay suggests waiting for aligned trend, momentum, and liquidity confirmation.",
+            SentimentScore = sentiment,
+            TradeRecommendation = ResolveRecommendation(readiness),
+            ExecutionReadinessScore = readiness,
+            RiskSummary = flags.Count == 0 ? "No material risk flags detected." : string.Join("; ", flags.Take(3)),
+            RiskFlags = flags
+        };
+    }
+
+    private static void EvaluateTrend(IndicatorSnapshot snapshot, ref int readiness, ref double sentiment, List<string> flags)
+    {
         if (snapshot.AlphaTrend?.IsBullish == true)
         {
             readiness += 15;
@@ -225,7 +231,10 @@ public class AiAnalystService : IAiAnalystService
             sentiment -= 0.20;
             flags.Add("Trend context is not bullish");
         }
+    }
 
+    private static void EvaluateMomentum(IndicatorSnapshot snapshot, ref int readiness, ref double sentiment, List<string> flags)
+    {
         if ((snapshot.MACDHistogram ?? 0) > 0)
         {
             readiness += 10;
@@ -254,61 +263,41 @@ public class AiAnalystService : IAiAnalystService
             readiness += 5;
             flags.Add("RSI is oversold; expect volatility");
         }
+    }
 
-        if ((snapshot.VolumeRatio ?? 0) >= 1.5)
-        {
-            readiness += 10;
-        }
+    private static void EvaluateVolume(IndicatorSnapshot snapshot, ref int readiness, List<string> flags)
+    {
+        if ((snapshot.VolumeRatio ?? 0) >= 1.5) readiness += 10;
         else
         {
             readiness -= 10;
             flags.Add("Volume confirmation is below ideal");
         }
+    }
 
-        var atrPercent = snapshot.CurrentPrice > 0 && snapshot.ATR.HasValue
-            ? snapshot.ATR.Value / (double)snapshot.CurrentPrice
-            : 0;
+    private static void EvaluateVolatilityAndLevels(IndicatorSnapshot snapshot, ref int readiness, List<string> flags)
+    {
+        var atrPercent = snapshot.CurrentPrice > 0 && snapshot.ATR.HasValue ? snapshot.ATR.Value / (double)snapshot.CurrentPrice : 0;
         if (atrPercent > 0.03)
         {
             readiness -= 15;
             flags.Add("Volatility is elevated");
         }
 
-        if (snapshot.NearestResistance != null &&
-            Math.Abs(snapshot.NearestResistance.Price - snapshot.CurrentPrice) / snapshot.CurrentPrice < 0.015m)
+        if (snapshot.NearestResistance != null && Math.Abs(snapshot.NearestResistance.Price - snapshot.CurrentPrice) / snapshot.CurrentPrice < 0.015m)
         {
             readiness -= 10;
             flags.Add("Price is close to resistance");
         }
 
-        if (snapshot.NearestSupport == null)
-        {
-            flags.Add("No nearby support level detected");
-        }
-
-        readiness = Math.Clamp(readiness, 5, 95);
-        sentiment = Math.Clamp(sentiment, -1.0, 1.0);
-
-        var recommendation = readiness switch
-        {
-            >= 75 => "Actionable setup with managed risk",
-            >= 60 => "Cautious entry candidate",
-            >= 45 => "Watchlist only until confirmation improves",
-            _ => "Wait and preserve capital"
-        };
-
-        var riskSummary = flags.Count == 0
-            ? "No material risk flags detected by the heuristic overlay."
-            : string.Join("; ", flags.Take(3));
-
-        return new AiAnalysisResult
-        {
-            ExecutiveSummary = "Rule-based overlay suggests waiting for aligned trend, momentum, and liquidity confirmation.",
-            SentimentScore = sentiment,
-            TradeRecommendation = recommendation,
-            ExecutionReadinessScore = readiness,
-            RiskSummary = riskSummary,
-            RiskFlags = flags
-        };
+        if (snapshot.NearestSupport == null) flags.Add("No nearby support level detected");
     }
+
+    private static string ResolveRecommendation(int readiness) => readiness switch
+    {
+        >= 75 => "Actionable setup with managed risk",
+        >= 60 => "Cautious entry candidate",
+        >= 45 => "Watchlist only until confirmation improves",
+        _ => "Wait and preserve capital"
+    };
 }

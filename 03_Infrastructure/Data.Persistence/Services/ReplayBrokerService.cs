@@ -51,4 +51,6 @@ public class ReplayBrokerService : IExchangeService
             Equity = 100_000m
         });
     }
+
+    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side) => Task.FromResult(0m);
 }

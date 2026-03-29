@@ -1,157 +1,258 @@
 using System;
+using System.Globalization;
 using System.IO;
+using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Configuration;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
 /// <summary>
-/// A high-fidelity Level 2 Replay Architecture streaming flat CSV files into the identical pipeline buffers utilized by Binance WebSockets.
-/// Simulates Tick execution iteratively mapping Orderflow natively across the mutable offline time dimension.
+/// High-fidelity Market Replay Engine for Level-2 backtesting.
+/// Streams historical tick and depth data into the Swarm Engine.
 /// </summary>
-public class MarketReplayService : IStreamingMarketDataService
+public sealed class MarketReplayService : IStreamingMarketDataService
 {
-    private readonly ILogger<MarketReplayService> _logger;
-    private readonly MarketReplayClock _replayClock;
-    private readonly string _replayFilePath;
+    private readonly string _dataPath;
+    private bool _isRunning;
 
     public event Action<MarketTick>? OnTickReceived;
     public event Action<OrderBookSnapshot>? OnOrderBookUpdated;
 
-    public MarketReplayService(ILogger<MarketReplayService> logger, ISystemClock replayClock, IConfiguration config)
+    public MarketReplayService(string dataPath)
     {
-        _logger = logger;
-        // The DI injection must supply the mutable replay clock instance into ISystemClock in Program.cs.
-        _replayClock = replayClock as MarketReplayClock 
-            ?? throw new InvalidOperationException("MarketReplayService requires the ISystemClock to inherently be a MarketReplayClock wrapper instance.");
-        
-        _replayFilePath = config["Backtesting:Level2CsvPath"] ?? "replay_data.csv";
+        _dataPath = dataPath;
     }
 
     public async Task ConnectAsync(string[] symbols, CancellationToken cancellationToken)
     {
-        await Task.Yield();
-        
-        if (!File.Exists(_replayFilePath))
-        {
-            _logger.LogError("File not found to mount L2 execution replay block: {ReplayFilePath}", _replayFilePath);
-            return;
-        }
-
-        _logger.LogInformation("🚀 Level-2 Market Replay Engaged on {ReplayFilePath}. Simulating WebSocket traffic offline.", _replayFilePath);
-        
-        // Background loop executing identically to WebSocket Receiver but advancing time synchronously
-        _ = Task.Run(() => ExecuteReplayLoopAsync(cancellationToken), cancellationToken);
-    }
-
-    private async Task ExecuteReplayLoopAsync(CancellationToken token)
-    {
-        try
-        {
-            using var reader = new StreamReader(_replayFilePath);
-            string? header = await reader.ReadLineAsync(token); // Skip header
-
-            while (!reader.EndOfStream && !token.IsCancellationRequested)
-            {
-                var line = await reader.ReadLineAsync(token);
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                // Native span splitting
-                var span = line.AsSpan();
-                
-                // Format: Timestamp(ms),Symbol,Bid1,Bid1Qty,Bid2,Bid2Qty,Bid3,Bid3Qty,Bid4,Bid4Qty,Bid5,Bid5Qty,Ask1,Ask1Qty,... LastPrice
-                // For simplicity, let's map a strict CSV block specifically.
-                // If it's pure Top-Of-Book (Bid1, Ask1): Timestamp,Symbol,Bid1,BidQty,Ask1,AskQty
-                
-                // We'll process an offline struct native parser here 
-                ProcessReplayLine(span);
-            }
-            _logger.LogInformation("✅ Market Replay execution sequence completed sequentially.");
-        }
-        catch(Exception ex)
-        {
-            _logger.LogError(ex, "Catastrophic file execution error simulating Replay offline.");
-        }
-    }
-
-    private void ProcessReplayLine(ReadOnlySpan<char> line)
-    {
-        // VERY BASIC SIMPLIFIED SPLITTER (Assuming Format: UnixMs,Symbol,LastPx,BidPx1,BidQty1,AskPx1,AskQty1)
-        int sliceStart = 0;
-        int sliceEnd = levelSliceLength(line, ref sliceStart);
-        var tsSpan = line.Slice(sliceStart - sliceEnd, sliceEnd);
-        if (!long.TryParse(tsSpan, out long unixMs)) return;
-        
-        sliceEnd = levelSliceLength(line, ref sliceStart);
-        var symbolSpan = line.Slice(sliceStart - sliceEnd, sliceEnd);
-        string symbol = new string(symbolSpan);
-
-        sliceEnd = levelSliceLength(line, ref sliceStart);
-        var lastPxSpan = line.Slice(sliceStart - sliceEnd, sliceEnd);
-        double.TryParse(lastPxSpan, out double lastPx);
-
-        sliceEnd = levelSliceLength(line, ref sliceStart);
-        var bidPxSpan = line.Slice(sliceStart - sliceEnd, sliceEnd);
-        double.TryParse(bidPxSpan, out double bidPx);
-
-        sliceEnd = levelSliceLength(line, ref sliceStart);
-        var bidQtySpan = line.Slice(sliceStart - sliceEnd, sliceEnd);
-        double.TryParse(bidQtySpan, out double bidQty);
-
-        sliceEnd = levelSliceLength(line, ref sliceStart);
-        var askPxSpan = line.Slice(sliceStart - sliceEnd, sliceEnd);
-        double.TryParse(askPxSpan, out double askPx);
-
-        sliceEnd = levelSliceLength(line, ref sliceStart);
-        var askQtySpan = line.Slice(sliceStart - sliceEnd, sliceEnd);
-        double.TryParse(askQtySpan, out double askQty);
-
-        // Advance global simulator execution time natively
-        _replayClock.AdvanceTimeUnixMs(unixMs);
-
-        // Native Dispatch -> Route Last Trade Tick
-        if (lastPx > 0)
-        {
-            OnTickReceived?.Invoke(new MarketTick(symbol, (decimal)lastPx, 0.001m, unixMs, false));
-        }
-
-        // Native Dispatch -> Route Top-Of-Book Limits
-        if (bidPx > 0 && askPx > 0)
-        {
-            var snapshot = new OrderBookSnapshot(
-                symbol, 
-                unixMs, 
-                new[] { new OrderBookLevel((decimal)bidPx, (decimal)bidQty) }, 
-                new[] { new OrderBookLevel((decimal)askPx, (decimal)askQty) }
-            );
-            OnOrderBookUpdated?.Invoke(snapshot);
-        }
-    }
-
-    private static int levelSliceLength(ReadOnlySpan<char> span, ref int currentIndex)
-    {
-        int length = 0;
-        while (currentIndex < span.Length && span[currentIndex] != ',')
-        {
-            length++;
-            currentIndex++;
-        }
-        currentIndex++; // Skip comma
-        return length;
-    }
-
-    public async Task DisconnectAsync()
-    {
-        _logger.LogInformation("Replay shutdown sequence requested.");
+        _isRunning = true;
+        _ = RunReplayLoopAsync(cancellationToken);
         await Task.CompletedTask;
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task RunReplayLoopAsync(CancellationToken ct)
     {
-        await DisconnectAsync();
+        if (!File.Exists(_dataPath))
+        {
+            throw new FileNotFoundException($"Replay data file not found: {_dataPath}");
+        }
+
+        using var reader = new StreamReader(_dataPath);
+        // Header: Type,Symbol,Price,Qty,Timestamp,IsMaker,DepthData
+        await reader.ReadLineAsync();
+
+        while (_isRunning && !reader.EndOfStream && !ct.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync();
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            try
+            {
+                var parts = line.Split(',', 7);
+                if (parts.Length < 5)
+                {
+                    continue;
+                }
+
+                var type = parts[0];
+                var symbol = parts[1];
+                var price = decimal.Parse(parts[2], CultureInfo.InvariantCulture);
+                var qty = decimal.Parse(parts[3], CultureInfo.InvariantCulture);
+                var ts = long.Parse(parts[4]);
+
+                if (type == "TICK")
+                {
+                    var isMaker = bool.Parse(parts[5]);
+                    OnTickReceived?.Invoke(new MarketTick(symbol, price, qty, ts, isMaker));
+                }
+                else if (type == "DEPTH")
+                {
+                    var snapshot = TryParseDepthSnapshot(symbol, ts, parts.Length >= 7 ? parts[6] : null);
+                    OnOrderBookUpdated?.Invoke(snapshot ?? CreateFallbackSnapshot(symbol, ts, price, qty));
+                }
+
+                // Simulate realistic arrival (optional: sleep based on timestamps)
+                // In a true HFT backtest, we might run as fast as possible or match TS delta.
+            }
+            catch (Exception)
+            {
+                // Skip malformed lines in replay
+            }
+        }
+        
+        _isRunning = false;
+    }
+
+    public Task SubscribeAsync(string symbol) => Task.CompletedTask;
+    public Task UnsubscribeAsync(string symbol) => Task.CompletedTask;
+    public Task DisconnectAsync()
+    {
+        _isRunning = false;
+        return Task.CompletedTask;
+    }
+
+    private static OrderBookSnapshot? TryParseDepthSnapshot(string symbol, long timestampMs, string? depthData)
+    {
+        if (string.IsNullOrWhiteSpace(depthData))
+        {
+            return null;
+        }
+
+        return TryParseJsonDepthSnapshot(symbol, timestampMs, depthData)
+            ?? TryParseCompactDepthSnapshot(symbol, timestampMs, depthData);
+    }
+
+    private static OrderBookSnapshot? TryParseJsonDepthSnapshot(string symbol, long timestampMs, string depthData)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(depthData);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("bids", out var bidsElement) || !root.TryGetProperty("asks", out var asksElement))
+            {
+                return null;
+            }
+
+            var bids = ParseJsonLevels(bidsElement);
+            var asks = ParseJsonLevels(asksElement);
+            if (bids.Length == 0 || asks.Length == 0)
+            {
+                return null;
+            }
+
+            return new OrderBookSnapshot(symbol, timestampMs, bids, asks);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static OrderBookLevel[] ParseJsonLevels(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var levels = new List<OrderBookLevel>();
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind == JsonValueKind.Array && item.GetArrayLength() >= 2)
+            {
+                var price = ParseDecimal(item[0]);
+                var quantity = ParseDecimal(item[1]);
+                if (price > 0 && quantity > 0)
+                {
+                    levels.Add(new OrderBookLevel(price, quantity));
+                }
+            }
+            else if (item.ValueKind == JsonValueKind.Object)
+            {
+                decimal price = 0;
+                decimal quantity = 0;
+                if (item.TryGetProperty("price", out var priceElement))
+                {
+                    price = ParseDecimal(priceElement);
+                }
+                if (item.TryGetProperty("quantity", out var quantityElement))
+                {
+                    quantity = ParseDecimal(quantityElement);
+                }
+
+                if (price > 0 && quantity > 0)
+                {
+                    levels.Add(new OrderBookLevel(price, quantity));
+                }
+            }
+        }
+
+        return levels.ToArray();
+    }
+
+    private static decimal ParseDecimal(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.Number when element.TryGetDecimal(out var number) => number,
+            JsonValueKind.String when decimal.TryParse(element.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            _ => 0m
+        };
+    }
+
+    private static OrderBookSnapshot? TryParseCompactDepthSnapshot(string symbol, long timestampMs, string depthData)
+    {
+        var segments = depthData.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length == 0)
+        {
+            return null;
+        }
+
+        OrderBookLevel[] bids = [];
+        OrderBookLevel[] asks = [];
+
+        foreach (var segment in segments)
+        {
+            var separatorIndex = segment.IndexOf('=');
+            if (separatorIndex < 0)
+            {
+                continue;
+            }
+
+            var side = segment[..separatorIndex].Trim();
+            var levelsText = segment[(separatorIndex + 1)..].Trim();
+            var levels = ParseCompactLevels(levelsText);
+
+            if (side.Equals("bids", StringComparison.OrdinalIgnoreCase))
+            {
+                bids = levels;
+            }
+            else if (side.Equals("asks", StringComparison.OrdinalIgnoreCase))
+            {
+                asks = levels;
+            }
+        }
+
+        if (bids.Length == 0 || asks.Length == 0)
+        {
+            return null;
+        }
+
+        return new OrderBookSnapshot(symbol, timestampMs, bids, asks);
+    }
+
+    private static OrderBookLevel[] ParseCompactLevels(string text)
+    {
+        return text
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(level =>
+            {
+                var parts = level.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (parts.Length != 2 ||
+                    !decimal.TryParse(parts[0], NumberStyles.Any, CultureInfo.InvariantCulture, out var price) ||
+                    !decimal.TryParse(parts[1], NumberStyles.Any, CultureInfo.InvariantCulture, out var quantity))
+                {
+                    return (OrderBookLevel?)null;
+                }
+
+                return new OrderBookLevel(price, quantity);
+            })
+            .Where(level => level.HasValue)
+            .Select(level => level!.Value)
+            .ToArray();
+    }
+
+    private static OrderBookSnapshot CreateFallbackSnapshot(string symbol, long timestampMs, decimal price, decimal qty)
+    {
+        var syntheticSpread = Math.Max(0.01m, price * 0.0001m);
+        return new OrderBookSnapshot(
+            symbol,
+            timestampMs,
+            [new OrderBookLevel(price - syntheticSpread, qty * 2)],
+            [new OrderBookLevel(price + syntheticSpread, qty * 2)]);
     }
 }

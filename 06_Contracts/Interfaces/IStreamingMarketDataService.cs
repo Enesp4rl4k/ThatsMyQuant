@@ -12,5 +12,7 @@ public interface IStreamingMarketDataService
     event Action<OrderBookSnapshot>? OnOrderBookUpdated;
 
     Task ConnectAsync(string[] symbols, CancellationToken cancellationToken);
+    Task SubscribeAsync(string symbol);
+    Task UnsubscribeAsync(string symbol);
     Task DisconnectAsync();
 }
