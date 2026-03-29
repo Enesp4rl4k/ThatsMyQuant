@@ -67,7 +67,7 @@ public class FeatureEngineeringAgent
             // Feature[3] is populated by ApplyOrderFlowImbalance or ApplyFoundationData
             // Feature[4] fallback: momentum from buffer if no foundation data available
             double oldestPrice = _movingAverageBuffer.OldestValue;
-            if (CurrentTensor[4] == 0f && oldestPrice > 0)
+            if (Math.Abs(CurrentTensor[4]) < 1e-6f && oldestPrice > 0)
             {
                 CurrentTensor[4] = SafeFloat(price / oldestPrice, 1.0f);
             }

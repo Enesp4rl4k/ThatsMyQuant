@@ -89,7 +89,7 @@ public sealed class MomentumStrategyAgent : IStrategyAgent
             avgLoss = (avgLoss * (period - 1) + loss) / period;
         }
 
-        if (avgLoss == 0) return 100.0;
+        if (Math.Abs(avgLoss) < 1e-9) return 100.0;
         double rs = avgGain / avgLoss;
         return 100.0 - (100.0 / (1.0 + rs));
     }

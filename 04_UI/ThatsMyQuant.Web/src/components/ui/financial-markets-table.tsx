@@ -48,7 +48,7 @@ const Sparkline = memo(({ data, isDark, id }: { data: number[], isDark: boolean,
 
     const area = `${pts} ${width},${height} 0,${height}`;
     const clr = isDark ? "#22c55e" : "#16a34a";
-    const gId = `sparkline-gradient-${id.replace(/[^a-zA-Z0-9]/g, '')}`; 
+    const gId = `sparkline-gradient-${id.replaceAll(/[^a-zA-Z0-9]/g, '')}`; 
 
     return { points: pts, areaPoints: area, color: clr, gradientId: gId };
   }, [data, isDark, id]);

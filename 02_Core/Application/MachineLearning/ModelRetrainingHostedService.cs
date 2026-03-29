@@ -75,7 +75,7 @@ public sealed class ModelRetrainingHostedService : BackgroundService
         await Task.Delay(500, ct); // Simulated heavy CPU load
 
         // 4. Validate new metrics against old model
-        bool isNewModelBetter = true; // Synthetic validation check
+        bool isNewModelBetter = DateTime.UtcNow.Ticks % 2 != 0; // Synthetic validation check
         if (!isNewModelBetter)
         {
             _logger.LogWarning("New model validation failed to beat current production baseline. Aborting hot-swap.");

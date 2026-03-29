@@ -55,8 +55,6 @@ public sealed class OrderBookDepthAnalyzer : IFoundationAgent
             .Select(g => new { Price = g.Key, TotalVol = g.Sum(t => t.Volume) })
             .ToList();
 
-        if (priceGroups.Count == 0) return 0m;
-
         var avgVol = priceGroups.Average(p => p.TotalVol);
         var wall = priceGroups.OrderByDescending(p => p.TotalVol).FirstOrDefault();
 
