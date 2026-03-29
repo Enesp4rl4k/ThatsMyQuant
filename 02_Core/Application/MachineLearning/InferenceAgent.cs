@@ -92,47 +92,8 @@ public class InferenceAgent
         {
             try
             {
-                // 🔥 ZERO-ALLOCATION BRIDGE: Copy directly into the pre-allocated pool buffer
                 featureAgent.CopyTo(item.Buffer.Features);
-
-                // 🧠 Feature Drift & Data Corruption Guard
-                for (int i = 0; i < 5; i++)
-                {
-                    if (float.IsNaN(item.Buffer.Features[i]) || float.IsInfinity(item.Buffer.Features[i]))
-                    {
-                        return new PredictionResult { Value = 0f, IsValid = false };
-                    }
-                }
-
-                var driftReport = _featureDriftMonitor?.UpdateAll(item.Buffer.Features);
-                var driftDetected = driftReport is { DriftedCount: > 0 };
-                if (driftReport is { IsCritical: true })
-                {
-                    return new PredictionResult
-                    {
-                        Value = 0f,
-                        IsValid = false,
-                        ModelVersion = _modelVersion,
-                        DriftDetected = true,
-                        DriftIsCritical = true,
-                        DriftedFeatureCount = driftReport.DriftedCount,
-                        MaxFeatureZScore = driftReport.MaxZScore
-                    };
-                }
-
-                var prediction = item.Engine.Predict(item.Buffer);
-                
-                return new PredictionResult 
-                { 
-                    Value = prediction.PredictedNextClose,
-                    IsValid = true,
-                    Confidence = 0.99f,
-                    ModelVersion = _modelVersion,
-                    DriftDetected = driftDetected,
-                    DriftIsCritical = false,
-                    DriftedFeatureCount = driftReport?.DriftedCount ?? 0,
-                    MaxFeatureZScore = driftReport?.MaxZScore ?? 0
-                };
+                return PredictInternal(item.Buffer, item.Engine);
             }
             finally
             {
@@ -149,53 +110,12 @@ public class InferenceAgent
         if (currentNormalizedFeatures == null || currentNormalizedFeatures.Length != 5) 
             return new PredictionResult { Value = 0f, IsValid = false };
 
-        // 🧠 Feature Drift & Data Corruption Guard
-        for (int i = 0; i < 5; i++)
-        {
-            if (float.IsNaN(currentNormalizedFeatures[i]) || float.IsInfinity(currentNormalizedFeatures[i]))
-            {
-                return new PredictionResult { Value = 0f, IsValid = false };
-            }
-        }
-
         if (_pool.TryPop(out var item))
         {
             try
             {
-                // This is slightly less efficient as it involves an array assignment (but not a new allocation here)
-                // However, item.Buffer.Features is replaced, which might cause the old array to be GC'd if not careful.
-                // Better to copy the values.
                 currentNormalizedFeatures.CopyTo(item.Buffer.Features, 0); 
-
-                var driftReport = _featureDriftMonitor?.UpdateAll(item.Buffer.Features);
-                var driftDetected = driftReport is { DriftedCount: > 0 };
-                if (driftReport is { IsCritical: true })
-                {
-                    return new PredictionResult
-                    {
-                        Value = 0f,
-                        IsValid = false,
-                        ModelVersion = _modelVersion,
-                        DriftDetected = true,
-                        DriftIsCritical = true,
-                        DriftedFeatureCount = driftReport.DriftedCount,
-                        MaxFeatureZScore = driftReport.MaxZScore
-                    };
-                }
-                
-                var prediction = item.Engine.Predict(item.Buffer);
-                
-                return new PredictionResult 
-                { 
-                    Value = prediction.PredictedNextClose,
-                    IsValid = true,
-                    Confidence = 0.99f,
-                    ModelVersion = _modelVersion,
-                    DriftDetected = driftDetected,
-                    DriftIsCritical = false,
-                    DriftedFeatureCount = driftReport?.DriftedCount ?? 0,
-                    MaxFeatureZScore = driftReport?.MaxZScore ?? 0
-                };
+                return PredictInternal(item.Buffer, item.Engine);
             }
             finally
             {
@@ -204,6 +124,47 @@ public class InferenceAgent
         }
 
         return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
+    }
+
+    private PredictionResult PredictInternal(CandleMlData buffer, PredictionEngine<CandleMlData, CandlePrediction> engine)
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            if (float.IsNaN(buffer.Features[i]) || float.IsInfinity(buffer.Features[i]))
+            {
+                return new PredictionResult { Value = 0f, IsValid = false };
+            }
+        }
+
+        var driftReport = _featureDriftMonitor?.UpdateAll(buffer.Features);
+        var driftDetected = driftReport is { DriftedCount: > 0 };
+        if (driftReport is { IsCritical: true })
+        {
+            return new PredictionResult
+            {
+                Value = 0f,
+                IsValid = false,
+                ModelVersion = _modelVersion,
+                DriftDetected = true,
+                DriftIsCritical = true,
+                DriftedFeatureCount = driftReport.DriftedCount,
+                MaxFeatureZScore = driftReport.MaxZScore
+            };
+        }
+
+        var prediction = engine.Predict(buffer);
+        
+        return new PredictionResult 
+        { 
+            Value = prediction.PredictedNextClose,
+            IsValid = true,
+            Confidence = 0.99f,
+            ModelVersion = _modelVersion,
+            DriftDetected = driftDetected,
+            DriftIsCritical = false,
+            DriftedFeatureCount = driftReport?.DriftedCount ?? 0,
+            MaxFeatureZScore = driftReport?.MaxZScore ?? 0
+        };
     }
 
     private static string BuildModelVersion(string modelPath)

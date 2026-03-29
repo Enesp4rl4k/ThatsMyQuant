@@ -124,28 +124,37 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         trade.StrategyTag = signal.StrategyTag;
         trade.RegimeTag = signal.RegimeTag;
 
-        if (signal.Metadata.TryGetValue("EdgeScore", out var esStr) && decimal.TryParse(esStr, CultureInfo.InvariantCulture, out var es))
-            trade.EdgeScore = es;
-
-        if (signal.Metadata.TryGetValue("EdgeBand", out var eb)) trade.EdgeBand = eb;
-        if (signal.Metadata.TryGetValue("VenueImpactLabel", out var vil)) trade.VenueImpactLabel = vil;
-        if (signal.Metadata.TryGetValue("VenueExecutionScope", out var ves)) trade.VenueExecutionScope = ves;
-        if (signal.Metadata.TryGetValue("ExactBucketImpactLabel", out var ebil)) trade.ExactBucketImpactLabel = ebil;
-        if (signal.Metadata.TryGetValue("ExactBucketSummary", out var ebs)) trade.ExactBucketSummary = ebs;
-        if (signal.Metadata.TryGetValue("ConcordanceImpactLabel", out var cil)) trade.ConcordanceImpactLabel = cil;
-        if (signal.Metadata.TryGetValue("ConcordanceSummary", out var cs)) trade.ConcordanceSummary = cs;
-        if (signal.Metadata.TryGetValue("FeatureDriftImpactLabel", out var fdil)) trade.FeatureDriftImpactLabel = fdil;
-        if (signal.Metadata.TryGetValue("FeatureDriftSummary", out var fds)) trade.FeatureDriftSummary = fds;
-        if (signal.Metadata.TryGetValue("FeatureDriftDetected", out var fdd) && bool.TryParse(fdd, out var driftDetected)) trade.FeatureDriftDetected = driftDetected;
-        if (signal.Metadata.TryGetValue("FeatureDriftCritical", out var fdc) && bool.TryParse(fdc, out var driftCritical)) trade.FeatureDriftCritical = driftCritical;
-        if (signal.Metadata.TryGetValue("DriftedFeatureCount", out var dfc) && int.TryParse(dfc, out var driftedFeatureCount)) trade.DriftedFeatureCount = driftedFeatureCount;
-        if (signal.Metadata.TryGetValue("FeatureDriftMaxZScore", out var fdz) && decimal.TryParse(fdz, CultureInfo.InvariantCulture, out var driftMaxZScore)) trade.FeatureDriftMaxZScore = driftMaxZScore;
-        if (signal.Metadata.TryGetValue("MlModelVersion", out var modelVersion)) trade.MlModelVersion = modelVersion;
-        if (signal.Metadata.TryGetValue("ExitPolicyTag", out var ept)) trade.ExitPolicyTag = ept;
-        if (signal.Metadata.TryGetValue("ExecutionMode", out var em)) trade.ExecutionMode = em;
+        trade.EdgeScore = TryGetDecimal(signal, "EdgeScore") ?? trade.EdgeScore;
+        trade.EdgeBand = TryGetString(signal, "EdgeBand") ?? trade.EdgeBand;
+        trade.VenueImpactLabel = TryGetString(signal, "VenueImpactLabel") ?? trade.VenueImpactLabel;
+        trade.VenueExecutionScope = TryGetString(signal, "VenueExecutionScope") ?? trade.VenueExecutionScope;
+        trade.ExactBucketImpactLabel = TryGetString(signal, "ExactBucketImpactLabel") ?? trade.ExactBucketImpactLabel;
+        trade.ExactBucketSummary = TryGetString(signal, "ExactBucketSummary") ?? trade.ExactBucketSummary;
+        trade.ConcordanceImpactLabel = TryGetString(signal, "ConcordanceImpactLabel") ?? trade.ConcordanceImpactLabel;
+        trade.ConcordanceSummary = TryGetString(signal, "ConcordanceSummary") ?? trade.ConcordanceSummary;
+        trade.FeatureDriftImpactLabel = TryGetString(signal, "FeatureDriftImpactLabel") ?? trade.FeatureDriftImpactLabel;
+        trade.FeatureDriftSummary = TryGetString(signal, "FeatureDriftSummary") ?? trade.FeatureDriftSummary;
+        trade.FeatureDriftDetected = TryGetBool(signal, "FeatureDriftDetected") ?? trade.FeatureDriftDetected;
+        trade.FeatureDriftCritical = TryGetBool(signal, "FeatureDriftCritical") ?? trade.FeatureDriftCritical;
+        trade.DriftedFeatureCount = TryGetInt(signal, "DriftedFeatureCount") ?? trade.DriftedFeatureCount;
+        trade.FeatureDriftMaxZScore = TryGetDecimal(signal, "FeatureDriftMaxZScore") ?? trade.FeatureDriftMaxZScore;
+        trade.MlModelVersion = TryGetString(signal, "MlModelVersion") ?? trade.MlModelVersion;
+        trade.ExitPolicyTag = TryGetString(signal, "ExitPolicyTag") ?? trade.ExitPolicyTag;
+        trade.ExecutionMode = TryGetString(signal, "ExecutionMode") ?? trade.ExecutionMode;
 
         if (signal.Price > 0 && trade.EntryPrice > 0)
             trade.EntrySlippagePercent = ((trade.EntryPrice - signal.Price) / signal.Price) * 100m;
     }
 
+    private static string? TryGetString(Signal signal, string key) =>
+        signal.Metadata.TryGetValue(key, out var val) ? val : null;
+
+    private static decimal? TryGetDecimal(Signal signal, string key) =>
+        signal.Metadata.TryGetValue(key, out var val) && decimal.TryParse(val, CultureInfo.InvariantCulture, out var parsed) ? parsed : null;
+
+    private static bool? TryGetBool(Signal signal, string key) =>
+        signal.Metadata.TryGetValue(key, out var val) && bool.TryParse(val, out var parsed) ? parsed : null;
+
+    private static int? TryGetInt(Signal signal, string key) =>
+        signal.Metadata.TryGetValue(key, out var val) && int.TryParse(val, out var parsed) ? parsed : null;
 }

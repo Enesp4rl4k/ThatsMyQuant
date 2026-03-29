@@ -1,6 +1,7 @@
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using System.Threading;
+using static ThatsMyQuant.Application.Strategy.StrategyMathUtils;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -1631,38 +1632,6 @@ public sealed class StrategyPromotionService
         return scaledLiveEligible ? "ScaledLive" : "Paper";
     }
 
-    private static double ComputeProfitFactor(IEnumerable<decimal> pnlValues)
-    {
-        var pnlList = pnlValues.ToList();
-        if (pnlList.Count == 0)
-        {
-            return 0;
-        }
-
-        var grossProfit = pnlList.Where(pnl => pnl > 0).Sum();
-        var grossLoss = Math.Abs(pnlList.Where(pnl => pnl < 0).Sum());
-        if (grossLoss <= 0)
-        {
-            return grossProfit > 0 ? 99 : 0;
-        }
-
-        return (double)(grossProfit / grossLoss);
-    }
-
-    private static string ResolveSessionBucket(DateTime timestamp)
-    {
-        var turkeyTime = timestamp.Kind == DateTimeKind.Utc
-            ? TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp, "Turkey Standard Time")
-            : TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp.ToUniversalTime(), "Turkey Standard Time");
-
-        return turkeyTime.Hour switch
-        {
-            >= 10 and < 13 => "London Killzone",
-            >= 15 and < 18 => "NY Killzone",
-            >= 3 and < 10 => "Asia",
-            _ => "Close / Dead Zone"
-        };
-    }
 
     private readonly record struct BucketMatch(StrategyBucketPerformanceSnapshot? Bucket, int Specificity);
     private readonly record struct BucketExitPolicyMatch(ExitPolicyPerformanceSnapshot? Snapshot, int Specificity);

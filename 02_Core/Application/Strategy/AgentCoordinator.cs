@@ -232,170 +232,65 @@ public class AgentCoordinator : IAgentCoordinator
 
     private static FoundationSnapshot MergeFoundation(FoundationSnapshot[] snapshots)
     {
-        var validCount = 0;
-        var vwapCount = 0;
-        double bidAskImbalanceSum = 0d;
-        double tickDirectionRatioSum = 0d;
-        double spreadBpsSum = 0d;
-        decimal vwapSum = 0m;
-        decimal vwapStdDevSum = 0m;
-        decimal wallLevel = 0m;
+        var valid = snapshots.Where(s => s != FoundationSnapshot.Empty).ToList();
+        if (valid.Count == 0) return FoundationSnapshot.Empty;
+
+        var vwapValid = valid.Where(s => s.Vwap > 0).ToList();
         var volumeAtPrice = new Dictionary<decimal, decimal>();
 
-        for (var i = 0; i < snapshots.Length; i++)
+        foreach (var pair in valid.SelectMany(s => s.VolumeAtPrice))
         {
-            var snapshot = snapshots[i];
-            if (snapshot == FoundationSnapshot.Empty)
-            {
-                continue;
-            }
-
-            validCount++;
-            bidAskImbalanceSum += snapshot.BidAskImbalance;
-            tickDirectionRatioSum += snapshot.TickDirectionRatio;
-            spreadBpsSum += snapshot.SpreadBps;
-
-            if (snapshot.Vwap > 0)
-            {
-                vwapCount++;
-                vwapSum += snapshot.Vwap;
-                vwapStdDevSum += snapshot.VwapStdDev;
-            }
-
-            if (wallLevel <= 0 && snapshot.WallLevel > 0)
-            {
-                wallLevel = snapshot.WallLevel;
-            }
-
-            foreach (var pair in snapshot.VolumeAtPrice)
-            {
-                volumeAtPrice[pair.Key] = volumeAtPrice.TryGetValue(pair.Key, out var existingVolume)
-                    ? existingVolume + pair.Value
-                    : pair.Value;
-            }
-        }
-
-        if (validCount == 0)
-        {
-            return FoundationSnapshot.Empty;
+            volumeAtPrice[pair.Key] = volumeAtPrice.GetValueOrDefault(pair.Key) + pair.Value;
         }
 
         return new FoundationSnapshot
         {
-            BidAskImbalance = bidAskImbalanceSum / validCount,
-            TickDirectionRatio = tickDirectionRatioSum / validCount,
-            Vwap = vwapCount > 0 ? vwapSum / vwapCount : 0m,
-            VwapStdDev = vwapCount > 0 ? vwapStdDevSum / vwapCount : 0m,
-            SpreadBps = spreadBpsSum / validCount,
-            WallLevel = wallLevel,
+            BidAskImbalance = valid.Average(s => s.BidAskImbalance),
+            TickDirectionRatio = valid.Average(s => s.TickDirectionRatio),
+            Vwap = vwapValid.Count > 0 ? vwapValid.Average(s => s.Vwap) : 0m,
+            VwapStdDev = vwapValid.Count > 0 ? vwapValid.Average(s => s.VwapStdDev) : 0m,
+            SpreadBps = valid.Average(s => s.SpreadBps),
+            WallLevel = valid.FirstOrDefault(s => s.WallLevel > 0)?.WallLevel ?? 0m,
             VolumeAtPrice = volumeAtPrice
         };
     }
 
     private static PatternSnapshot MergePatterns(PatternSnapshot[] snapshots)
     {
-        var validCount = 0;
-        var bollingerPercentBCount = 0;
-        var vwapDeviationCount = 0;
-        double bollingerPercentBSum = 0d;
-        double vwapDeviationSum = 0d;
-        bool bollingerSqueeze = false;
-        decimal fibNearestLevel = 0m;
-        double fibRetracementDepth = 0d;
-        var ichimoku = IchimokuState.Unknown;
-        var tags = new HashSet<string>();
+        var valid = snapshots.Where(s => s != PatternSnapshot.Empty).ToList();
+        if (valid.Count == 0) return PatternSnapshot.Empty;
 
-        for (var i = 0; i < snapshots.Length; i++)
-        {
-            var snapshot = snapshots[i];
-            if (snapshot == PatternSnapshot.Empty)
-            {
-                continue;
-            }
-
-            validCount++;
-
-            if (snapshot.BollingerPercentB != 0)
-            {
-                bollingerPercentBCount++;
-                bollingerPercentBSum += snapshot.BollingerPercentB;
-            }
-
-            if (snapshot.BollingerSqueeze)
-            {
-                bollingerSqueeze = true;
-            }
-
-            if (fibNearestLevel <= 0 && snapshot.FibNearestLevel > 0)
-            {
-                fibNearestLevel = snapshot.FibNearestLevel;
-            }
-
-            if (fibRetracementDepth == 0d && snapshot.FibRetracementDepth != 0d)
-            {
-                fibRetracementDepth = snapshot.FibRetracementDepth;
-            }
-
-            if (ichimoku == IchimokuState.Unknown && snapshot.IchimokuState != IchimokuState.Unknown)
-            {
-                ichimoku = snapshot.IchimokuState;
-            }
-
-            if (snapshot.VwapDeviationSigmas != 0)
-            {
-                vwapDeviationCount++;
-                vwapDeviationSum += snapshot.VwapDeviationSigmas;
-            }
-
-            foreach (var tag in snapshot.PatternTags)
-            {
-                tags.Add(tag);
-            }
-        }
-
-        if (validCount == 0)
-        {
-            return PatternSnapshot.Empty;
-        }
+        var bBands = valid.Where(s => Math.Abs(s.BollingerPercentB) > 0.000001d).ToList();
+        var vWaps = valid.Where(s => Math.Abs(s.VwapDeviationSigmas) > 0.000001d).ToList();
+        
+        var tags = valid.SelectMany(s => s.PatternTags).Distinct().ToList();
 
         return new PatternSnapshot
         {
-            BollingerPercentB = bollingerPercentBCount > 0 ? bollingerPercentBSum / bollingerPercentBCount : 0d,
-            BollingerSqueeze = bollingerSqueeze,
-            FibNearestLevel = fibNearestLevel,
-            FibRetracementDepth = fibRetracementDepth,
-            IchimokuState = ichimoku,
-            VwapDeviationSigmas = vwapDeviationCount > 0 ? vwapDeviationSum / vwapDeviationCount : 0d,
-            PatternTags = [.. tags]
+            BollingerPercentB = bBands.Count > 0 ? bBands.Average(s => s.BollingerPercentB) : 0d,
+            BollingerSqueeze = valid.Any(s => s.BollingerSqueeze),
+            FibNearestLevel = valid.FirstOrDefault(s => s.FibNearestLevel > 0)?.FibNearestLevel ?? 0m,
+            FibRetracementDepth = valid.FirstOrDefault(s => Math.Abs(s.FibRetracementDepth) > 0.000001d)?.FibRetracementDepth ?? 0d,
+            IchimokuState = valid.FirstOrDefault(s => s.IchimokuState != IchimokuState.Unknown)?.IchimokuState ?? IchimokuState.Unknown,
+            VwapDeviationSigmas = vWaps.Count > 0 ? vWaps.Average(s => s.VwapDeviationSigmas) : 0d,
+            PatternTags = tags.ToArray()
         };
     }
 
     private static MetaAdaptation MergeAdaptations(MetaAdaptation[] adaptations)
     {
-        var merged = new Dictionary<string, float>();
-        float biasSum = 0f, scalarSum = 0f;
+        if (adaptations.Length == 0) return MetaAdaptation.Default;
 
-        foreach (var adaptation in adaptations)
-        {
-            biasSum += adaptation.RecommendedRegimeBias;
-            scalarSum += adaptation.ConfidenceScalar;
-
-            foreach (var (tag, weight) in adaptation.StrategyWeights)
-            {
-                merged[tag] = merged.TryGetValue(tag, out var existing)
-                    ? (existing + weight) / 2f
-                    : weight;
-            }
-        }
-
-        var avgBias = adaptations.Length > 0 ? biasSum / adaptations.Length : 1f;
-        var avgScalar = adaptations.Length > 0 ? scalarSum / adaptations.Length : 1f;
+        var mergedWeights = adaptations
+            .SelectMany(a => a.StrategyWeights)
+            .GroupBy(kvp => kvp.Key)
+            .ToDictionary(g => g.Key, g => g.Average(kvp => kvp.Value));
 
         return new MetaAdaptation
         {
-            StrategyWeights = merged,
-            RecommendedRegimeBias = avgBias,
-            ConfidenceScalar = avgScalar
+            StrategyWeights = mergedWeights,
+            RecommendedRegimeBias = adaptations.Average(a => a.RecommendedRegimeBias),
+            ConfidenceScalar = adaptations.Average(a => a.ConfidenceScalar)
         };
     }
 }

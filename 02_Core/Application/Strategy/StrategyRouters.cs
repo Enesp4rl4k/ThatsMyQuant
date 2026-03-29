@@ -30,7 +30,7 @@ public sealed class TrendStrategyRouter : IStrategyRouter
     public string StrategyTag => "TrendConfluence";
 
     public bool CanHandle(string market, Signal signal, MarketRegimeDetector.RegimeResult regime)
-        => regime.Regime == MarketRegime.Trending && !IsHftSignal(signal);
+        => regime.Regime == MarketRegime.Trending && !StrategyRouterFactory.IsHftSignal(signal);
 
     public TradeDecision BuildDecision(StrategyRouterContext context)
     {
@@ -46,10 +46,6 @@ public sealed class TrendStrategyRouter : IStrategyRouter
 
         return StrategyRouterFactory.BuildTradeDecision(context, StrategyTag, stopLoss, takeProfit, partialTakeProfit, 0.40m, 0.55m, 18);
     }
-
-    private static bool IsHftSignal(Signal signal)
-        => signal.Source.Contains("HFT", StringComparison.OrdinalIgnoreCase) ||
-           signal.Metadata.TryGetValue("ExecutionMode", out var mode) && mode.Contains("HFT", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class RangeStrategyRouter : IStrategyRouter
@@ -58,7 +54,7 @@ public sealed class RangeStrategyRouter : IStrategyRouter
     public string StrategyTag => "RangeReversion";
 
     public bool CanHandle(string market, Signal signal, MarketRegimeDetector.RegimeResult regime)
-        => regime.Regime == MarketRegime.Ranging && !IsHftSignal(signal);
+        => regime.Regime == MarketRegime.Ranging && !StrategyRouterFactory.IsHftSignal(signal);
 
     public TradeDecision BuildDecision(StrategyRouterContext context)
     {
@@ -74,10 +70,6 @@ public sealed class RangeStrategyRouter : IStrategyRouter
 
         return StrategyRouterFactory.BuildTradeDecision(context, StrategyTag, stopLoss, takeProfit, partialTakeProfit, 0.55m, 0.35m, 8);
     }
-
-    private static bool IsHftSignal(Signal signal)
-        => signal.Source.Contains("HFT", StringComparison.OrdinalIgnoreCase) ||
-           signal.Metadata.TryGetValue("ExecutionMode", out var mode) && mode.Contains("HFT", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class BreakoutStrategyRouter : IStrategyRouter
@@ -86,7 +78,7 @@ public sealed class BreakoutStrategyRouter : IStrategyRouter
     public string StrategyTag => "BreakoutHunter";
 
     public bool CanHandle(string market, Signal signal, MarketRegimeDetector.RegimeResult regime)
-        => regime.Regime == MarketRegime.Volatile && !IsHftSignal(signal);
+        => regime.Regime == MarketRegime.Volatile && !StrategyRouterFactory.IsHftSignal(signal);
 
     public TradeDecision BuildDecision(StrategyRouterContext context)
     {
@@ -115,8 +107,7 @@ public sealed class HftStrategyRouter : IStrategyRouter
     public string StrategyTag => "HftMicroEdge";
 
     public bool CanHandle(string market, Signal signal, MarketRegimeDetector.RegimeResult regime)
-        => signal.Source.Contains("HFT", StringComparison.OrdinalIgnoreCase) ||
-           signal.Metadata.TryGetValue("ExecutionMode", out var mode) && mode.Contains("HFT", StringComparison.OrdinalIgnoreCase);
+        => StrategyRouterFactory.IsHftSignal(signal);
 
     public TradeDecision BuildDecision(StrategyRouterContext context)
     {
@@ -139,6 +130,10 @@ public sealed class HftStrategyRouter : IStrategyRouter
 
 internal static class StrategyRouterFactory
 {
+    internal static bool IsHftSignal(Signal signal)
+        => signal.Source.Contains("HFT", StringComparison.OrdinalIgnoreCase) ||
+           (signal.Metadata.TryGetValue("ExecutionMode", out var mode) && mode.Contains("HFT", StringComparison.OrdinalIgnoreCase));
+
     internal static TradeDecision BuildTradeDecision(
         StrategyRouterContext context,
         string strategyTag,

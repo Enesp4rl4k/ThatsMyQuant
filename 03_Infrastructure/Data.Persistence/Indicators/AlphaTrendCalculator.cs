@@ -144,8 +144,8 @@ public static class AlphaTrendCalculator
         for (int i = 1; i < candles.Length; i++)
         {
             double diff = (double)(candles[i].Close - candles[i - 1].Close);
-            double gain = diff > 0 ? diff : 0;
-            double loss = diff < 0 ? -diff : 0;
+            double gain = Math.Max(0, diff);
+            double loss = Math.Max(0, -diff);
 
             if (i <= period)
             {
@@ -163,10 +163,9 @@ public static class AlphaTrendCalculator
                 avgLoss = (avgLoss * (period - 1) + loss) / period;
             }
 
-            if (i >= period)
-                rsi[i] = avgLoss < 1e-10 ? 100 : 100 - (100 / (1 + avgGain / avgLoss));
-            else
-                rsi[i] = 50;
+            rsi[i] = (i >= period)
+                ? (avgLoss < 1e-10 ? 100 : 100 - (100 / (1 + avgGain / avgLoss)))
+                : 50;
         }
     }
 }

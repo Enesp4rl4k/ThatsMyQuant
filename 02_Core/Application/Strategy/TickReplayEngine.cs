@@ -98,56 +98,7 @@ public sealed class TickReplayEngine
 
             if (position != null)
             {
-                // Track peak for trailing stop
-                position.UpdatePeak(tick.Price);
-
-                // Check exit conditions
-                var exitReason = CheckExit(tick, position);
-                if (exitReason != null)
-                {
-                    var exitSide = position.Side == TradeSide.Buy ? TradeSide.Sell : TradeSide.Buy;
-                    var execution = SimulateExecution(exitSide, tick.Price, position.Quantity, latestBook);
-                    if (execution.FilledQuantity <= 0)
-                    {
-                        continue;
-                    }
-
-                    var exitPrice = execution.FillPrice;
-                    var pnl = CalculatePnl(position, exitPrice, execution.FilledQuantity);
-                    state.Update(pnl);
-                    equityCurve.Add(state.Equity);
-
-                    trades.Add(new BacktestTradeResult
-                    {
-                        EntryTime = position.EntryTime,
-                        ExitTime = DateTimeOffset.FromUnixTimeMilliseconds(tick.TimestampMs).UtcDateTime,
-                        Side = position.Side,
-                        EntryPrice = position.EntryPrice,
-                        ExitPrice = exitPrice,
-                        PnL = pnl,
-                        PnLPercent = position.EntryPrice > 0
-                            ? (exitPrice - position.EntryPrice) / position.EntryPrice * 100m
-                              * (position.Side == TradeSide.Sell ? -1 : 1)
-                            : 0,
-                        ExitReason = exitReason,
-                        ExecutionMode = "TICK-REPLAY",
-                        Confidence = position.Confidence,
-                        Reasoning = $"{position.Reasoning} | Exit fill {execution.FillPrice:F4} on {execution.ExecutionScope}"
-                    });
-
-                    tradeHistory.Add(new Trade
-                    {
-                        Symbol = symbol,
-                        Side = position.Side,
-                        EntryPrice = position.EntryPrice,
-                        ExitPrice = exitPrice,
-                        Quantity = execution.FilledQuantity,
-                        EntryTime = position.EntryTime,
-                        ExitTime = DateTimeOffset.FromUnixTimeMilliseconds(tick.TimestampMs).UtcDateTime
-                    });
-
-                    position = null;
-                }
+                position = EvaluateOpenPosition(position, tick, state, equityCurve, trades, tradeHistory, latestBook, symbol);
             }
             else if (i % 50 == 0) // Evaluate entry every 50 ticks to avoid over-trading
             {
@@ -156,6 +107,61 @@ public sealed class TickReplayEngine
         }
 
         return BuildResult(symbol, trades, state, startingCapital, equityCurve, ticks);
+    }
+
+    private ReplayPosition? EvaluateOpenPosition(
+        ReplayPosition position,
+        MarketTick tick,
+        ReplayState state,
+        List<decimal> equityCurve,
+        List<BacktestTradeResult> trades,
+        List<Trade> tradeHistory,
+        OrderBookSnapshot? latestBook,
+        string symbol)
+    {
+        position.UpdatePeak(tick.Price);
+        var exitReason = CheckExit(tick, position);
+        if (exitReason == null) return position;
+
+        var exitSide = position.Side == TradeSide.Buy ? TradeSide.Sell : TradeSide.Buy;
+        var execution = SimulateExecution(exitSide, tick.Price, position.Quantity, latestBook);
+        if (execution.FilledQuantity <= 0) return position;
+
+        var exitPrice = execution.FillPrice;
+        var pnl = CalculatePnl(position, exitPrice, execution.FilledQuantity);
+        state.Update(pnl);
+        equityCurve.Add(state.Equity);
+
+        trades.Add(new BacktestTradeResult
+        {
+            EntryTime = position.EntryTime,
+            ExitTime = DateTimeOffset.FromUnixTimeMilliseconds(tick.TimestampMs).UtcDateTime,
+            Side = position.Side,
+            EntryPrice = position.EntryPrice,
+            ExitPrice = exitPrice,
+            PnL = pnl,
+            PnLPercent = position.EntryPrice > 0
+                ? (exitPrice - position.EntryPrice) / position.EntryPrice * 100m
+                  * (position.Side == TradeSide.Sell ? -1 : 1)
+                : 0,
+            ExitReason = exitReason,
+            ExecutionMode = "TICK-REPLAY",
+            Confidence = position.Confidence,
+            Reasoning = $"{position.Reasoning} | Exit fill {execution.FillPrice:F4} on {execution.ExecutionScope}"
+        });
+
+        tradeHistory.Add(new Trade
+        {
+            Symbol = symbol,
+            Side = position.Side,
+            EntryPrice = position.EntryPrice,
+            ExitPrice = exitPrice,
+            Quantity = execution.FilledQuantity,
+            EntryTime = position.EntryTime,
+            ExitTime = DateTimeOffset.FromUnixTimeMilliseconds(tick.TimestampMs).UtcDateTime
+        });
+
+        return null;
     }
 
     private async Task<ReplayPosition?> TryTickEntry(

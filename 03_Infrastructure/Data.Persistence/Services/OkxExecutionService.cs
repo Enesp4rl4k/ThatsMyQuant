@@ -56,32 +56,7 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
             return 0;
         }
 
-        decimal volumeAhead = 0;
-        var levels = side == TradeSide.Buy ? book.Bids : book.Asks;
-
-        foreach (var level in levels)
-        {
-            if (side == TradeSide.Buy)
-            {
-                if (level.Price > price) volumeAhead += level.Quantity;
-                else if (level.Price == price)
-                {
-                    volumeAhead += level.Quantity * 0.5m;
-                    break;
-                }
-            }
-            else
-            {
-                if (level.Price < price) volumeAhead += level.Quantity;
-                else if (level.Price == price)
-                {
-                    volumeAhead += level.Quantity * 0.5m;
-                    break;
-                }
-            }
-        }
-
-        return await Task.FromResult(volumeAhead);
+        return await Task.FromResult(QueuePositionCalculator.CalculateVolumeAhead(book, price, side));
     }
 
     public async Task<Trade> ExecuteOrderAsync(Signal signal)

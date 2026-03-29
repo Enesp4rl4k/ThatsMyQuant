@@ -124,31 +124,43 @@ public static class MarketRegimeDetector
     {
         if (candles.Count < 2) return 1.0;
 
-        // 1. Calculate log returns
-        var returns = new List<double>();
+        var returns = GetLogReturns(candles);
+        if (returns.Count == 0) return 1.0;
+
+        double stdDev = GetStandardDeviation(returns);
+        if (Math.Abs(stdDev) < 1e-9) return 0.0; // Flat line = perfect order
+
+        var counts = DiscretizeReturns(returns, stdDev);
+        double entropy = CalculateEntropyFromBins(counts, returns.Count);
+
+        // Normalize Entropy: max entropy for 5 bins is log2(5)
+        return entropy / Math.Log2(5);
+    }
+
+    private static List<double> GetLogReturns(IReadOnlyList<Candle> candles)
+    {
+        var returns = new List<double>(candles.Count);
         for (int i = 1; i < candles.Count; i++)
         {
             double prevClose = (double)candles[i - 1].Close;
             double currClose = (double)candles[i].Close;
-            if (prevClose <= 0) continue;
-            returns.Add(Math.Log(currClose / prevClose));
+            if (prevClose > 0)
+            {
+                returns.Add(Math.Log(currClose / prevClose));
+            }
         }
+        return returns;
+    }
 
-        if (returns.Count == 0) return 1.0;
-
-        // 2. Compute standard deviation to form bins
+    private static double GetStandardDeviation(IReadOnlyList<double> returns)
+    {
         double avgReturn = returns.Average();
-        double variance = returns.Sum(r => Math.Pow(r - avgReturn, 2)) / returns.Count;
-        double stdDev = Math.Sqrt(variance);
+        double variance = returns.Average(r => (r - avgReturn) * (r - avgReturn));
+        return Math.Sqrt(variance);
+    }
 
-        if (stdDev == 0) return 0.0; // Perfect flat line has 0 entropy (perfect order)
-
-        // 3. Discretize into 5 bins:
-        // Bin 0: r < -1.5*stdDev (Strong Down)
-        // Bin 1: -1.5*stdDev <= r <= -0.5*stdDev (Down)
-        // Bin 2: -0.5*stdDev < r < 0.5*stdDev (Flat)
-        // Bin 3: 0.5*stdDev <= r <= 1.5*stdDev (Up)
-        // Bin 4: r > 1.5*stdDev (Strong Up)
+    private static int[] DiscretizeReturns(IReadOnlyList<double> returns, double stdDev)
+    {
         var counts = new int[5];
         foreach (var r in returns)
         {
@@ -158,22 +170,21 @@ public static class MarketRegimeDetector
             else if (r <= 1.5 * stdDev) counts[3]++;
             else counts[4]++;
         }
+        return counts;
+    }
 
-        // 4. Compute probability p_i for each bin, and Shannon Entropy = -sum(p_i * log2(p_i))
+    private static double CalculateEntropyFromBins(int[] counts, int totalCount)
+    {
         double entropy = 0.0;
-        double total = returns.Count;
         foreach (int count in counts)
         {
             if (count > 0)
             {
-                double p = count / total;
+                double p = (double)count / totalCount;
                 entropy -= p * Math.Log2(p);
             }
         }
-
-        // 5. Normalize Entropy: max entropy for 5 bins is log2(5)
-        double maxEntropy = Math.Log2(5);
-        return entropy / maxEntropy;
+        return entropy;
     }
 
     /// <summary>

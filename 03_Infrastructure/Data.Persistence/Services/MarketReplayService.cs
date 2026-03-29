@@ -134,10 +134,7 @@ public sealed class MarketReplayService : IStreamingMarketDataService
 
     private static OrderBookLevel[] ParseJsonLevels(JsonElement element)
     {
-        if (element.ValueKind != JsonValueKind.Array)
-        {
-            return [];
-        }
+        if (element.ValueKind != JsonValueKind.Array) return [];
 
         var levels = new List<OrderBookLevel>();
         foreach (var item in element.EnumerateArray())
@@ -146,32 +143,21 @@ public sealed class MarketReplayService : IStreamingMarketDataService
             {
                 var price = ParseDecimal(item[0]);
                 var quantity = ParseDecimal(item[1]);
-                if (price > 0 && quantity > 0)
-                {
-                    levels.Add(new OrderBookLevel(price, quantity));
-                }
+                if (price > 0 && quantity > 0) levels.Add(new OrderBookLevel(price, quantity));
             }
             else if (item.ValueKind == JsonValueKind.Object)
             {
-                decimal price = 0;
-                decimal quantity = 0;
-                if (item.TryGetProperty("price", out var priceElement))
-                {
-                    price = ParseDecimal(priceElement);
-                }
-                if (item.TryGetProperty("quantity", out var quantityElement))
-                {
-                    quantity = ParseDecimal(quantityElement);
-                }
-
-                if (price > 0 && quantity > 0)
-                {
-                    levels.Add(new OrderBookLevel(price, quantity));
-                }
+                decimal price = TryGetJsonProperty(item, "price");
+                decimal quantity = TryGetJsonProperty(item, "quantity");
+                if (price > 0 && quantity > 0) levels.Add(new OrderBookLevel(price, quantity));
             }
         }
-
         return levels.ToArray();
+    }
+
+    private static decimal TryGetJsonProperty(JsonElement element, string propName)
+    {
+        return element.TryGetProperty(propName, out var prop) ? ParseDecimal(prop) : 0m;
     }
 
     private static decimal ParseDecimal(JsonElement element)
