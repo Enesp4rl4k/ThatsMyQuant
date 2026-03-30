@@ -26,7 +26,7 @@ public partial class StrategyStudioViewModel : ObservableObject
     [ObservableProperty] private string _selectedRiskProfile = "Moderate";
 
     // --- BOT CONFIG ---
-    public ObservableCollection<string> BotStrategies { get; } = new() { "Trend Confluence", "Grid Runner", "Breakout Hunter", "Range Reversion", "HFT Scout" };
+    public ObservableCollection<string> BotStrategies { get; } = new() { "Swarm Orchestrator (Multi-Agent)", "Trend Confluence", "Breakout Hunter", "Range Reversion", "HFT Micro Edge" };
     public ObservableCollection<string> BotObjectives { get; } = new() { "Capital Growth", "Income Flow", "Low Drawdown", "Fast Rotation" };
     public ObservableCollection<string> BotBaseAssets { get; } = new() { "BTC", "ETH", "USDT", "TRY" };
     public ObservableCollection<string> BotQuoteAssets { get; } = new() { "USDC", "USDT", "TRY", "USD" };

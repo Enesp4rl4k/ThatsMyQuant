@@ -14,6 +14,7 @@ public class EdgeScoreServiceTests
     public void Evaluate_ShouldReject_WhenExecutionEdgeFallsBelowHardGate()
     {
         var signal = CreateSignal("BTC-USD");
+        signal.Volume24h = 200_000m;
         var decision = CreateDecision("HftMicroEdge", "Volatile", 88);
         var result = _service.Evaluate(
             signal,
@@ -26,7 +27,8 @@ public class EdgeScoreServiceTests
                 (true, "ok", 0.01m)));
 
         result.Approved.Should().BeFalse();
-        result.ExecutionEdge.Should().Be(90m);
+        result.ExecutionEdge.Should().Be(25m);
+        result.Reasons.Should().Contain(reason => reason.Contains("Low Execution"));
     }
 
     [Fact]
@@ -45,7 +47,7 @@ public class EdgeScoreServiceTests
                 (false, "risk veto", 0m)));
 
         result.Approved.Should().BeFalse();
-        result.RiskContext.Should().BeLessThan(50m);
+        result.RiskContext.Should().Be(0m);
     }
 
     [Fact]
@@ -87,6 +89,27 @@ public class EdgeScoreServiceTests
         result.Approved.Should().BeFalse();
         result.DecisionBand.Should().Be("probe");
         result.AdjustedEdgeScore.Should().BeInRange(55m, 69.99m);
+    }
+
+    [Fact]
+    public void Evaluate_ShouldNotCrushOtherwiseSolidSignal_WhenExecutionIsOnlyModeratelySoft()
+    {
+        var signal = CreateSignal("BTC-USD");
+        signal.Volume24h = 900_000m;
+
+        var decision = CreateDecision("Momentum", "Trending", 86);
+        var result = _service.Evaluate(
+            signal,
+            decision,
+            new EvaluationGuards(
+                new ExpectancyGuardResult(true, 0.95m, "solid", 12, 22m, 1.45),
+                new SymbolGuardResult(true, 1.0m, "ok"),
+                new PromotionGuardResult(true, 0.90m, "ok", true, 0.08, "ScaledLive"),
+                (true, "ok"),
+                (true, "ok", 0.02m)));
+
+        result.ExecutionEdge.Should().Be(38m);
+        result.AdjustedEdgeScore.Should().BeGreaterThan(55m);
     }
 
     private static Signal CreateSignal(string symbol, DateTime? timestamp = null) => new()

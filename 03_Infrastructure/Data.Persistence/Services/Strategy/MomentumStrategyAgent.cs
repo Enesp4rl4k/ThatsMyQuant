@@ -1,22 +1,25 @@
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
-using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services.Strategy;
 
 public sealed class MomentumStrategyAgent : IStrategyAgent
 {
     private readonly ILogger<MomentumStrategyAgent> _logger;
-    private const int RsiPeriod = 14;
-    private const double RsiBullThreshold = 55.0;
-    private const double RsiBearThreshold = 45.0;
+    private readonly MomentumOptions _options;
 
     public string StrategyTag => "Momentum";
-    public int SwarmWeight => 20;
+    public int SwarmWeight => _options.SwarmWeight;
 
-    public MomentumStrategyAgent(ILogger<MomentumStrategyAgent> logger)
-        => _logger = logger;
+    public MomentumStrategyAgent(ILogger<MomentumStrategyAgent> logger, IOptions<MomentumOptions>? options = null)
+    {
+        _logger = logger;
+        _options = options?.Value ?? new MomentumOptions();
+    }
 
     public bool CanHandle(Signal signal, MarketRegime regime)
         => regime is MarketRegime.Trending;
@@ -28,103 +31,180 @@ public sealed class MomentumStrategyAgent : IStrategyAgent
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
-        // Need enough candles for MACD (26 + 9) and RSI stabilization (at least 50 is safe)
-        if (candles.Count < 60)
+        if (candles.Count < _options.MinCandles)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var closes = candles.Select(c => (double)c.Close).ToList();
-        
-        var rsi = ComputeWildersRsi(closes, RsiPeriod);
-        var (macdLine, signalLine, histogram) = ComputeMacd(closes);
+        var rsi = ComputeRsi(candles, _options.RsiPeriod);
+        var isBullish = rsi > _options.RsiBullThreshold;
+        var isBearish = rsi < _options.RsiBearThreshold;
 
-        var volLast3Avg = candles.TakeLast(3).Average(c => c.Volume);
-        var volPrev20Avg = candles.TakeLast(23).Take(20).Average(c => c.Volume);
-        var volRatio = volPrev20Avg > 0 ? (double)(volLast3Avg / volPrev20Avg) : 1.0;
+        if (!isBullish && !isBearish)
+            return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        bool priceAboveVwap = foundation.Vwap > 0 && signal.Price > foundation.Vwap;
+        var adx = ComputeAdx(candles, _options.AdxPeriod);
+        var hasTrend = adx >= _options.AdxTrendThreshold;
+        var strongTrend = adx >= _options.AdxStrongThreshold;
 
-        // Momentum persistence: 3 consecutive closes in trend direction
-        bool threeWhiteSoldiers = closes[^1] > closes[^2] && closes[^2] > closes[^3] && closes[^3] > closes[^4];
-        bool threeBlackCrows = closes[^1] < closes[^2] && closes[^2] < closes[^3] && closes[^3] < closes[^4];
-
-        if (rsi > 55 && priceAboveVwap && volRatio > 1.2 && threeWhiteSoldiers && histogram > 0)
+        var aggregated = AggregateCandles(candles, _options.MultiTfAggFactor);
+        var mtfConfirmed = false;
+        if (aggregated.Count >= _options.RsiPeriod + 1)
         {
-            return Task.FromResult(StrategyVote.Approve(StrategyTag, 20f,
-                $"RSI={rsi:F1} bullish + VWAP + VolRatio={volRatio:F1} + 3xCloses + MACD Hist>0"));
+            var mtfRsi = ComputeRsi(aggregated, _options.RsiPeriod);
+            mtfConfirmed = (isBullish && mtfRsi > _options.MultiTfRsiMidpoint)
+                || (isBearish && mtfRsi < _options.MultiTfRsiMidpoint);
         }
 
-        if (rsi < 45 && !priceAboveVwap && volRatio > 1.2 && threeBlackCrows && histogram < 0)
+        var emaFast = ComputeEma(candles, _options.EmaFastPeriod);
+        var emaSlow = ComputeEma(candles, _options.EmaSlowPeriod);
+        var emaConfirmed = isBullish ? emaFast > emaSlow : emaFast < emaSlow;
+
+        var priceAboveVwap = foundation.Vwap > 0 && signal.Price > foundation.Vwap;
+        var volumeExpanding = IsVolumeExpanding(candles);
+
+        var confirmedFactors = 1;
+        if (hasTrend) confirmedFactors++;
+        if (mtfConfirmed) confirmedFactors++;
+        if (emaConfirmed) confirmedFactors++;
+
+        if (confirmedFactors < 3)
+            return Task.FromResult(StrategyVote.Abstain(StrategyTag));
+
+        float confidence = confirmedFactors * _options.BaseConfidencePerFactor;
+        if (volumeExpanding) confidence += _options.VolumeExpansionBonus;
+        if (strongTrend) confidence += _options.StrongTrendBonus;
+
+        if (foundation.Vwap > 0)
         {
-            return Task.FromResult(StrategyVote.Reject(StrategyTag, 20f,
-                $"RSI={rsi:F1} bearish + VWAP + VolRatio={volRatio:F1} + 3xCloses + MACD Hist<0"));
+            var vwapAgreement = isBullish == priceAboveVwap;
+            confidence += vwapAgreement ? _options.VwapAgreementBonus : -_options.VwapDisagreementPenalty;
         }
 
-        return Task.FromResult(StrategyVote.Abstain(StrategyTag));
+        var reasons = new List<string>
+        {
+            $"RSI({_options.RsiPeriod})={rsi:F1}",
+            $"ADX={adx:F1}{(hasTrend ? strongTrend ? " strong" : " trending" : " weak")}",
+            $"MTF-RSI {(mtfConfirmed ? "confirmed" : "divergent")}",
+            $"EMA {_options.EmaFastPeriod}/{_options.EmaSlowPeriod} {(emaConfirmed ? "aligned" : "divergent")}"
+        };
+
+        if (volumeExpanding) reasons.Add("vol expanding");
+        if (foundation.Vwap > 0) reasons.Add(priceAboveVwap ? "above VWAP" : "below VWAP");
+
+        var reasoning = string.Join(" | ", reasons);
+        return Task.FromResult(isBullish
+            ? StrategyVote.Approve(StrategyTag, confidence, $"Bullish momentum ({confirmedFactors}/4 factors): {reasoning}")
+            : StrategyVote.Reject(StrategyTag, confidence, $"Bearish momentum ({confirmedFactors}/4 factors): {reasoning}"));
     }
 
-    private static double ComputeWildersRsi(IReadOnlyList<double> closes, int period)
+    private static double ComputeRsi(IReadOnlyList<Candle> candles, int period)
     {
-        if (closes.Count <= period) return 50.0;
+        if (candles.Count < period + 1) return 50.0;
 
-        double sumGain = 0;
-        double sumLoss = 0;
+        var closes = candles.TakeLast(period + 1).Select(c => c.Close).ToList();
+        double gains = 0;
+        double losses = 0;
 
-        for (int i = 1; i <= period; i++)
+        for (var i = 1; i < closes.Count; i++)
         {
-            double diff = closes[i] - closes[i - 1];
-            if (diff >= 0) sumGain += diff;
-            else sumLoss -= diff;
+            var diff = (double)(closes[i] - closes[i - 1]);
+            if (diff > 0) gains += diff;
+            else losses -= diff;
         }
 
-        double avgGain = sumGain / period;
-        double avgLoss = sumLoss / period;
+        if (losses == 0) return gains == 0 ? 50.0 : 100.0;
 
-        for (int i = period + 1; i < closes.Count; i++)
-        {
-            double diff = closes[i] - closes[i - 1];
-            double gain = diff >= 0 ? diff : 0;
-            double loss = diff < 0 ? -diff : 0;
-
-            avgGain = (avgGain * (period - 1) + gain) / period;
-            avgLoss = (avgLoss * (period - 1) + loss) / period;
-        }
-
-        if (Math.Abs(avgLoss) < 1e-9) return 100.0;
-        double rs = avgGain / avgLoss;
+        var rs = gains / losses;
         return 100.0 - (100.0 / (1.0 + rs));
     }
 
-    private static (double Macd, double Signal, double Histogram) ComputeMacd(IReadOnlyList<double> closes)
+    private static double ComputeAdx(IReadOnlyList<Candle> candles, int period)
     {
-        var ema12 = ComputeEma(closes, 12);
-        var ema26 = ComputeEma(closes, 26);
-        
-        var macdSeries = new List<double>(closes.Count);
-        for(int i = 0; i < closes.Count; i++)
+        if (candles.Count < period * 2 + 1) return 0;
+
+        var data = candles.TakeLast(period * 2 + 1).ToList();
+        double smoothPlusDm = 0;
+        double smoothMinusDm = 0;
+        double smoothTr = 0;
+        double adxAccum = 0;
+        var adxCount = 0;
+
+        for (var i = 1; i < data.Count; i++)
         {
-            macdSeries.Add(ema12[i] - ema26[i]);
+            var high = (double)data[i].High;
+            var low = (double)data[i].Low;
+            var prevHigh = (double)data[i - 1].High;
+            var prevLow = (double)data[i - 1].Low;
+            var prevClose = (double)data[i - 1].Close;
+
+            var tr = Math.Max(high - low, Math.Max(Math.Abs(high - prevClose), Math.Abs(low - prevClose)));
+            var plusDm = (high - prevHigh > prevLow - low) && (high - prevHigh > 0) ? high - prevHigh : 0;
+            var minusDm = (prevLow - low > high - prevHigh) && (prevLow - low > 0) ? prevLow - low : 0;
+
+            if (i <= period)
+            {
+                smoothPlusDm += plusDm;
+                smoothMinusDm += minusDm;
+                smoothTr += tr;
+                continue;
+            }
+
+            smoothPlusDm = smoothPlusDm - (smoothPlusDm / period) + plusDm;
+            smoothMinusDm = smoothMinusDm - (smoothMinusDm / period) + minusDm;
+            smoothTr = smoothTr - (smoothTr / period) + tr;
+
+            if (smoothTr <= 0) continue;
+
+            var plusDi = 100.0 * smoothPlusDm / smoothTr;
+            var minusDi = 100.0 * smoothMinusDm / smoothTr;
+            var diSum = plusDi + minusDi;
+            var dx = diSum > 0 ? 100.0 * Math.Abs(plusDi - minusDi) / diSum : 0;
+            adxAccum += dx;
+            adxCount++;
         }
-        
-        var signalSeries = ComputeEma(macdSeries, 9);
-        var finalMacd = macdSeries[^1];
-        var finalSignal = signalSeries[^1];
-        var finalHist = finalMacd - finalSignal;
-        
-        return (finalMacd, finalSignal, finalHist);
+
+        return adxCount > 0 ? adxAccum / adxCount : 0;
     }
-    
-    private static List<double> ComputeEma(IReadOnlyList<double> values, int period)
+
+    private static decimal ComputeEma(IReadOnlyList<Candle> candles, int period)
     {
-        var result = new List<double>(values.Count);
-        double k = 2.0 / (period + 1);
-        double currentEma = values[0]; // Seed with first value
-        result.Add(currentEma);
-        
-        for (int i = 1; i < values.Count; i++)
+        if (candles.Count < period) return candles[^1].Close;
+
+        var data = candles.TakeLast(Math.Max(period * 2, period + 1)).ToList();
+        decimal ema = data.Take(period).Average(c => c.Close);
+        var multiplier = 2m / (period + 1);
+
+        for (var i = period; i < data.Count; i++)
+            ema = (data[i].Close - ema) * multiplier + ema;
+
+        return ema;
+    }
+
+    private static List<Candle> AggregateCandles(IReadOnlyList<Candle> candles, int factor)
+    {
+        var result = new List<Candle>(candles.Count / Math.Max(1, factor));
+        for (var i = 0; i + factor - 1 < candles.Count; i += factor)
         {
-            currentEma = (values[i] - currentEma) * k + currentEma;
-            result.Add(currentEma);
+            var slice = candles.Skip(i).Take(factor).ToList();
+            result.Add(new Candle
+            {
+                Timestamp = slice[0].Timestamp,
+                Open = slice[0].Open,
+                High = slice.Max(c => c.High),
+                Low = slice.Min(c => c.Low),
+                Close = slice[^1].Close,
+                Volume = slice.Sum(c => c.Volume)
+            });
         }
+
         return result;
+    }
+
+    private bool IsVolumeExpanding(IReadOnlyList<Candle> candles)
+    {
+        if (candles.Count < 8) return false;
+
+        var recent = candles.TakeLast(3).Average(c => c.Volume);
+        var previous = candles.TakeLast(8).Take(5).Average(c => c.Volume);
+        return previous > 0 && recent > previous * (decimal)_options.VolumeExpansionMultiplier;
     }
 }

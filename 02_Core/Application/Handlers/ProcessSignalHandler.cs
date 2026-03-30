@@ -1,6 +1,7 @@
 using MediatR;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
 using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Resilience;
 using ThatsMyQuant.Application.Strategy;
@@ -186,10 +187,20 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             TakeProfit = swarmResult.AdjustedTakeProfit
         };
         signal.ExecutionAction = swarmResult.ExecutionAction;
+        signal.Metadata["RequestedPositionFraction"] = adjustedDecision.PositionSizePercent.ToString(CultureInfo.InvariantCulture);
+        signal.Metadata["StopLoss"] = adjustedDecision.StopLoss.ToString(CultureInfo.InvariantCulture);
+        signal.Metadata["TakeProfit"] = adjustedDecision.TakeProfit.ToString(CultureInfo.InvariantCulture);
+        signal.Metadata["PartialTakeProfit"] = adjustedDecision.PartialTakeProfit.ToString(CultureInfo.InvariantCulture);
+        signal.Metadata["PartialExitFraction"] = adjustedDecision.PartialExitFraction.ToString(CultureInfo.InvariantCulture);
+        signal.Metadata["BreakevenTriggerFraction"] = adjustedDecision.BreakevenTriggerFraction.ToString(CultureInfo.InvariantCulture);
+        signal.Metadata["MaxHoldingBars"] = adjustedDecision.MaxHoldingBars.ToString(CultureInfo.InvariantCulture);
+        signal.Metadata["ExitPolicyTag"] = adjustedDecision.ExitPolicyTag;
+        signal.Metadata["RequestedQuantity"] = signal.Quantity.ToString(CultureInfo.InvariantCulture);
 
         if (signal.Price > 0)
         {
             signal.Quantity = Math.Round((riskParams.StartingEquity * adjustedDecision.PositionSizePercent) / signal.Price, 4);
+            signal.Metadata["RequestedQuantity"] = signal.Quantity.ToString(CultureInfo.InvariantCulture);
         }
 
         _logger.LogInformation("✅ SWARM APPROVED: Confidence={Confidence}/100 | SL={SL:F2} | TP={TP:F2} | Size={Size:P1} | Action={Action} | Qty={Qty}",

@@ -11,6 +11,7 @@ public class TradeJournalEntry
     public decimal Price { get; set; }
     public int Confidence { get; set; }
     public string Status { get; set; } = "";
+    public string LifecycleStatus { get; set; } = "";
     public string Reasoning { get; set; } = "";
     public string ExecutionMode { get; set; } = "";
     public string MlModelVersion { get; set; } = "";
@@ -20,6 +21,7 @@ public class TradeJournalEntry
     public string ExactBucketSummary { get; set; } = "";
     public string EdgeSummary { get; set; } = "";
     public string ExitSummary { get; set; } = "";
+    public string ExitReason { get; set; } = "";
     public string MlDriftImpact { get; set; } = "";
     public string MlDriftSummary { get; set; } = "";
     public string VenueImpact { get; set; } = "";

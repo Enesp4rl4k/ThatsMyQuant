@@ -4,6 +4,7 @@ using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Common;
 
@@ -11,6 +12,9 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddThatsMyQuantApplication(this IServiceCollection services)
     {
+        services.AddOptions();
+        services.AddOptions<RiskGovernorOptions>();
+
         // Application Layer Services - Singletons (Stateful/Heavy)
         services.AddSingleton<RiskAgent>();
         services.AddSingleton<InferenceAgent>();
@@ -36,6 +40,7 @@ public static class DependencyInjection
         services.AddScoped<EdgeScoreService>();
         services.AddScoped<StrategyPromotionService>();
         services.AddScoped<ExitPolicyLearningService>();
+        services.AddScoped<PositionSupervisorService>();
         services.AddScoped<HftExecutionService>();
         services.AddScoped<IHftMarketDataService, HftMarketDataService>();
         services.AddScoped<IHftSignalGenerationService, HftSignalGenerationService>();

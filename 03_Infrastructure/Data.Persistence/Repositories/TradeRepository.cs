@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Persistence;
@@ -9,11 +10,13 @@ public class TradeRepository : ITradeRepository
 {
     private readonly QuantDbContext _db;
     private readonly IPortfolioStateCache _cache;
+    private readonly RiskAgent? _riskAgent;
 
-    public TradeRepository(QuantDbContext db, IPortfolioStateCache cache)
+    public TradeRepository(QuantDbContext db, IPortfolioStateCache cache, RiskAgent? riskAgent = null)
     {
         _db = db;
         _cache = cache;
+        _riskAgent = riskAgent;
     }
 
     public async Task<Trade?> GetByIdAsync(Guid id)
@@ -33,6 +36,7 @@ public class TradeRepository : ITradeRepository
         await _db.Trades.AddAsync(trade);
         await _db.SaveChangesAsync();
         _cache.AddOrUpdateTrade(trade); // O(1) Ram pointer tracking
+        _riskAgent?.NotifyTradeUpdate(trade);
     }
 
     public async Task UpdateAsync(Trade trade)
@@ -40,5 +44,6 @@ public class TradeRepository : ITradeRepository
         _db.Trades.Update(trade);
         await _db.SaveChangesAsync();
         _cache.AddOrUpdateTrade(trade); // O(1) Ram pointer tracking
+        _riskAgent?.NotifyTradeUpdate(trade);
     }
 }

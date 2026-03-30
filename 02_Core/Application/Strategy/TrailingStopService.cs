@@ -44,4 +44,43 @@ public static class TrailingStopService
             return currentHigh >= position.TrailingStopPrice && position.TrailingStopPrice > 0;
         }
     }
+
+    public static bool UpdateTrailingStop(Trade trade, decimal currentHigh, decimal currentLow, double atr, double multiplier = 2.0)
+    {
+        decimal atrDecimal = (decimal)(atr * multiplier);
+
+        if (trade.Side == TradeSide.Buy)
+        {
+            if (currentHigh > trade.OptimalPriceSinceEntry)
+                trade.OptimalPriceSinceEntry = currentHigh;
+
+            decimal activationPrice = trade.EntryPrice + (decimal)atr;
+            if (trade.OptimalPriceSinceEntry < activationPrice)
+                return false;
+
+            decimal newTrail = trade.OptimalPriceSinceEntry - atrDecimal;
+            if (newTrail > trade.TrailingStopPrice)
+                trade.TrailingStopPrice = newTrail;
+
+            return currentLow <= trade.TrailingStopPrice && trade.TrailingStopPrice > 0;
+        }
+        else
+        {
+            if (currentLow < trade.OptimalPriceSinceEntry || trade.OptimalPriceSinceEntry == 0)
+                trade.OptimalPriceSinceEntry = currentLow;
+
+            decimal activationPrice = trade.EntryPrice - (decimal)atr;
+            if (trade.OptimalPriceSinceEntry > activationPrice && (trade.OptimalPriceSinceEntry > 0 || trade.OptimalPriceSinceEntry == 0))
+            {
+                if (trade.OptimalPriceSinceEntry == 0) trade.OptimalPriceSinceEntry = currentLow;
+                if (trade.OptimalPriceSinceEntry > activationPrice) return false;
+            }
+
+            decimal newTrail = trade.OptimalPriceSinceEntry + atrDecimal;
+            if (newTrail < trade.TrailingStopPrice || trade.TrailingStopPrice == 0)
+                trade.TrailingStopPrice = newTrail;
+
+            return currentHigh >= trade.TrailingStopPrice && trade.TrailingStopPrice > 0;
+        }
+    }
 }

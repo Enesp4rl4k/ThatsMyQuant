@@ -7,14 +7,14 @@
         <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
         <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
         
-        <!-- INSTITUTIONAL GLASS DESIGN SYSTEM -->
+        <!-- INSTITUTIONAL GLASS DESIGN SYSTEM (OBSIDIAN/CYAN) -->
         <Color x:Key="AccentColor">#00BFFF</Color>
-        <Color x:Key="SurfaceColor">#161B22</Color>
-        <Color x:Key="BorderColorValue">#2D333B</Color>
+        <Color x:Key="SurfaceColor">#090B10</Color>
+        <Color x:Key="BorderColorValue">#1F2430</Color>
 
-        <SolidColorBrush x:Key="AppBg" Color="#0D0E12" />
+        <SolidColorBrush x:Key="AppBg" Color="#05070A" />
         <SolidColorBrush x:Key="SurfaceBg" Color="{StaticResource SurfaceColor}" />
-        <SolidColorBrush x:Key="BgCard" Color="#1A1C24" />
+        <SolidColorBrush x:Key="BgCard" Color="#0C0F17" />
         <SolidColorBrush x:Key="BorderColor" Color="{StaticResource BorderColorValue}" />
         <SolidColorBrush x:Key="Accent" Color="{StaticResource AccentColor}" />
         <SolidColorBrush x:Key="BuyColor" Color="#00FFBB" />
@@ -23,7 +23,7 @@
         <SolidColorBrush x:Key="TextMuted" Color="#7D8590" />
         <SolidColorBrush x:Key="TextSoft" Color="#AFB8C1" />
 
-        <FontFamily x:Key="PrimaryFont">Inter, Segoe UI Variable Display, Segoe UI, sans-serif</FontFamily>
+        <FontFamily x:Key="PrimaryFont">Segoe UI, Segoe UI Variable Display, sans-serif</FontFamily>
         <FontFamily x:Key="MonoFont">Roboto Mono, Consolas, Courier New, monospace</FontFamily>
 
         <!-- GLOBAL SCROLLBAR OVERHAUL (MINIMALIST GLASS) -->
@@ -84,8 +84,13 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="true">
-                                <Setter Property="Background" TargetName="border" Value="#2AFFFFFF" />
+                                <Setter Property="Background" TargetName="border" Value="#1A00BFFF" />
                                 <Setter Property="BorderBrush" TargetName="border" Value="{StaticResource Accent}" />
+                                <Setter TargetName="border" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#00BFFF" BlurRadius="15" ShadowDepth="0" Opacity="0.5" />
+                                    </Setter.Value>
+                                </Setter>
                             </Trigger>
                             <Trigger Property="IsPressed" Value="true">
                                 <Setter Property="Background" TargetName="border" Value="#4AFFFFFF" />
@@ -98,15 +103,15 @@
         </Style>
 
         <Style x:Key="InstitutionalActionButton" TargetType="Button" BasedOn="{StaticResource InstitutionalGlassButton}">
-            <Setter Property="Background" Value="#266366F1" />
-            <Setter Property="BorderBrush" Value="#406366F1" />
-            <Setter Property="Foreground" Value="#A5B4FC" />
+            <Setter Property="Background" Value="#1A00BFFF" />
+            <Setter Property="BorderBrush" Value="#4000BFFF" />
+            <Setter Property="Foreground" Value="#E0F7FF" />
             <Style.Triggers>
                 <EventTrigger RoutedEvent="Loaded">
                     <BeginStoryboard>
                         <Storyboard>
                             <ColorAnimation Storyboard.TargetProperty="(Button.BorderBrush).(SolidColorBrush.Color)"
-                                            From="#406366F1" To="#806366F1" Duration="0:0:1.5"
+                                            From="#4000BFFF" To="#8000BFFF" Duration="0:0:1.5"
                                             AutoReverse="True" RepeatBehavior="Forever" />
                         </Storyboard>
                     </BeginStoryboard>
@@ -221,6 +226,38 @@
         </Style>
 
         <!-- GLASS INPUTS -->
+        <Style TargetType="PasswordBox">
+            <Setter Property="Background" Value="#0AFFFFFF" />
+            <Setter Property="BorderBrush" Value="#2AFFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="PasswordBox">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}" 
+                                CornerRadius="4">
+                            <ScrollViewer x:Name="PART_ContentHost" Focusable="false" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsFocused" Value="true">
+                                <Setter Property="BorderBrush" TargetName="border" Value="{StaticResource Accent}" />
+                                <Setter Property="Background" TargetName="border" Value="#15FFFFFF" />
+                                <Setter TargetName="border" Property="Effect">
+                                    <Setter.Value>
+                                        <DropShadowEffect Color="#00BFFF" BlurRadius="8" ShadowDepth="0" Opacity="0.3" />
+                                    </Setter.Value>
+                                </Setter>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <Style x:Key="GlassTextBoxStyle" TargetType="TextBox">
             <Setter Property="Background" Value="#0AFFFFFF" />
             <Setter Property="BorderBrush" Value="#2AFFFFFF" />
@@ -250,8 +287,22 @@
 
         <!-- REUSABLE GLASS PANEL -->
         <Style x:Key="TerminalCardStyle" TargetType="Border">
-            <Setter Property="Background" Value="{StaticResource BgCard}" />
-            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
+            <Setter Property="Background">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#08FFFFFF" Offset="0.0" />
+                        <GradientStop Color="{StaticResource SurfaceColor}" Offset="1.0" />
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="BorderBrush">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                        <GradientStop Color="#2AFFFFFF" Offset="0" />
+                        <GradientStop Color="#05FFFFFF" Offset="1" />
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="8" />
             <Setter Property="Padding" Value="12" />

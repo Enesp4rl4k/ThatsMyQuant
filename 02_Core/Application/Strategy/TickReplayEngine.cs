@@ -33,6 +33,34 @@ public sealed class TickReplayEngine
     }
 
     /// <summary>
+    /// Replays historical tick data from raw CSV datasets (Parquet-convertible) directly into the agent pipeline.
+    /// </summary>
+    public async Task<BacktestResult> ReplayFromCsvAsync(
+        string ticksCsvPath,
+        string orderBooksCsvPath,
+        IReadOnlyList<Candle> baseCandles,
+        string symbol,
+        decimal startingCapital = 100_000m,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation("Parsing ultra-high-fidelity L2 Data from disk for {Symbol}...", symbol);
+
+        var ticks = new List<MarketTick>();
+        await foreach(var tick in L2ExternalDataParser.ParseTicksCsvAsync(ticksCsvPath).WithCancellation(ct))
+        {
+            ticks.Add(tick);
+        }
+
+        var orderBooks = new List<OrderBookSnapshot>();
+        await foreach(var ob in L2ExternalDataParser.ParseOrderBooksCsvAsync(orderBooksCsvPath).WithCancellation(ct))
+        {
+            orderBooks.Add(ob);
+        }
+
+        return await ReplayAsync(ticks, baseCandles, symbol, startingCapital, orderBooks, ct);
+    }
+
+    /// <summary>
     /// Replays historical tick data through the full agent pipeline.
     /// Returns a comprehensive BacktestResult with institutional-grade metrics.
     /// </summary>

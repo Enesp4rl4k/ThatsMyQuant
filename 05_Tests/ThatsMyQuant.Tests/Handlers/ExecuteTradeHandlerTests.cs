@@ -20,6 +20,7 @@ public class ExecuteTradeHandlerTests
     private readonly ILogger<CircuitBreakerService> _circuitBreakerLogger;
     private readonly MemoryPortfolioManager _portfolio;
     private readonly CircuitBreakerService _circuitBreaker;
+    private readonly PositionSupervisorService _positionSupervisor;
     private readonly ExecuteTradeHandler _handler;
 
     public ExecuteTradeHandlerTests()
@@ -31,8 +32,9 @@ public class ExecuteTradeHandlerTests
         _portfolio = new MemoryPortfolioManager();
         _portfolio.SetBalance("USDT", 100_000m);
         _circuitBreaker = new CircuitBreakerService(_circuitBreakerLogger, _portfolio);
+        _positionSupervisor = new PositionSupervisorService();
 
-        _handler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, _circuitBreaker);
+        _handler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, _circuitBreaker, _positionSupervisor);
     }
 
 
@@ -68,9 +70,59 @@ public class ExecuteTradeHandlerTests
         result.Should().NotBeNull();
         result.Symbol.Should().Be("GARAN");
         result.Status.Should().Be(TradeStatus.Executed);
+        result.LifecycleStatus.Should().Be(TradeLifecycleStatus.Active);
         result.Side.Should().Be(TradeSide.Buy);
         result.EntrySlippagePercent.Should().Be(0);
         await _tradeRepository.Received(1).AddAsync(Arg.Any<Trade>());
+    }
+
+    [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldCarryLifecycleRiskControls()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 1.5m,
+            Source = "Manual"
+        };
+        signal.Metadata["StopLoss"] = "97.5";
+        signal.Metadata["TakeProfit"] = "108.0";
+        signal.Metadata["PartialTakeProfit"] = "104.0";
+        signal.Metadata["PartialExitFraction"] = "0.40";
+        signal.Metadata["BreakevenTriggerFraction"] = "0.55";
+        signal.Metadata["MaxHoldingBars"] = "18";
+        signal.Metadata["ExitPolicyTag"] = "TrendRunner";
+        signal.Metadata["RequestedPositionFraction"] = "0.03";
+        signal.Metadata["RequestedQuantity"] = "1.5";
+
+        var expectedTrade = new Trade
+        {
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            Side = signal.Side,
+            EntryPrice = 100.5m,
+            Quantity = 1.5m,
+            EntryTime = DateTime.UtcNow,
+            Status = TradeStatus.Executed
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.LifecycleStatus.Should().Be(TradeLifecycleStatus.Active);
+        result.StopLoss.Should().Be(97.5m);
+        result.TakeProfit.Should().Be(108.0m);
+        result.PartialTakeProfit.Should().Be(104.0m);
+        result.PartialExitFraction.Should().Be(0.40m);
+        result.BreakevenTriggerFraction.Should().Be(0.55m);
+        result.MaxHoldingBars.Should().Be(18);
+        result.RemainingQuantity.Should().Be(1.5m);
+        result.RequestedQuantity.Should().Be(1.5m);
+        result.PositionSizePercent.Should().Be(0.03m);
     }
 
     [Fact]
@@ -353,6 +405,38 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistRequestedPositionFraction()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["RequestedPositionFraction"] = "0.0375";
+
+        var expectedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.PositionSizePercent.Should().Be(0.0375m);
+        await _tradeRepository.Received(1).AddAsync(Arg.Is<Trade>(trade =>
+            trade.PositionSizePercent == 0.0375m));
+    }
+
+    [Fact]
     public async Task Handle_HftSignalWithWeakLiquidity_ShouldReturnFailedTrade()
     {
         var signal = new Signal
@@ -430,7 +514,7 @@ public class ExecuteTradeHandlerTests
             _circuitBreakerLogger,
             _portfolio,
             maxConsecutiveErrors: 3);
-        var strictHandler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, strictCircuitBreaker);
+        var strictHandler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, strictCircuitBreaker, _positionSupervisor);
 
         _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>())
             .ThrowsAsync(new Exception("Venue rejected request"));

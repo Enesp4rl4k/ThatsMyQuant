@@ -70,7 +70,7 @@
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="Blade" Property="Background" Value="#2600BFFF" />
+                                <Setter TargetName="Blade" Property="Background" Value="#3300BFFF" />
                                 <Setter TargetName="Blade" Property="BorderBrush" Value="{StaticResource Accent}" />
                                 <Setter TargetName="Blade" Property="BorderThickness" Value="0,0,0,1" />
                                 <Setter TargetName="Indicator" Property="Opacity" Value="1" />
@@ -149,7 +149,7 @@
         </LinearGradientBrush>
         
         <DropShadowEffect x:Key="NeonGlowCyan" Color="#00FFFF" BlurRadius="12" ShadowDepth="0" Opacity="0.5" />
-        <DropShadowEffect x:Key="NeonGlowIndigo" Color="#6366F1" BlurRadius="20" ShadowDepth="0" Opacity="0.4" />
+        <DropShadowEffect x:Key="NeonGlowIndigo" Color="#00BFFF" BlurRadius="20" ShadowDepth="0" Opacity="0.4" />
         
         <!-- HEARTBEAT ANIMATION -->
         <Storyboard x:Key="HeartbeatPulse" RepeatBehavior="Forever">
@@ -165,7 +165,7 @@
 
         <Border Grid.Row="0" Background="{StaticResource HeaderGlassEffect}" BorderBrush="{StaticResource Accent}" BorderThickness="0,0,0,1" Padding="16,8">
             <Border.Effect>
-                <DropShadowEffect Color="#6366F1" BlurRadius="15" ShadowDepth="1" Opacity="0.15" Direction="270" />
+                <DropShadowEffect Color="#00BFFF" BlurRadius="15" ShadowDepth="1" Opacity="0.15" Direction="270" />
             </Border.Effect>
             <Border.Style>
                 <Style TargetType="Border">
@@ -266,7 +266,7 @@
                 
                 <Button Grid.Column="5" Command="{Binding ToggleZenModeCommand}" Background="#0B1630" BorderBrush="{StaticResource Accent}" BorderThickness="1" Padding="12,4" Margin="12,0,0,0">
                     <Button.Effect>
-                        <DropShadowEffect Color="#6366F1" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
+                        <DropShadowEffect Color="#00BFFF" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
                     </Button.Effect>
                     <TextBlock Text="ZEN MODE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
                 </Button>
@@ -522,6 +522,11 @@
                                         <DataGridTemplateColumn Header="SIDE" Width="70">
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate><Border Background="{Binding SideColor}" CornerRadius="2" Padding="6,2"><TextBlock Text="{Binding Side}" Foreground="White" FontSize="9" FontWeight="Black" /></Border></DataTemplate>
+                                            </DataGridTemplateColumn.CellTemplate>
+                                        </DataGridTemplateColumn>
+                                        <DataGridTemplateColumn Header="STATE" Width="95">
+                                            <DataGridTemplateColumn.CellTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding LifecycleStatus}" Foreground="{Binding LifecycleColor}" FontSize="9" FontWeight="Bold" /></DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
                                         <DataGridTextColumn Header="ROE %" Binding="{Binding Roe, StringFormat={}{0:F2}%}" Width="80">
@@ -998,6 +1003,9 @@
                                                 <DataTemplate><TextBlock Text="{Binding Side}" Foreground="{Binding SideColor}" FontSize="10" FontWeight="Black" /></DataTemplate>
                                             </DataGridTemplateColumn.CellTemplate>
                                         </DataGridTemplateColumn>
+                                        <DataGridTextColumn Header="STATUS" Binding="{Binding Status}" Width="95">
+                                            <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="FontWeight" Value="Bold"/><Setter Property="Foreground" Value="{StaticResource TextSoft}"/></Style></DataGridTextColumn.ElementStyle>
+                                        </DataGridTextColumn>
                                         <DataGridTextColumn Header="PNL" Binding="{Binding PnL, StringFormat={}{0:N2}}" Width="100">
                                             <DataGridTextColumn.ElementStyle><Style TargetType="TextBlock"><Setter Property="FontFamily" Value="{StaticResource MonoFont}"/><Setter Property="Foreground" Value="{Binding SideColor}"/><Setter Property="FontWeight" Value="Bold"/></Style></DataGridTextColumn.ElementStyle>
                                         </DataGridTextColumn>
@@ -1316,6 +1324,7 @@
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
                                                         <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
                                                     </Grid.RowDefinitions>
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*" />
@@ -1325,9 +1334,11 @@
                                                     <Border Grid.Column="1" Background="{Binding SideColor}" CornerRadius="3" Padding="6,2">
                                                         <TextBlock Text="{Binding Side}" Foreground="White" FontSize="8" FontWeight="Black" />
                                                     </Border>
-                                                    <TextBlock Grid.Row="1" Text="{Binding MarkPrice, StringFormat=Mark {0:N2}}" Foreground="{StaticResource TextSoft}" FontFamily="{StaticResource MonoFont}" FontSize="9" Margin="0,6,0,0" />
+                                                    <TextBlock Grid.Row="1" Text="{Binding LifecycleStatus}" Foreground="{Binding LifecycleColor}" FontSize="8" FontWeight="Bold" Margin="0,6,0,0" />
                                                     <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Roe, StringFormat={}{0:F2}%}" Foreground="{Binding PnLColor}" FontFamily="{StaticResource MonoFont}" FontSize="9" FontWeight="Bold" Margin="12,6,0,0" />
-                                                    <Grid Grid.Row="2" Grid.ColumnSpan="2" Margin="0,8,0,0">
+                                                    <TextBlock Grid.Row="2" Text="{Binding MarkPrice, StringFormat=Mark {0:N2}}" Foreground="{StaticResource TextSoft}" FontFamily="{StaticResource MonoFont}" FontSize="9" Margin="0,4,0,0" />
+                                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ExitPolicyTag}" Foreground="{StaticResource TextMuted}" FontSize="8" Margin="12,4,0,0" />
+                                                    <Grid Grid.Row="3" Grid.ColumnSpan="2" Margin="0,8,0,0">
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="*" />

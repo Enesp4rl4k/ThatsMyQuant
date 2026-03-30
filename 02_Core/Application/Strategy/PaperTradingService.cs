@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -13,6 +13,7 @@ public class PaperTradingService
     private readonly StrategyPromotionService? _promotionService;
     private readonly ExitPolicyLearningService? _exitPolicyLearningService;
     private readonly MarketExecutionProfileService _executionProfiles;
+    private readonly PositionSupervisorService _positionSupervisor;
     public PaperPortfolio Portfolio { get; } = new();
 
     public PaperTradingService(
@@ -21,7 +22,8 @@ public class PaperTradingService
         ILogger<PaperTradingService> logger,
         StrategyPromotionService? promotionService = null,
         ExitPolicyLearningService? exitPolicyLearningService = null,
-        MarketExecutionProfileService? executionProfiles = null)
+        MarketExecutionProfileService? executionProfiles = null,
+        PositionSupervisorService? positionSupervisor = null)
     {
         _analysis = analysis;
         _marketData = marketData;
@@ -29,6 +31,7 @@ public class PaperTradingService
         _promotionService = promotionService;
         _exitPolicyLearningService = exitPolicyLearningService;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
+        _positionSupervisor = positionSupervisor ?? new PositionSupervisorService();
     }
 
     public async Task<string> ProcessSymbolAsync(string symbol)
@@ -71,28 +74,28 @@ public class PaperTradingService
         return await OpenNewPosition(symbol, market, currentPrice, candles, executionProfile);
     }
 
-    private string ResolveMarketType(string symbol)
+    private static string ResolveMarketType(string symbol)
     {
-        return symbol.Contains("-") ? "Crypto" : 
-               (symbol.Contains("=") ? "Forex" : "BIST");
+        return symbol.Contains("-", StringComparison.OrdinalIgnoreCase)
+            ? "Crypto"
+            : (symbol.Contains("=", StringComparison.OrdinalIgnoreCase) ? "Forex" : "BIST");
     }
 
     private async Task<string> HandleOpenPosition(PaperPosition position, IReadOnlyList<Candle> candles, MarketExecutionProfile executionProfile)
     {
         var currentPrice = candles.Last().Close;
-        position.BarsHeld++;
-        position.CurrentPrice = currentPrice;
-        ApplyBreakevenProtection(position, candles.Last());
-        
         var previousCandle = candles.Count > 1 ? candles[^2] : candles.Last();
-        double atr = CalculateAtrProxy(candles, currentPrice);
+        var atr = (decimal)CalculateAtrProxy(candles, currentPrice);
+        var lifecycleAction = _positionSupervisor.AdvancePaperPosition(position, candles.Last(), previousCandle, atr);
 
-        bool trailingHit = TrailingStopService.UpdateTrailingStop(position, candles.Last().High, candles.Last().Low, atr);
-        string? exitReason = DetermineExitReason(position, candles.Last(), previousCandle, trailingHit);
-
-        if (exitReason != null)
+        if (lifecycleAction?.ActionType == PositionLifecycleActionType.PartialExit)
         {
-            return await ClosePosition(position, candles.Last(), executionProfile, exitReason);
+            return await ApplyPartialExit(position, candles.Last(), executionProfile, lifecycleAction);
+        }
+
+        if (lifecycleAction?.ActionType == PositionLifecycleActionType.FullExit)
+        {
+            return await ClosePosition(position, candles.Last(), executionProfile, lifecycleAction.Reason);
         }
 
         return $"{position.Symbol} position open — UnrealizedPnL: ₺{position.UnrealizedPnL:N2}";
@@ -105,33 +108,9 @@ public class PaperTradingService
             : (double)currentPrice * 0.02;
     }
 
-    private string? DetermineExitReason(PaperPosition position, Candle currentCandle, Candle previousCandle, bool trailingHit)
-    {
-        if (trailingHit) return "TrailingSL";
-        if (position.Side == TradeSide.Buy)
-        {
-            if (currentCandle.Close <= position.StopLoss) return "StopLoss";
-            if (currentCandle.Close >= position.TakeProfit) return "TakeProfit";
-        }
-        else // Sell
-        {
-            if (currentCandle.Close >= position.StopLoss) return "StopLoss";
-            if (currentCandle.Close <= position.TakeProfit) return "TakeProfit";
-        }
-
-        var strategyExit = TryGetStrategyPolicyExit(position, currentCandle, previousCandle);
-        if (strategyExit != null) return strategyExit;
-
-        if (position.MaxHoldingBars > 0 && position.BarsHeld >= position.MaxHoldingBars)
-        {
-            return $"TimeStop({position.ExitPolicyTag})";
-        }
-
-        return null;
-    }
-
     private async Task<string> ClosePosition(PaperPosition position, Candle lastCandle, MarketExecutionProfile executionProfile, string exitReason)
     {
+        var exitQuantity = Math.Max(0m, position.Quantity);
         var adjustedExit = _executionProfiles.ApplyExecutionPrice(
             lastCandle.Close,
             position.Side,
@@ -142,19 +121,23 @@ public class PaperTradingService
             executionProfile.SpreadPercent,
             lastCandle);
 
-        position.ExitTime = DateTime.UtcNow;
-        position.ExitReason = exitReason;
-        position.RealizedPnL = _executionProfiles.CalculateNetPnl(
+        var exitPnl = _executionProfiles.CalculateNetPnl(
             position.EntryPrice,
             adjustedExit,
-            position.Quantity,
+            exitQuantity,
             position.Side,
             position.Symbol,
             null,
             executionProfile.CommissionPercentPerSide);
 
-        Portfolio.Cash += adjustedExit * position.Quantity + position.RealizedPnL;
-        Portfolio.DailyPnL += position.RealizedPnL;
+        position.ExitTime = DateTime.UtcNow;
+        position.ExitReason = exitReason;
+        position.RealizedPnL += exitPnl;
+        position.Quantity = 0m;
+        position.RemainingQuantity = 0m;
+
+        Portfolio.Cash += (position.EntryPrice * exitQuantity) + exitPnl;
+        Portfolio.DailyPnL += exitPnl;
         Portfolio.ClosedPositions.Add(position);
         Portfolio.OpenPositions.Remove(position);
         Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
@@ -162,10 +145,59 @@ public class PaperTradingService
         await (_promotionService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
         await (_exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
 
-        _logger.LogInformation("📄 PAPER {Exit}: {Symbol} PnL=₺{PnL:N2} ({Reason})",
+        _logger.LogInformation("PAPER {Exit}: {Symbol} PnL=₺{PnL:N2} ({Reason})",
             exitReason, position.Symbol, position.RealizedPnL, exitReason);
 
         return $"CLOSED {position.Symbol} via {exitReason} — PnL: ₺{position.RealizedPnL:N2}";
+    }
+
+    private async Task<string> ApplyPartialExit(PaperPosition position, Candle lastCandle, MarketExecutionProfile executionProfile, PositionLifecycleAction action)
+    {
+        var exitQuantity = Math.Min(Math.Max(0m, position.Quantity), action.Quantity);
+        if (exitQuantity <= 0m)
+        {
+            return $"{position.Symbol} position open — UnrealizedPnL: ₺{position.UnrealizedPnL:N2}";
+        }
+
+        var adjustedExit = _executionProfiles.ApplyExecutionPrice(
+            lastCandle.Close,
+            position.Side,
+            false,
+            position.Symbol,
+            null,
+            executionProfile.SlippagePercent,
+            executionProfile.SpreadPercent,
+            lastCandle);
+
+        var partialPnl = _executionProfiles.CalculateNetPnl(
+            position.EntryPrice,
+            adjustedExit,
+            exitQuantity,
+            position.Side,
+            position.Symbol,
+            null,
+            executionProfile.CommissionPercentPerSide);
+
+        position.HasTakenPartialProfit = true;
+        position.RealizedPnL += partialPnl;
+        position.Quantity = Math.Max(0m, position.Quantity - exitQuantity);
+        position.RemainingQuantity = position.Quantity;
+        position.CurrentPrice = lastCandle.Close;
+        position.ExitReason = action.Reason;
+
+        Portfolio.Cash += (position.EntryPrice * exitQuantity) + partialPnl;
+        Portfolio.DailyPnL += partialPnl;
+        Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
+
+        _logger.LogInformation("PAPER PARTIAL EXIT: {Symbol} Qty={Qty} PnL=₺{PnL:N2} ({Reason})",
+            position.Symbol, exitQuantity, partialPnl, action.Reason);
+
+        if (position.Quantity <= 0m)
+        {
+            return await ClosePosition(position, lastCandle, executionProfile, action.Reason);
+        }
+
+        return $"PARTIAL {position.Symbol} via {action.Reason} — booked ₺{partialPnl:N2}, remaining {position.Quantity:N4}";
     }
 
     private string? CheckTradingConstraints()
@@ -222,7 +254,7 @@ public class PaperTradingService
             StopLoss = decision.StopLoss,
             TakeProfit = decision.TakeProfit,
             PartialTakeProfit = decision.PartialTakeProfit,
-            PartialExitFraction = decision.PartialExitFraction <= 0 ? 0.50m : decision.PartialExitFraction,
+            PartialExitFraction = decision.PartialExitFraction <= 0m ? 0.50m : decision.PartialExitFraction,
             RemainingQuantity = quantity,
             ExitPolicyTag = decision.ExitPolicyTag,
             BreakevenTriggerFraction = decision.BreakevenTriggerFraction,
@@ -237,47 +269,10 @@ public class PaperTradingService
         Portfolio.OpenPositions.Add(newPosition);
         Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
 
-        _logger.LogInformation("📄 PAPER TRADE: {Side} {Qty} {Symbol} @ ₺{Price:F2} | SL=₺{SL:F2} TP=₺{TP:F2}",
+        _logger.LogInformation("PAPER TRADE: {Side} {Qty} {Symbol} @ ₺{Price:F2} | SL=₺{SL:F2} TP=₺{TP:F2}",
             decision.Side, quantity, symbol, currentPrice, decision.StopLoss, decision.TakeProfit);
 
         return $"OPENED {decision.Side} {quantity} {symbol} @ ₺{currentPrice:F2} (Score: {decision.Confidence}/100)";
-    }
-    private static void ApplyBreakevenProtection(PaperPosition position, Candle candle)
-    {
-        if (position.IsBreakevenArmed || position.BreakevenTriggerFraction <= 0)
-        {
-            return;
-        }
-
-        var targetDistance = Math.Abs(position.TakeProfit - position.EntryPrice);
-        if (targetDistance <= 0)
-        {
-            return;
-        }
-
-        var triggerDistance = targetDistance * position.BreakevenTriggerFraction;
-        var triggerReached = position.Side == TradeSide.Buy
-            ? candle.High >= position.EntryPrice + triggerDistance
-            : candle.Low <= position.EntryPrice - triggerDistance;
-
-        if (!triggerReached)
-        {
-            return;
-        }
-
-        position.IsBreakevenArmed = true;
-        var buffer = position.EntryPrice * 0.0005m;
-
-        if (position.Side == TradeSide.Buy)
-        {
-            position.StopLoss = Math.Max(position.StopLoss, position.EntryPrice + buffer);
-        }
-        else
-        {
-            position.StopLoss = position.StopLoss == 0
-                ? position.EntryPrice - buffer
-                : Math.Min(position.StopLoss, position.EntryPrice - buffer);
-        }
     }
 
     private static bool IsPreferredTradeWindow(string market, DateTime timestamp)
@@ -292,27 +287,5 @@ public class PaperTradingService
             : TimeZoneInfo.ConvertTimeBySystemTimeZoneId(timestamp.ToUniversalTime(), "Turkey Standard Time");
 
         return turkeyTime.Hour is >= 10 and < 13 or >= 15 and < 18;
-    }
-
-    private static string? TryGetStrategyPolicyExit(PaperPosition position, Candle candle, Candle previousCandle)
-    {
-        var bearishBar = candle.Close < candle.Open && candle.Close < previousCandle.Close;
-        var bullishBar = candle.Close > candle.Open && candle.Close > previousCandle.Close;
-
-        return position.ExitPolicyTag switch
-        {
-            "TrendRunner" when position.IsBreakevenArmed &&
-                                position.BarsHeld >= Math.Max(6, position.MaxHoldingBars / 2) &&
-                                ((position.Side == TradeSide.Buy && bearishBar) || (position.Side == TradeSide.Sell && bullishBar))
-                => "TrendMomentumFade",
-            "MeanReversion" when position.BarsHeld >= 4 && !position.IsBreakevenArmed
-                => "MeanReversionTimeout",
-            "BreakoutExpansion" when position.BarsHeld >= 3 && position.IsBreakevenArmed &&
-                                       ((position.Side == TradeSide.Buy && bearishBar) || (position.Side == TradeSide.Sell && bullishBar))
-                => "BreakoutFailure",
-            "HftScalp" when position.BarsHeld >= 2
-                => "HftMicroExit",
-            _ => null
-        };
     }
 }

@@ -352,6 +352,62 @@ public class MainViewModelTests
     }
 
     [Fact]
+    public async Task RefreshStrategyLeaderboardAsync_ShouldProjectLifecycleStateIntoOpenBookAndJournal()
+    {
+        var now = DateTime.UtcNow;
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade
+            {
+                Symbol = "THYAO",
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                Quantity = 0.6m,
+                RemainingQuantity = 0.6m,
+                MarkPrice = 103m,
+                StopLoss = 98m,
+                TakeProfit = 108m,
+                ExitPolicyTag = "TrendRunner",
+                Status = TradeStatus.Executed,
+                LifecycleStatus = TradeLifecycleStatus.PartialExit,
+                StrategyTag = "TrendConfluence",
+                RegimeTag = "Trending",
+                EntryTime = now.AddMinutes(-20),
+                ClosedQuantity = 0.4m,
+                AverageExitPrice = 104m,
+                ExitReason = "PartialTakeProfit"
+            },
+            new Trade
+            {
+                Symbol = "BTCUSDT",
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                RequestedQuantity = 1.2m,
+                RemainingQuantity = 1.2m,
+                MarkPrice = 100m,
+                ExitPolicyTag = "BreakoutExpansion",
+                Status = TradeStatus.Pending,
+                LifecycleStatus = TradeLifecycleStatus.Submitted,
+                StrategyTag = "BreakoutHunter",
+                RegimeTag = "Volatile",
+                EntryTime = now.AddMinutes(-5)
+            }
+        });
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository);
+
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.ActivePositions.Should().HaveCount(2);
+        viewModel.ActivePositions[0].LifecycleStatus.Should().Be("Submitted");
+        viewModel.ActivePositions[1].LifecycleStatus.Should().Be("Partial Exit");
+        viewModel.PortfolioView.ActivePositions.Should().HaveCount(2);
+        viewModel.TradeJournal.Should().Contain(entry => entry.Status == "Submitted");
+        viewModel.TradeJournal.Should().Contain(entry => entry.ExitSummary.Contains("PartialTakeProfit"));
+    }
+
+    [Fact]
     public async Task RunBacktestCommand_ShouldPopulateBacktestLabMetrics()
     {
         var viewModel = CreateViewModel();

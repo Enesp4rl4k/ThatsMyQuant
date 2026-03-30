@@ -22,6 +22,7 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
     private const VenueKind Venue = VenueKind.Binance;
 
     private readonly ConcurrentDictionary<string, OrderBookSnapshot> _latestOrderBooks = new();
+    private readonly ConcurrentDictionary<Guid, decimal> _queueTracker = new();
     private readonly ISharedPortfolioStateManager _portfolio;
 
     public BinanceExecutionService(
@@ -115,9 +116,14 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
 
         // Funds were atomically reserved locally before the REST call.
 
+        var queuePosId = Guid.NewGuid();
+        var volumeAhead = await GetQueuePositionAsync(signal.Symbol, signal.Price, signal.Side);
+        _queueTracker[queuePosId] = volumeAhead;
+        _logger.LogInformation("Binance Queue Tracking established for Order {OrderId} at Position-in-Book: {VolumeAhead:F4}", queuePosId, volumeAhead);
+
         return new Trade
         {
-            Id = Guid.NewGuid(),
+            Id = queuePosId,
             SignalId = signal.Id,
             Symbol = signal.Symbol,
             EntryPrice = signal.Price,
@@ -182,11 +188,14 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
 
     private string ComputeSignature(string message)
     {
-        var messageBytes = Encoding.UTF8.GetBytes(message);
-        var hash = _hmac.ComputeHash(messageBytes);
+        int byteCount = Encoding.UTF8.GetByteCount(message);
+        Span<byte> messageBytes = byteCount <= 1024 ? stackalloc byte[byteCount] : new byte[byteCount];
+        Encoding.UTF8.GetBytes(message, messageBytes);
+
+        Span<byte> hashBytes = stackalloc byte[32];
+        HMACSHA256.HashData(_apiSecretBytes, messageBytes, hashBytes);
         
-        // Optimized hex string conversion
-        return Convert.ToHexString(hash).ToLowerInvariant();
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
     public void Dispose()

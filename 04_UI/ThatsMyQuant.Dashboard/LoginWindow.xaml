@@ -30,7 +30,7 @@
                         </EventTrigger>
                     </Ellipse.Triggers>
                 </Ellipse>
-                <Ellipse Fill="#6366F1" Width="200" Height="200" Margin="250,350,0,0" Opacity="0.08">
+                <Ellipse Fill="#00BFFF" Width="200" Height="200" Margin="250,350,0,0" Opacity="0.08">
                     <Ellipse.Effect>
                         <BlurEffect Radius="80"/>
                     </Ellipse.Effect>
@@ -49,10 +49,22 @@
             </Canvas>
         </Border>
 
-        <!-- MAIN TERMINAL FRAME -->
-        <Border Background="#1AFFFFFF" BorderBrush="#2AFFFFFF" BorderThickness="1" CornerRadius="12" Margin="20">
+        <!-- MAIN TERMINAL FRAME (GLASSMORPHISM) -->
+        <Border BorderThickness="1" CornerRadius="12" Margin="20">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                    <GradientStop Color="#1AFFFFFF" Offset="0"/>
+                    <GradientStop Color="#05FFFFFF" Offset="1"/>
+                </LinearGradientBrush>
+            </Border.Background>
+            <Border.BorderBrush>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                    <GradientStop Color="#5AFFFFFF" Offset="0"/>
+                    <GradientStop Color="#1AFFFFFF" Offset="1"/>
+                </LinearGradientBrush>
+            </Border.BorderBrush>
             <Border.Effect>
-                <DropShadowEffect BlurRadius="30" ShadowDepth="0" Color="Black" Opacity="0.5" />
+                <DropShadowEffect BlurRadius="40" ShadowDepth="5" Color="Black" Opacity="0.7" />
             </Border.Effect>
             
             <Grid Margin="40">

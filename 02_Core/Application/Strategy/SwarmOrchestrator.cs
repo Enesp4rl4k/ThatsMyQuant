@@ -99,11 +99,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
                 return result;
             }
 
-            var (sentimentVote, riskVote) = await RunConcurrentAgents(request, riskParams, cancellationToken);
-
-            // Wire foundation-layer market microstructure into ML feature tensor
-            _featureAgent.ApplyFoundationData(request.Foundation);
-            var mlPrediction = _inferenceAgent.PredictNextReturn(_featureAgent);
+            var (sentimentVote, riskVote, mlPrediction) = await RunConcurrentAgents(request, riskParams, cancellationToken);
             AppendModelMetadata(request.Signal, mlPrediction);
 
             var strategyVotes = await _agentCoordinator.CollectStrategyVotesAsync(
@@ -173,13 +169,27 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         };
     }
 
-    private async Task<((bool Approved, string Reason) Sentiment, (bool Approved, string Reason, decimal SafePositionSizePercent) Risk)>
+    private async Task<((bool Approved, string Reason) Sentiment, (bool Approved, string Reason, decimal SafePositionSizePercent) Risk, PredictionResult Prediction)>
         RunConcurrentAgents(SwarmNegotiationRequest request, RiskParameters riskParams, CancellationToken ct)
     {
+        var recentTrades = _portfolioCache.GetRecentTrades();
         var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, ct);
-        var riskTask = _riskAgent.EvaluateAsync(request.InitialDecision, riskParams, request.Signal.Volume24h);
-        await Task.WhenAll(sentimentTask, riskTask).WaitAsync(ct);
-        return (sentimentTask.Result, riskTask.Result);
+        var riskTask = _riskAgent.EvaluateAsync(
+            request.InitialDecision,
+            riskParams,
+            request.Signal.Volume24h,
+            recentTrades,
+            request.Signal);
+
+        // Offload ML latency to avoid blocking I/O pipeline during multi-agent consensus
+        var mlTask = Task.Run(() => 
+        {
+            _featureAgent.ApplyFoundationData(request.Foundation);
+            return _inferenceAgent.PredictNextReturn(_featureAgent);
+        }, ct);
+
+        await Task.WhenAll(sentimentTask, riskTask, mlTask).WaitAsync(ct);
+        return (await sentimentTask, await riskTask, await mlTask);
     }
 
     private float CalculateConfidence(

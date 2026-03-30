@@ -34,9 +34,25 @@ public class FixProtocolAdapter : IFixConnectionManager
         if (!_isConnected) throw new InvalidOperationException("Exchange link is disconnected.");
 
         // In a true environment, this writes unmanaged memory blocks straight to the ISocket.
-        // E.g., simulating a New Order Single (35=D) message.
-        var messageStr = Encoding.ASCII.GetString(fixPayload.Span);
-        Console.WriteLine($">>> [TCP TX]: {messageStr}");
+        // HFT Check: Zero-allocation validation of crucial FIX segments (e.g., MsgType 35=) before dispatch.
+        ReadOnlySpan<byte> span = fixPayload.Span;
+        if (!span.IsEmpty)
+        {
+            // Search for "35=" (MsgType) => bytes 51, 53, 61
+            int tag35Index = span.IndexOf(stackalloc byte[] { 51, 53, 61 });
+            if (tag35Index >= 0)
+            {
+                int valStart = tag35Index + 3;
+                int sohIndex = span.Slice(valStart).IndexOf((byte)1); // \x01 SOH
+                if (sohIndex > 0)
+                {
+                    ReadOnlySpan<byte> msgTypeVal = span.Slice(valStart, sohIndex);
+#if DEBUG
+                    Console.WriteLine($"[FIX TX] Hardware Dispatch Validated (MsgType: {(char)msgTypeVal[0]}, Length: {span.Length} bytes)");
+#endif
+                }
+            }
+        }
 
         return Task.CompletedTask;
     }

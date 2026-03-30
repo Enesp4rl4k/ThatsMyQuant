@@ -16,17 +16,20 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
     private readonly IExchangeService _exchangeService;
     private readonly ITradeRepository _tradeRepository;
     private readonly CircuitBreakerService _circuitBreaker;
+    private readonly PositionSupervisorService _positionSupervisor;
 
     public ExecuteTradeHandler(
         ILogger<ExecuteTradeHandler> logger, 
         IExchangeService exchangeService,
         ITradeRepository tradeRepository,
-        CircuitBreakerService circuitBreaker)
+        CircuitBreakerService circuitBreaker,
+        PositionSupervisorService positionSupervisor)
     {
         _logger = logger;
         _exchangeService = exchangeService;
         _tradeRepository = tradeRepository;
         _circuitBreaker = circuitBreaker;
+        _positionSupervisor = positionSupervisor;
     }
 
     public async Task<Trade> Handle(ExecuteTradeCommand request, CancellationToken cancellationToken)
@@ -44,6 +47,9 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
             return existingTrade;
         }
 
+        var trackedTrade = _positionSupervisor.CreateSubmittedTrade(request.Signal);
+        MapSignalMetadataToTrade(request.Signal, trackedTrade);
+
         var circuitGuard = _circuitBreaker.CheckOrderAllowed();
         if (!circuitGuard.Allowed)
         {
@@ -52,9 +58,9 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
                 request.Signal.Id,
                 circuitGuard.BlockReason);
 
-            var blockedTrade = CreateFailedTradeFromSignal(request.Signal);
-            await _tradeRepository.AddAsync(blockedTrade);
-            return blockedTrade;
+            _positionSupervisor.MarkFailed(trackedTrade, circuitGuard.BlockReason);
+            await _tradeRepository.AddAsync(trackedTrade);
+            return trackedTrade;
         }
 
         // Domain Logic: Reject weak liquidity HFT probes before hitting the venue
@@ -63,21 +69,25 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
             if (request.Signal.Volume24h < 500_000m)
             {
                 _logger.LogWarning("Rejecting HFT Signal {Id} due to insufficient 24h volume ({Volume})", request.Signal.Id, request.Signal.Volume24h);
-                return new Trade { Status = TradeStatus.Failed, SignalId = request.Signal.Id, Symbol = request.Signal.Symbol };
+                _positionSupervisor.MarkFailed(trackedTrade, "Insufficient 24h volume for HFT execution.");
+                await _tradeRepository.AddAsync(trackedTrade);
+                return trackedTrade;
             }
         }
 
+        await _tradeRepository.AddAsync(trackedTrade);
+        _positionSupervisor.MarkAccepted(trackedTrade);
+        await _tradeRepository.UpdateAsync(trackedTrade);
+
         // Execute with Polly full pipeline (Retry + Circuit Breaker)
         var pipeline = ResiliencePolicies.CreateFullPipeline(_logger);
-
-        Trade trade;
         try
         {
-            trade = await pipeline.ExecuteAsync(async ct =>
+            var venueTrade = await pipeline.ExecuteAsync(async ct =>
                 await _exchangeService.ExecuteOrderAsync(request.Signal), cancellationToken);
 
-            trade.Status = TradeStatus.Executed;
-            MapSignalMetadataToTrade(request.Signal, trade);
+            _positionSupervisor.ApplyExecutionFill(trackedTrade, venueTrade);
+            MapSignalMetadataToTrade(request.Signal, trackedTrade);
             _circuitBreaker.RecordSuccess();
         }
         catch (Exception ex)
@@ -85,37 +95,16 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
             _logger.LogError(ex, "Trade execution FAILED for Signal {Id} after retries + circuit breaker.",
                 request.Signal.Id);
             _circuitBreaker.RecordError(ex);
-
-            // Persist the failed trade for audit
-            trade = CreateFailedTradeFromSignal(request.Signal);
+            _positionSupervisor.MarkFailed(trackedTrade, ex.Message);
+            MapSignalMetadataToTrade(request.Signal, trackedTrade);
         }
 
-        // Persist trade result
-        await _tradeRepository.AddAsync(trade);
+        await _tradeRepository.UpdateAsync(trackedTrade);
 
         _logger.LogInformation("Trade {Status}: {TradeId} @ {Price}",
-            trade.Status, trade.Id, trade.EntryPrice);
+            trackedTrade.Status, trackedTrade.Id, trackedTrade.EntryPrice);
 
-        return trade;
-    }
-
-    private Trade CreateFailedTradeFromSignal(Signal signal)
-    {
-        var trade = new Trade
-        {
-            SignalId = signal.Id,
-            Symbol = signal.Symbol,
-            Side = signal.Side,
-            EntryPrice = signal.Price,
-            Quantity = 0,
-            Status = TradeStatus.Failed,
-            StrategyTag = signal.StrategyTag,
-            RegimeTag = signal.RegimeTag,
-            EntryTime = DateTime.UtcNow
-        };
-
-        MapSignalMetadataToTrade(signal, trade);
-        return trade;
+        return trackedTrade;
     }
 
     private void MapSignalMetadataToTrade(Signal signal, Trade trade)
@@ -141,6 +130,16 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         trade.MlModelVersion = TryGetString(signal, "MlModelVersion") ?? trade.MlModelVersion;
         trade.ExitPolicyTag = TryGetString(signal, "ExitPolicyTag") ?? trade.ExitPolicyTag;
         trade.ExecutionMode = TryGetString(signal, "ExecutionMode") ?? trade.ExecutionMode;
+        trade.PositionSizePercent = TryGetDecimal(signal, "RequestedPositionFraction") ?? trade.PositionSizePercent;
+        trade.StopLoss = TryGetDecimal(signal, "StopLoss") ?? trade.StopLoss;
+        trade.TakeProfit = TryGetDecimal(signal, "TakeProfit") ?? trade.TakeProfit;
+        trade.PartialTakeProfit = TryGetDecimal(signal, "PartialTakeProfit") ?? trade.PartialTakeProfit;
+        trade.PartialExitFraction = TryGetDecimal(signal, "PartialExitFraction") ?? trade.PartialExitFraction;
+        trade.BreakevenTriggerFraction = TryGetDecimal(signal, "BreakevenTriggerFraction") ?? trade.BreakevenTriggerFraction;
+        trade.MaxHoldingBars = TryGetInt(signal, "MaxHoldingBars") ?? trade.MaxHoldingBars;
+        trade.RequestedQuantity = TryGetDecimal(signal, "RequestedQuantity") ?? trade.RequestedQuantity;
+        if (trade.RemainingQuantity <= 0m && trade.RequestedQuantity > 0m && trade.LifecycleStatus == TradeLifecycleStatus.Submitted)
+            trade.RemainingQuantity = trade.RequestedQuantity;
 
         if (signal.Price > 0 && trade.EntryPrice > 0)
             trade.EntrySlippagePercent = ((trade.EntryPrice - signal.Price) / signal.Price) * 100m;
