@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Polly;
 using Polly.CircuitBreaker;
 using Polly.Retry;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Resilience;
 
@@ -12,16 +13,17 @@ namespace ThatsMyQuant.Application.Resilience;
 public static class ResiliencePolicies
 {
     /// <summary>
-    /// Retry policy: 3 retries with exponential backoff (1s, 2s, 4s).
+    /// Retry policy with exponential backoff.
     /// Use for transient failures (network timeouts, 429s, 5xx).
     /// </summary>
-    public static ResiliencePipeline CreateRetryPipeline(ILogger? logger = null)
+    public static ResiliencePipeline CreateRetryPipeline(ILogger? logger = null, ResilienceOptions? options = null)
     {
+        var opts = options ?? new ResilienceOptions();
         return new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
             {
-                MaxRetryAttempts = 3,
-                Delay = TimeSpan.FromSeconds(1),
+                MaxRetryAttempts = opts.MaxRetryAttempts,
+                Delay = TimeSpan.FromSeconds(opts.InitialRetryDelaySeconds),
                 BackoffType = DelayBackoffType.Exponential,
                 OnRetry = args =>
                 {
@@ -37,18 +39,19 @@ public static class ResiliencePolicies
     }
 
     /// <summary>
-    /// Circuit Breaker: Opens after 5 failures, stays open for 30 seconds.
+    /// Circuit Breaker: Opens after repeated failures, stays open for a configured duration.
     /// Prevents hammering a dead service and gives it time to recover.
     /// </summary>
-    public static ResiliencePipeline CreateCircuitBreakerPipeline(ILogger? logger = null)
+    public static ResiliencePipeline CreateCircuitBreakerPipeline(ILogger? logger = null, ResilienceOptions? options = null)
     {
+        var opts = options ?? new ResilienceOptions();
         return new ResiliencePipelineBuilder()
             .AddCircuitBreaker(new CircuitBreakerStrategyOptions
             {
-                FailureRatio = 0.5,
-                SamplingDuration = TimeSpan.FromSeconds(30),
-                MinimumThroughput = 5,
-                BreakDuration = TimeSpan.FromSeconds(30),
+                FailureRatio = opts.CircuitBreakerFailureRatio,
+                SamplingDuration = TimeSpan.FromSeconds(opts.CircuitBreakerSamplingDurationSeconds),
+                MinimumThroughput = opts.CircuitBreakerMinimumThroughput,
+                BreakDuration = TimeSpan.FromSeconds(opts.CircuitBreakerBreakDurationSeconds),
                 OnOpened = args =>
                 {
                     logger?.LogError("Circuit OPENED! Service is down. Breaking for {Duration}s.",
@@ -73,13 +76,14 @@ public static class ResiliencePolicies
     /// Combined pipeline: Retry + Circuit Breaker together.
     /// Retry wraps Circuit Breaker (retries happen, but if too many fail, circuit opens).
     /// </summary>
-    public static ResiliencePipeline CreateFullPipeline(ILogger? logger = null)
+    public static ResiliencePipeline CreateFullPipeline(ILogger? logger = null, ResilienceOptions? options = null)
     {
+        var opts = options ?? new ResilienceOptions();
         return new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
             {
-                MaxRetryAttempts = 3,
-                Delay = TimeSpan.FromSeconds(1),
+                MaxRetryAttempts = opts.MaxRetryAttempts,
+                Delay = TimeSpan.FromSeconds(opts.InitialRetryDelaySeconds),
                 BackoffType = DelayBackoffType.Exponential,
                 OnRetry = args =>
                 {
@@ -92,10 +96,10 @@ public static class ResiliencePolicies
             })
             .AddCircuitBreaker(new CircuitBreakerStrategyOptions
             {
-                FailureRatio = 0.5,
-                SamplingDuration = TimeSpan.FromSeconds(30),
-                MinimumThroughput = 5,
-                BreakDuration = TimeSpan.FromSeconds(30),
+                FailureRatio = opts.CircuitBreakerFailureRatio,
+                SamplingDuration = TimeSpan.FromSeconds(opts.CircuitBreakerSamplingDurationSeconds),
+                MinimumThroughput = opts.CircuitBreakerMinimumThroughput,
+                BreakDuration = TimeSpan.FromSeconds(opts.CircuitBreakerBreakDurationSeconds),
                 OnOpened = args =>
                 {
                     logger?.LogError("Circuit OPENED after repeated failures.");

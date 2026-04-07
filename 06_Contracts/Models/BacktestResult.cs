@@ -32,6 +32,15 @@ public record BacktestResult
     /// <summary>Maximum consecutive losing trades.</summary>
     public int MaxConsecutiveLosses { get; init; }
 
+    /// <summary>MAFE-optimized stop-loss percent based on MAE distribution.</summary>
+    public decimal MafeOptimalStopLossPercent { get; init; }
+
+    /// <summary>MAFE-optimized take-profit percent based on MFE distribution.</summary>
+    public decimal MafeOptimalTakeProfitPercent { get; init; }
+
+    /// <summary>MAFE edge ratio: optimal TP / optimal SL. Above 1.5 = strong edge.</summary>
+    public decimal MafeEdgeRatio { get; init; }
+
     /// <summary>Starting capital used in the backtest.</summary>
     public decimal StartingCapital { get; init; }
 

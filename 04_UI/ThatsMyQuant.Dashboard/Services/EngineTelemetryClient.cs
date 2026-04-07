@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Grpc.Core;
 using Grpc.Net.Client;
+using Microsoft.Extensions.Configuration;
 using ThatsMyQuant.Gateway.Api.Protos;
 
 namespace ThatsMyQuant.Dashboard.Services;
@@ -15,10 +16,10 @@ public class EngineTelemetryClient : IAsyncDisposable
     private TradingGateway.TradingGatewayClient? _client;
     private AsyncDuplexStreamingCall<ClientSignal, EngineTelemetry>? _stream;
 
-    public EngineTelemetryClient()
+    public EngineTelemetryClient(IConfiguration? configuration = null)
     {
-        // Keep this in sync with Gateway.Api launchSettings https profile.
-        _channel = GrpcChannel.ForAddress("https://localhost:7138");
+        var grpcAddress = configuration?["Endpoints:GrpcGateway"] ?? "https://localhost:7138";
+        _channel = GrpcChannel.ForAddress(grpcAddress);
         _client = new TradingGateway.TradingGatewayClient(_channel);
     }
 

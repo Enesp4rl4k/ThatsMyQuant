@@ -22,10 +22,10 @@ public class ReplayBrokerService : IExchangeService
         _clock = clock;
     }
 
-    public Task<Trade> ExecuteOrderAsync(Signal signal)
+    public Task<Trade> ExecuteOrderAsync(Signal signal, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation("ReplayBrokerService executing {Action} natively offline for {Symbol} at {Price}", signal.ExecutionAction, signal.Symbol, signal.Price);
-        
+
         var trade = new Trade
         {
             Id = Guid.NewGuid(),
@@ -34,7 +34,7 @@ public class ReplayBrokerService : IExchangeService
             Side = signal.Side,
             Quantity = 1.0m, // Simulated static allocation size
             EntryPrice = signal.Price,
-            EntryTime = _clock.UtcNow, 
+            EntryTime = _clock.UtcNow,
             Status = TradeStatus.Executed,
             StrategyTag = signal.StrategyTag,
             RegimeTag = signal.RegimeTag
@@ -43,7 +43,7 @@ public class ReplayBrokerService : IExchangeService
         return Task.FromResult(trade);
     }
 
-    public Task<Account> GetAccountStatusAsync()
+    public Task<Account> GetAccountStatusAsync(CancellationToken cancellationToken = default)
     {
         return Task.FromResult(new Account
         {
@@ -52,5 +52,5 @@ public class ReplayBrokerService : IExchangeService
         });
     }
 
-    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side) => Task.FromResult(0m);
+    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side, CancellationToken cancellationToken = default) => Task.FromResult(0m);
 }

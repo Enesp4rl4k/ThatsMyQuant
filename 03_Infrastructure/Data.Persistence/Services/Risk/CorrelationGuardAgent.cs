@@ -1,15 +1,17 @@
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services.Risk;
 
 public sealed class CorrelationGuardAgent : IRiskGuardAgent
 {
     private readonly ILogger<CorrelationGuardAgent> _logger;
-    private const int MaxSameSymbolPositions = 1;
-    private const double HighCorrelationThreshold = 0.80;
+    private readonly int _maxSameSymbolPositions;
+    private readonly double _highCorrelationThreshold;
 
     private static readonly HashSet<HashSet<string>> KnownCorrelatedGroups =
     [
@@ -21,8 +23,13 @@ public sealed class CorrelationGuardAgent : IRiskGuardAgent
     public string GuardId => "Risk.CorrelationGuard";
     public int Order => 2;
 
-    public CorrelationGuardAgent(ILogger<CorrelationGuardAgent> logger)
-        => _logger = logger;
+    public CorrelationGuardAgent(ILogger<CorrelationGuardAgent> logger, IOptions<RiskGuardAgentOptions>? options = null)
+    {
+        _logger = logger;
+        var opts = options?.Value ?? new RiskGuardAgentOptions();
+        _maxSameSymbolPositions = opts.MaxSameSymbolPositions;
+        _highCorrelationThreshold = opts.HighCorrelationThreshold;
+    }
 
     public Task<RiskGuardResult> EvaluateAsync(
         Signal signal,

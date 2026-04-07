@@ -5,9 +5,10 @@ using Xunit;
 
 namespace ThatsMyQuant.Tests.Infrastructure;
 
+[Collection("MemoryPortfolioManager")]
 public sealed class MemoryPortfolioManagerTests
 {
-    private readonly MemoryPortfolioManager _portfolio = MemoryPortfolioManager.Instance;
+    private readonly MemoryPortfolioManager _portfolio = new();
 
     public MemoryPortfolioManagerTests()
     {

@@ -7,6 +7,8 @@ using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Enums;
 using System.Net.Http.Headers;
+using Microsoft.Extensions.Options;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -23,7 +25,7 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
     private readonly string _passphrase;
     private readonly byte[] _apiSecretBytes;
     private readonly HMACSHA256 _hmac;
-    private const string BaseUrl = "https://www.okx.com";
+    private readonly string _baseUrl;
     private const VenueKind Venue = VenueKind.Okx;
 
     private readonly ConcurrentDictionary<string, OrderBookSnapshot> _latestOrderBooks = new();
@@ -35,7 +37,8 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         string apiKey,
         string apiSecret,
         string passphrase,
-        ISharedPortfolioStateManager? portfolioStateManager = null)
+        ISharedPortfolioStateManager? portfolioStateManager = null,
+        IOptions<ExchangeUrlOptions>? urlOptions = null)
     {
         _logger = logger;
         _httpClient = httpClient;
@@ -43,12 +46,15 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         _apiSecretBytes = Encoding.UTF8.GetBytes(apiSecret);
         _passphrase = passphrase;
         _hmac = new HMACSHA256(_apiSecretBytes);
-        _portfolio = portfolioStateManager ?? MemoryPortfolioManager.Instance;
+        _baseUrl = urlOptions?.Value.OkxRestBaseUrl ?? "https://www.okx.com";
+        // Clear raw secret bytes immediately — HMAC has already copied the key internally
+        Array.Clear(_apiSecretBytes, 0, _apiSecretBytes.Length);
+        _portfolio = portfolioStateManager ?? throw new ArgumentNullException(nameof(portfolioStateManager));
 
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
     }
 
-    public async Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side)
+    public async Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side, CancellationToken cancellationToken = default)
     {
         var okxSymbol = NormalizeToOkx(symbol);
         if (!_latestOrderBooks.TryGetValue(okxSymbol, out var book))
@@ -59,7 +65,7 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         return await Task.FromResult(QueuePositionCalculator.CalculateVolumeAhead(book, price, side));
     }
 
-    public async Task<Trade> ExecuteOrderAsync(Signal signal)
+    public async Task<Trade> ExecuteOrderAsync(Signal signal, CancellationToken cancellationToken = default)
     {
         // Institutional Guard: Local balance check via MemoryPortfolioManager
         var requiredNotional = signal.Quantity * signal.Price;
@@ -88,7 +94,7 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         var timestamp = GetIsoTimestamp();
         var signature = ComputeSignature(timestamp, "POST", "/api/v5/trade/order", bodyJson);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/api/v5/trade/order");
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/v5/trade/order");
         request.Content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
 
         // OKX-specific authentication headers
@@ -97,7 +103,9 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
         request.Headers.Add("OK-ACCESS-PASSPHRASE", _passphrase);
 
-        var response = await _httpClient.SendAsync(request);
+        var pipeline = Application.Resilience.ResiliencePolicies.CreateRetryPipeline(_logger);
+        var response = await pipeline.ExecuteAsync(async ct =>
+            await _httpClient.SendAsync(request, ct), cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -109,10 +117,19 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         // Check OKX response body for error codes (OKX returns 200 even on logical errors)
         var responseJson = await response.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(responseJson);
-        var code = doc.RootElement.GetProperty("code").GetString();
+
+        if (!doc.RootElement.TryGetProperty("code", out var codeElement))
+        {
+            _logger.LogWarning("OKX response missing 'code' property, treating as failure");
+            throw new InvalidOperationException("OKX response missing 'code' property");
+        }
+
+        var code = codeElement.GetString() ?? string.Empty;
         if (code != "0")
         {
-            var msg = doc.RootElement.GetProperty("msg").GetString();
+            var msg = doc.RootElement.TryGetProperty("msg", out var msgElement)
+                ? msgElement.GetString() ?? "unknown"
+                : "unknown";
             _logger.LogError("OKX order rejected: code={Code}, msg={Msg}", code, msg);
             throw new InvalidOperationException($"OKX order rejected: {code} - {msg}");
         }
@@ -131,7 +148,7 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         };
     }
 
-    public async Task<Account> GetAccountStatusAsync()
+    public async Task<Account> GetAccountStatusAsync(CancellationToken cancellationToken = default)
     {
         // Use localized portfolio state if already synced
         var availableUsdt = _portfolio.GetAvailableBalance(Venue, "USDT");
@@ -149,13 +166,15 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         var timestamp = GetIsoTimestamp();
         var signature = ComputeSignature(timestamp, "GET", "/api/v5/account/balance", string.Empty);
 
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/api/v5/account/balance");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{_baseUrl}/api/v5/account/balance");
         request.Headers.Add("OK-ACCESS-KEY", _apiKey);
         request.Headers.Add("OK-ACCESS-SIGN", signature);
         request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
         request.Headers.Add("OK-ACCESS-PASSPHRASE", _passphrase);
 
-        var response = await _httpClient.SendAsync(request);
+        var balancePipeline = Application.Resilience.ResiliencePolicies.CreateRetryPipeline(_logger);
+        var response = await balancePipeline.ExecuteAsync(async ct =>
+            await _httpClient.SendAsync(request, ct), cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -167,21 +186,35 @@ public sealed class OkxExecutionService : IExchangeService, IDisposable
         using var doc = JsonDocument.Parse(json);
 
         decimal usdtBalance = 0;
-        var data = doc.RootElement.GetProperty("data");
-        if (data.GetArrayLength() > 0)
+        if (doc.RootElement.TryGetProperty("data", out var data) && data.GetArrayLength() > 0)
         {
-            var details = data[0].GetProperty("details");
-            foreach (var detail in details.EnumerateArray())
+            if (data[0].TryGetProperty("details", out var details))
             {
-                var ccy = detail.GetProperty("ccy").GetString();
-                if (ccy == "USDT")
+                foreach (var detail in details.EnumerateArray())
                 {
-                    usdtBalance = decimal.Parse(
-                        detail.GetProperty("availBal").GetString() ?? "0",
-                        System.Globalization.CultureInfo.InvariantCulture);
-                    break;
+                    var ccy = detail.TryGetProperty("ccy", out var ccyElement)
+                        ? ccyElement.GetString() ?? string.Empty
+                        : string.Empty;
+
+                    if (ccy == "USDT")
+                    {
+                        var availBalStr = detail.TryGetProperty("availBal", out var availBalElement)
+                            ? availBalElement.GetString() ?? "0"
+                            : "0";
+                        usdtBalance = decimal.Parse(availBalStr,
+                            System.Globalization.CultureInfo.InvariantCulture);
+                        break;
+                    }
                 }
             }
+            else
+            {
+                _logger.LogWarning("OKX account balance response missing 'details' property");
+            }
+        }
+        else
+        {
+            _logger.LogWarning("OKX account balance response missing or empty 'data' property");
         }
 
         _portfolio.SetBalance(Venue, "USDT", usdtBalance);

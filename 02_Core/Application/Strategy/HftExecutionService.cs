@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -10,16 +12,19 @@ public sealed class HftExecutionService
 {
     private readonly IExchangeService _exchangeService;
     private readonly ILogger<HftExecutionService> _logger;
-    private readonly MarketExecutionProfileService _executionProfiles;
+    private readonly IMarketExecutionProfileService _executionProfiles;
+    private readonly ExecutionOptions _execOptions;
 
     public HftExecutionService(
         IExchangeService exchangeService,
         ILogger<HftExecutionService> logger,
-        MarketExecutionProfileService? executionProfiles = null)
+        IMarketExecutionProfileService? executionProfiles = null,
+        IOptions<ExecutionOptions>? executionOptions = null)
     {
         _exchangeService = exchangeService;
         _logger = logger;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
+        _execOptions = executionOptions?.Value ?? new ExecutionOptions();
     }
 
     public async Task<Trade> ExecuteAsync(Signal signal, CancellationToken cancellationToken = default)
@@ -72,7 +77,7 @@ public sealed class HftExecutionService
             };
         }
 
-        if (projectedLatencyMs > profile.PreferredMaxLatencyMs * 1.35)
+        if (projectedLatencyMs > profile.PreferredMaxLatencyMs * _execOptions.LatencyGuardMultiplier)
         {
             _logger.LogWarning(
                 "HFT execution blocked for {Symbol}: projected latency {ProjectedLatency:F0}ms exceeds venue budget {LatencyBudget}ms.",
@@ -95,13 +100,13 @@ public sealed class HftExecutionService
             };
         }
 
-        if (projectedSlippagePercent > profile.SlippagePercent * 1.75m)
+        if (projectedSlippagePercent > profile.SlippagePercent * _execOptions.SlippageGuardMultiplier)
         {
             _logger.LogWarning(
                 "HFT execution blocked for {Symbol}: projected slippage {ProjectedSlippage:F4}% exceeds guardrail {SlippageBudget:F4}%.",
                 signal.Symbol,
                 projectedSlippagePercent,
-                profile.SlippagePercent * 1.75m);
+                profile.SlippagePercent * _execOptions.SlippageGuardMultiplier);
             return new Trade
             {
                 SignalId = signal.Id,
@@ -119,7 +124,7 @@ public sealed class HftExecutionService
         }
 
         var stopwatch = Stopwatch.StartNew();
-        var trade = await _exchangeService.ExecuteOrderAsync(signal);
+        var trade = await _exchangeService.ExecuteOrderAsync(signal, cancellationToken);
         stopwatch.Stop();
 
         trade.ExecutionMode = "REAL";
@@ -160,24 +165,24 @@ public sealed class HftExecutionService
         return turkeyTime.Hour is >= 10 and < 13 or >= 15 and < 18;
     }
 
-    private static double EstimateProjectedLatencyMs(Signal signal, MarketExecutionProfile profile)
+    private double EstimateProjectedLatencyMs(Signal signal, MarketExecutionProfile profile)
     {
-        var confidencePenalty = Math.Max(0, 80 - signal.Confidence) * 0.8;
+        var confidencePenalty = Math.Max(0, _execOptions.ConfidencePenaltyBaseline - signal.Confidence) * _execOptions.ConfidencePenaltyMultiplier;
         var volumeRatio = signal.Volume24h <= 0 || profile.MinHftVolume24h <= 0
             ? 1m
             : signal.Volume24h / profile.MinHftVolume24h;
-        var liquidityPenalty = volumeRatio >= 2m ? 0 : (double)((2m - volumeRatio) * 35m);
+        var liquidityPenalty = volumeRatio >= 2m ? 0 : (double)((2m - volumeRatio) * _execOptions.LiquidityPenaltyMultiplier);
         return profile.PreferredMaxLatencyMs + confidencePenalty + liquidityPenalty;
     }
 
-    private static decimal EstimateProjectedSlippagePercent(Signal signal, MarketExecutionProfile profile)
+    private decimal EstimateProjectedSlippagePercent(Signal signal, MarketExecutionProfile profile)
     {
         var volumeRatio = signal.Volume24h <= 0 || profile.MinHftVolume24h <= 0
             ? 1m
             : signal.Volume24h / profile.MinHftVolume24h;
-        var multiplier = volumeRatio >= 2m ? 0.85m :
-            volumeRatio >= 1.25m ? 1.00m :
-            volumeRatio >= 1m ? 1.35m : 1.80m;
+        var multiplier = volumeRatio >= _execOptions.VolumeHighRatioThreshold ? _execOptions.VolumeHighSlippageMultiplier :
+            volumeRatio >= _execOptions.VolumeMedRatioThreshold ? _execOptions.VolumeMedSlippageMultiplier :
+            volumeRatio >= _execOptions.VolumeLowRatioThreshold ? _execOptions.VolumeLowSlippageMultiplier : _execOptions.VolumeFloorSlippageMultiplier;
         return profile.SlippagePercent * multiplier;
     }
 }

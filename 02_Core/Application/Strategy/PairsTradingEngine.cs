@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -30,13 +31,18 @@ public class PairsTradingEngine
     private const double ZScoreThresholdEntry = 2.0;
     private const double ZScoreThresholdExit = 0.5;
 
-    public PairsTradingEngine(string symbolA, string symbolB, int windowSize, ILogger<PairsTradingEngine> logger)
+    private readonly double _effectiveZScoreEntry;
+    private readonly double _effectiveZScoreExit;
+
+    public PairsTradingEngine(string symbolA, string symbolB, int windowSize, ILogger<PairsTradingEngine> logger, TradingCoreOptions? options = null)
     {
         _symbolA = symbolA;
         _symbolB = symbolB;
         _windowSize = windowSize;
         _spreadHistory = new double[windowSize];
         _logger = logger;
+        _effectiveZScoreEntry = options?.ZScoreThresholdEntry ?? ZScoreThresholdEntry;
+        _effectiveZScoreExit = options?.ZScoreThresholdExit ?? ZScoreThresholdExit;
     }
 
     /// <summary>
@@ -95,13 +101,13 @@ public class PairsTradingEngine
 
         double zScore = CalculateZScore(currentSpread);
 
-        if (zScore > ZScoreThresholdEntry)
+        if (zScore > _effectiveZScoreEntry)
         {
             // Spread is too wide: Asset A is overpriced relative to B.
             // Action: Short A, Long B
             _logger.LogInformation("PAIRS SIGNAL: Short {SymbolA} / Long {SymbolB} | Z-Score: {Z:F2}", _symbolA, _symbolB, zScore);
         }
-        else if (zScore < -ZScoreThresholdEntry)
+        else if (zScore < -_effectiveZScoreEntry)
         {
             // Spread is too narrow: Asset A is underpriced relative to B.
             // Action: Long A, Short B

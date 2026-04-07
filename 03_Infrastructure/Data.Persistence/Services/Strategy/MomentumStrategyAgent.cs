@@ -90,6 +90,7 @@ public sealed class MomentumStrategyAgent : IStrategyAgent
         if (volumeExpanding) reasons.Add("vol expanding");
         if (foundation.Vwap > 0) reasons.Add(priceAboveVwap ? "above VWAP" : "below VWAP");
 
+        confidence = Math.Clamp(confidence, 0f, 100f);
         var reasoning = string.Join(" | ", reasons);
         return Task.FromResult(isBullish
             ? StrategyVote.Approve(StrategyTag, confidence, $"Bullish momentum ({confirmedFactors}/4 factors): {reasoning}")

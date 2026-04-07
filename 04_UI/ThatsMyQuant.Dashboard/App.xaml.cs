@@ -1,4 +1,5 @@
 using System.Windows;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ThatsMyQuant.Dashboard.ViewModels;
 using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
@@ -24,16 +25,25 @@ namespace ThatsMyQuant.Dashboard;
 public partial class App : System.Windows.Application
 {
     public static IServiceProvider? ServiceProvider { get; private set; }
+    private static IConfiguration? _configuration;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+        _configuration = new ConfigurationBuilder()
+            .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+            .AddEnvironmentVariables("TMQ_")
+            .Build();
+
         var services = new ServiceCollection();
+        services.AddSingleton(_configuration);
         ConfigureServices(services);
         ServiceProvider = services.BuildServiceProvider();
         await EnsureDatabaseReadyAsync();
 
-        var loginWindow = new LoginWindow();
+        var loginWindow = new LoginWindow(_configuration);
         if (loginWindow.ShowDialog() == true)
         {
             var mainWindow = ServiceProvider.GetRequiredService<MainWindow>();
@@ -64,7 +74,11 @@ public partial class App : System.Windows.Application
 
     private void ConfigureServices(IServiceCollection services)
     {
-        var geminiApiKey = Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY");
+        var geminiApiKey = _configuration?["Ai:GeminiApiKey"]
+            ?? Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY");
+
+        var connectionString = _configuration?.GetConnectionString("QuantDb")
+            ?? "Data Source=quant.db;Cache=Shared";
 
         // Core Microservice Logic
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
@@ -139,7 +153,7 @@ public partial class App : System.Windows.Application
         services.AddDbContext<ThatsMyQuant.Infrastructure.Persistence.QuantDbContext>(options =>
         {
             options.UseLazyLoadingProxies();
-            options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared");
+            options.UseSqlite(connectionString);
         });
         services.AddScoped<ISignalRepository, ThatsMyQuant.Infrastructure.Repositories.SignalRepository>();
         services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();

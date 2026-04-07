@@ -120,12 +120,12 @@
 
                 <StackPanel Grid.Row="2" VerticalAlignment="Top">
                     <TextBlock Text="OPERATOR IDENTIFIER" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Black" Margin="2,0,0,8"/>
-                    <TextBox x:Name="EmailBox" Style="{StaticResource GlassTextBoxStyle}" Height="45" Margin="0,0,0,25" 
-                             Text="admin@thatsmyquant.com" FontFamily="{StaticResource MonoFont}"/>
+                    <TextBox x:Name="EmailBox" Style="{StaticResource GlassTextBoxStyle}" Height="45" Margin="0,0,0,25"
+                             FontFamily="{StaticResource MonoFont}"/>
                     
                     <TextBlock Text="ACCESS TOKEN" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Black" Margin="2,0,0,8"/>
-                    <PasswordBox x:Name="PasswordBox"  Height="45" Background="#0AFFFFFF" BorderBrush="#2AFFFFFF" BorderThickness="1" Foreground="White" 
-                                 Padding="12,0" VerticalContentAlignment="Center" Margin="0,0,0,40" Password="admin" FontFamily="{StaticResource MonoFont}">
+                    <PasswordBox x:Name="PasswordBox"  Height="45" Background="#0AFFFFFF" BorderBrush="#2AFFFFFF" BorderThickness="1" Foreground="White"
+                                 Padding="12,0" VerticalContentAlignment="Center" Margin="0,0,0,40" FontFamily="{StaticResource MonoFont}">
                         <!-- PasswordBox doesn't support Style directly easily like TextBox for ControlTemplate, keeping it simple but matching colors -->
                     </PasswordBox>
 

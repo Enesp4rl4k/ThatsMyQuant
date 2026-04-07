@@ -21,6 +21,7 @@ public static class PerformanceTracker
         public double AverageRR { get; init; }
         public decimal MaxDrawdown { get; init; }
         public decimal MaxDrawdownPercent { get; init; }
+        public double UlcerIndex { get; init; }
         public int MaxConsecutiveLosses { get; init; }
         public decimal BestTrade { get; init; }
         public decimal WorstTrade { get; init; }
@@ -58,6 +59,7 @@ public static class PerformanceTracker
             AverageRR = avgLoss != 0 ? (double)(avgWin / Math.Abs(avgLoss)) : 0,
             MaxDrawdown = maxDD,
             MaxDrawdownPercent = maxDDPercent,
+            UlcerIndex = CalculateUlcerIndex(portfolio),
             MaxConsecutiveLosses = CalculateMaxConsecutiveLosses(closed),
             BestTrade = pnls.Max(),
             WorstTrade = pnls.Min(),
@@ -116,6 +118,33 @@ public static class PerformanceTracker
             }
         }
         return (maxDD, maxDDPercent);
+    }
+
+    /// <summary>
+    /// Ulcer Index — measures the depth and duration of drawdowns.
+    /// UI = sqrt(mean(DD%^2)) where DD% is the percentage drawdown from peak at each point.
+    /// Lower is better. UI &lt; 5 = smooth equity curve; UI &gt; 15 = volatile/painful.
+    /// </summary>
+    private static double CalculateUlcerIndex(PaperPortfolio portfolio)
+    {
+        if (portfolio.EquityCurve.Count < 2) return 0;
+
+        decimal peak = portfolio.InitialBalance;
+        double sumSquaredDD = 0;
+        int count = 0;
+
+        foreach (var eq in portfolio.EquityCurve)
+        {
+            if (eq > peak) peak = eq;
+            if (peak > 0)
+            {
+                double ddPercent = (double)((peak - eq) / peak * 100m);
+                sumSquaredDD += ddPercent * ddPercent;
+            }
+            count++;
+        }
+
+        return count > 0 ? Math.Sqrt(sumSquaredDD / count) : 0;
     }
 
     private static int CalculateMaxConsecutiveLosses(IReadOnlyList<PaperPosition> positions)

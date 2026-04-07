@@ -27,12 +27,21 @@ public sealed class FeatureDriftMonitor
     private readonly bool[] _baselineConfigured;
     private readonly double[] _lastZScore;
 
+    /// <summary>
+    /// Maximum number of samples before the running statistics are decayed.
+    /// Prevents infinite accumulation and keeps drift detection responsive to recent data.
+    /// When the sample count exceeds this window, an exponential decay factor is applied
+    /// so the running mean/variance gradually forget old observations.
+    /// </summary>
+    private readonly long _maxWindowSize;
+
     public FeatureDriftMonitor(
         int featureCount,
         double lambda = 50.0,
         double alpha = 0.005,
         double zScoreThreshold = 3.0,
         int minimumSamplesBeforeDrift = 25,
+        long maxWindowSize = 10_000,
         ILogger<FeatureDriftMonitor>? logger = null)
     {
         _featureCount = featureCount;
@@ -40,6 +49,7 @@ public sealed class FeatureDriftMonitor
         _alpha = alpha;
         _zScoreThreshold = zScoreThreshold;
         _minimumSamplesBeforeDrift = minimumSamplesBeforeDrift;
+        _maxWindowSize = maxWindowSize > 0 ? maxWindowSize : 10_000;
         _logger = logger;
 
         _runningMean = new double[featureCount];
@@ -87,6 +97,18 @@ public sealed class FeatureDriftMonitor
 
         _sampleCount[featureIndex]++;
         var n = _sampleCount[featureIndex];
+
+        // Sliding window decay: once we exceed the window size, apply exponential
+        // forgetting so that old observations gradually lose influence.
+        if (n > _maxWindowSize)
+        {
+            var decay = (double)_maxWindowSize / n;
+            _runningVariance[featureIndex] *= decay;
+            _cumulativeSum[featureIndex] *= decay;
+            _minCumulativeSum[featureIndex] *= decay;
+            _sampleCount[featureIndex] = _maxWindowSize;
+            n = _maxWindowSize;
+        }
 
         var delta = value - _runningMean[featureIndex];
         _runningMean[featureIndex] += delta / n;

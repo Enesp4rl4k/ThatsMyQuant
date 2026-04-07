@@ -18,6 +18,7 @@ public sealed class MarketReplayService : IStreamingMarketDataService
 {
     private readonly string _dataPath;
     private bool _isRunning;
+    private Task? _replayTask;
 
     public event Action<MarketTick>? OnTickReceived;
     public event Action<OrderBookSnapshot>? OnOrderBookUpdated;
@@ -27,11 +28,11 @@ public sealed class MarketReplayService : IStreamingMarketDataService
         _dataPath = dataPath;
     }
 
-    public async Task ConnectAsync(string[] symbols, CancellationToken cancellationToken)
+    public Task ConnectAsync(string[] symbols, CancellationToken cancellationToken)
     {
         _isRunning = true;
-        _ = RunReplayLoopAsync(cancellationToken);
-        await Task.CompletedTask;
+        _replayTask = RunReplayLoopAsync(cancellationToken);
+        return Task.CompletedTask;
     }
 
     private async Task RunReplayLoopAsync(CancellationToken ct)

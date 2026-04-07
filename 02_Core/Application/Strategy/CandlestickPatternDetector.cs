@@ -1,4 +1,5 @@
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -12,18 +13,22 @@ public static class CandlestickPatternDetector
     private const decimal IndecisionThreshold = 0.3m;
     private const decimal StrongBodyThreshold = 0.5m;
 
-    public static string DetectPattern(IReadOnlyList<Candle> candles, int index = -1)
+    public static string DetectPattern(IReadOnlyList<Candle> candles, int index = -1, TradingCoreOptions? options = null)
     {
         if (candles == null || candles.Count < 3) return "None";
         if (index == -1) index = candles.Count - 1;
         if (index < 2 || index >= candles.Count) return "None";
+
+        decimal dojiThreshold = options?.DojiThreshold ?? DojiThreshold;
+        decimal indecisionThreshold = options?.IndecisionThreshold ?? IndecisionThreshold;
+        decimal strongBodyThreshold = options?.StrongBodyThreshold ?? StrongBodyThreshold;
 
         var c0 = candles[index];     // Current
         var c1 = candles[index - 1]; // Previous
         var c2 = candles[index - 2]; // 2 ago
 
         // 1. DOJI
-        var doji = DetectDoji(c0);
+        var doji = DetectDoji(c0, dojiThreshold);
         if (doji != "None") return doji;
 
         // 2. HAMMER / HANGING MAN
@@ -39,18 +44,18 @@ public static class CandlestickPatternDetector
         if (engulfing != "None") return engulfing;
 
         // 5. MORNING / EVENING STAR
-        var star = DetectStarPattern(c0, c1, c2);
+        var star = DetectStarPattern(c0, c1, c2, indecisionThreshold, strongBodyThreshold);
         if (star != "None") return star;
 
         return "None";
     }
 
-    private static string DetectDoji(Candle c)
+    private static string DetectDoji(Candle c, decimal dojiThreshold = DojiThreshold)
     {
         decimal body = Math.Abs(c.Close - c.Open);
         decimal range = Math.Max(c.High - c.Low, 0.00000001m);
-        
-        if (body > range * DojiThreshold) return "None";
+
+        if (body > range * dojiThreshold) return "None";
 
         decimal upperWick = c.High - Math.Max(c.Open, c.Close);
         decimal lowerWick = Math.Min(c.Open, c.Close) - c.Low;
@@ -109,23 +114,23 @@ public static class CandlestickPatternDetector
         return "None";
     }
 
-    private static string DetectStarPattern(Candle c0, Candle c1, Candle c2)
+    private static string DetectStarPattern(Candle c0, Candle c1, Candle c2, decimal indecisionThreshold = IndecisionThreshold, decimal strongBodyThreshold = StrongBodyThreshold)
     {
         decimal range1 = Math.Max(c1.High - c1.Low, 0.00000001m);
         decimal body1 = Math.Abs(c1.Close - c1.Open);
-        bool c1Indecision = body1 <= range1 * IndecisionThreshold;
+        bool c1Indecision = body1 <= range1 * indecisionThreshold;
         
         if (!c1Indecision) return "None";
 
         // Morning Star
-        if (IsStrongBearish(c2) && IsBullish(c0) && 
+        if (IsStrongBearish(c2, strongBodyThreshold) && IsBullish(c0) &&
             c0.Close > c2.Open - (c2.Open - c2.Close) / 2m)
         {
             return "Morning Star (Bullish Reversal)";
         }
 
         // Evening Star
-        if (IsStrongBullish(c2) && IsBearish(c0) && 
+        if (IsStrongBullish(c2, strongBodyThreshold) && IsBearish(c0) &&
             c0.Close < c2.Open + (c2.Close - c2.Open) / 2m)
         {
             return "Evening Star (Bearish Reversal)";
@@ -137,9 +142,9 @@ public static class CandlestickPatternDetector
     private static bool IsBullish(Candle c) => c.Close > c.Open;
     private static bool IsBearish(Candle c) => c.Close < c.Open;
 
-    private static bool IsStrongBullish(Candle c) => 
-        IsBullish(c) && Math.Abs(c.Open - c.Close) > (c.High - c.Low) * StrongBodyThreshold;
+    private static bool IsStrongBullish(Candle c, decimal strongBodyThreshold = StrongBodyThreshold) =>
+        IsBullish(c) && Math.Abs(c.Open - c.Close) > (c.High - c.Low) * strongBodyThreshold;
 
-    private static bool IsStrongBearish(Candle c) => 
-        IsBearish(c) && Math.Abs(c.Open - c.Close) > (c.High - c.Low) * StrongBodyThreshold;
+    private static bool IsStrongBearish(Candle c, decimal strongBodyThreshold = StrongBodyThreshold) =>
+        IsBearish(c) && Math.Abs(c.Open - c.Close) > (c.High - c.Low) * strongBodyThreshold;
 }

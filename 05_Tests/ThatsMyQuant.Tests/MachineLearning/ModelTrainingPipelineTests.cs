@@ -90,7 +90,8 @@ public class ModelTrainingPipelineTests : IDisposable
         var logger = Substitute.For<ILogger<ModelTrainingPipeline>>();
         var featureAgent = new FeatureEngineeringAgent();
         var driftMonitor = new FeatureDriftMonitor(5, minimumSamplesBeforeDrift: 1);
-        return (new ModelTrainingPipeline(logger, featureAgent, driftMonitor, _artifactDirectory), featureAgent, driftMonitor);
+        var artifactStore = new ThatsMyQuant.Infrastructure.Services.FileSystemModelArtifactStore(_artifactDirectory);
+        return (new ModelTrainingPipeline(logger, featureAgent, artifactStore, driftMonitor), featureAgent, driftMonitor);
     }
 
     private static void SeedSeparableDataset(

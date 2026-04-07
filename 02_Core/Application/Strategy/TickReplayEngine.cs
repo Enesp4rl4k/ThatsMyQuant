@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 using ThatsMyQuant.Application.MachineLearning;
 
 namespace ThatsMyQuant.Application.Strategy;
@@ -17,19 +19,24 @@ public sealed class TickReplayEngine
     private readonly FeatureEngineeringAgent _featureAgent;
     private readonly ILogger<TickReplayEngine> _logger;
 
-    // Simulation parameters
-    private const decimal CommissionRate = 0.0005m;  // 5 bps per side
-    private const double SlippageBps = 1.0;           // 1 bps average slippage
-    private const int MinTicksForEntry = 100;         // Warm-up period
+    // Simulation parameters (configurable via MachineLearningOptions)
+    private readonly decimal _commissionRate;
+    private readonly double _slippageBps;
+    private readonly int _minTicksForEntry;
 
     public TickReplayEngine(
         IAgentCoordinator coordinator,
         FeatureEngineeringAgent featureAgent,
-        ILogger<TickReplayEngine> logger)
+        ILogger<TickReplayEngine> logger,
+        IOptions<MachineLearningOptions>? mlOptions = null)
     {
         _coordinator = coordinator;
         _featureAgent = featureAgent;
         _logger = logger;
+        var opts = mlOptions?.Value ?? new MachineLearningOptions();
+        _commissionRate = opts.SimulationCommissionRate;
+        _slippageBps = opts.SimulationSlippageBps;
+        _minTicksForEntry = opts.MinTicksForEntry;
     }
 
     /// <summary>
@@ -72,10 +79,10 @@ public sealed class TickReplayEngine
         IReadOnlyList<OrderBookSnapshot>? orderBooks = null,
         CancellationToken ct = default)
     {
-        if (ticks.Count < MinTicksForEntry)
+        if (ticks.Count < _minTicksForEntry)
         {
             _logger.LogWarning("Insufficient tick data for {Symbol}: {Count} < {Min}",
-                symbol, ticks.Count, MinTicksForEntry);
+                symbol, ticks.Count, _minTicksForEntry);
             return new BacktestResult
             {
                 Symbol = symbol,
@@ -102,7 +109,7 @@ public sealed class TickReplayEngine
         decimal currentOFI = 0m;
 
         // Phase 1: Warm up the feature agent
-        int warmupEnd = Math.Min(MinTicksForEntry, ticks.Count);
+        int warmupEnd = Math.Min(_minTicksForEntry, ticks.Count);
         for (int i = 0; i < warmupEnd; i++)
         {
             _featureAgent.ProcessTickNatively((double)ticks[i].Price);
@@ -369,11 +376,11 @@ public sealed class TickReplayEngine
         return current;
     }
 
-    private static decimal CalculatePnl(ReplayPosition pos, decimal exitPrice, decimal filledQuantity)
+    private decimal CalculatePnl(ReplayPosition pos, decimal exitPrice, decimal filledQuantity)
     {
         decimal direction = pos.Side == TradeSide.Sell ? -1m : 1m;
         decimal gross = (exitPrice - pos.EntryPrice) * filledQuantity * direction;
-        decimal fees = (pos.EntryPrice * filledQuantity + exitPrice * filledQuantity) * CommissionRate;
+        decimal fees = (pos.EntryPrice * filledQuantity + exitPrice * filledQuantity) * _commissionRate;
         return gross - fees;
     }
 

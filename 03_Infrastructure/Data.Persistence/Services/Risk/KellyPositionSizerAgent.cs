@@ -1,23 +1,32 @@
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services.Risk;
 
 public sealed class KellyPositionSizerAgent : IRiskGuardAgent
 {
     private readonly ILogger<KellyPositionSizerAgent> _logger;
-    private const double FractionalKelly = 0.25;
-    private const double MinEdge = 0.02;
-    private const double MaxPositionFraction = 0.20;
-    private const double TotalTransactionCostBps = 0.001; // 0.1% baseline total cost (spread + commission)
+    private readonly double _fractionalKelly;
+    private readonly double _minEdge;
+    private readonly double _maxPositionFraction;
+    private readonly double _totalTransactionCostBps;
 
     public string GuardId => "Risk.Kelly";
     public int Order => 0;
 
-    public KellyPositionSizerAgent(ILogger<KellyPositionSizerAgent> logger)
-        => _logger = logger;
+    public KellyPositionSizerAgent(ILogger<KellyPositionSizerAgent> logger, IOptions<RiskGuardAgentOptions>? options = null)
+    {
+        _logger = logger;
+        var opts = options?.Value ?? new RiskGuardAgentOptions();
+        _fractionalKelly = opts.FractionalKelly;
+        _minEdge = opts.MinEdge;
+        _maxPositionFraction = opts.MaxPositionFraction;
+        _totalTransactionCostBps = opts.TotalTransactionCostBps;
+    }
 
     public Task<RiskGuardResult> EvaluateAsync(
         Signal signal,
@@ -31,7 +40,7 @@ public sealed class KellyPositionSizerAgent : IRiskGuardAgent
         // Odds ratio (b): Net Profit / Net Loss
         var rawTakeProfitDist = Math.Abs((double)(decision.TakeProfit - signal.Price));
         var rawStopLossDist = Math.Abs((double)(decision.StopLoss - signal.Price));
-        var estimatedCost = (double)signal.Price * TotalTransactionCostBps;
+        var estimatedCost = (double)signal.Price * _totalTransactionCostBps;
 
         var takeProfitDist = rawTakeProfitDist - estimatedCost;
         var stopLossDist = rawStopLossDist + estimatedCost;
@@ -53,9 +62,9 @@ public sealed class KellyPositionSizerAgent : IRiskGuardAgent
                 $"Negative expectancy (Kelly={fullKelly:F2})"));
         }
 
-        // 0.5x fractional Kelly capped at 20% position
-        var halfKelly = fullKelly * 0.5;
-        var finalFraction = (decimal)Math.Min(halfKelly, 0.20);
+        // Fractional Kelly capped at max position fraction
+        var fractionalKellyResult = fullKelly * _fractionalKelly;
+        var finalFraction = (decimal)Math.Min(fractionalKellyResult, _maxPositionFraction);
 
         // SizeMultiplier is relative to the initial decision size
         var multiplier = finalFraction / decision.PositionSizePercent;

@@ -39,10 +39,13 @@ builder.Services.AddRateLimiter(options =>
 });
 
 // --- Database ---
+var connectionString = builder.Configuration.GetConnectionString("QuantDb") ?? "Data Source=quant.db;Cache=Shared";
 builder.Services.AddDbContextPool<QuantDbContext>(options =>
-    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"), poolSize: 128);
+    options.UseSqlite(connectionString), poolSize: 128);
 
 builder.Services.AddSingleton<SignalWriterChannel>();
+builder.Services.AddSingleton<SignalIngestionChannel>();
+builder.Services.AddHostedService<SignalIngestionWorker>();
 builder.Services.AddHostedService<QuantPersistenceWorker>();
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
@@ -51,40 +54,15 @@ builder.Services.AddScoped<ITradeRepository, TradeRepository>();
 // --- MediatR ---
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
 
-// --- HttpClient ---
-builder.Services.AddHttpClient();
-builder.Services.AddHttpClient("Yahoo", client =>
-{
-    client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
-    client.Timeout = TimeSpan.FromSeconds(10);
-});
-builder.Services.AddHttpClient("Binance");
+// --- Shared infrastructure (HTTP clients, market data, validators, exchange info) ---
+builder.Services.AddThatsMyQuantCommonInfrastructure(builder.Configuration);
 
-// --- CORE APPLICATION SERVICES ---
-builder.Services.AddThatsMyQuantApplication();
-builder.Services.AddThatsMyQuantInfrastructure();
-
-// --- INFRASTRUCTURE ADAPTERS ---
-builder.Services.AddSingleton<BorsaMarketDataService>();
-builder.Services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
+// --- AI / Reasoning (host-specific due to SemanticKernel dependency) ---
 builder.Services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
 builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
 builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
 builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
-builder.Services.AddSingleton<IExchangeService, MockBrokerService>();
-builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
-builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
-builder.Services.AddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
-builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
-builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
-builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
 
-// Signal Validation Chain
-builder.Services.AddScoped<ISignalValidator, MarketHoursValidator>();
-builder.Services.AddScoped<ISignalValidator, PriceSanityValidator>();
-builder.Services.AddScoped<ISignalValidator, MinVolumeValidator>();
-
-// Safety Kernel
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
 if (!string.IsNullOrWhiteSpace(geminiApiKey))
 {
@@ -92,9 +70,13 @@ if (!string.IsNullOrWhiteSpace(geminiApiKey))
 }
 else
 {
-    builder.Services.AddKernel(); 
+    builder.Services.AddKernel();
     builder.Services.AddSingleton<IChatCompletionService, MockChatCompletionService>();
 }
+
+// --- Listener-specific services ---
+builder.Services.AddSingleton<IExchangeService, MockBrokerService>();
+builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
 
 builder.Services.AddHostedService<WebhookCleanupService>();
 builder.Services.AddSignalR();
@@ -111,6 +93,25 @@ builder.Services.AddCors(options =>
               .AllowCredentials();
     });
 });
+
+// --- Startup Secret Validation ---
+// Fail fast if critical secrets are not configured (use dotnet user-secrets or env vars)
+var webhookSecret = builder.Configuration["WebhookSecret"];
+var internalApiKey = builder.Configuration["Security:InternalApiKey"];
+
+if (string.IsNullOrWhiteSpace(webhookSecret))
+{
+    throw new InvalidOperationException(
+        "WebhookSecret is not configured. Use 'dotnet user-secrets set WebhookSecret <value>' " +
+        "or set the WEBHOOKSECRET environment variable.");
+}
+
+if (string.IsNullOrWhiteSpace(internalApiKey))
+{
+    throw new InvalidOperationException(
+        "Security:InternalApiKey is not configured. Use 'dotnet user-secrets set Security:InternalApiKey <value>' " +
+        "or set the SECURITY__INTERNALAPIKEY environment variable.");
+}
 
 var app = builder.Build();
 
@@ -131,10 +132,11 @@ app.UseMiddleware<HmacValidationMiddleware>();
 app.UseMiddleware<ApiKeyValidationMiddleware>();
 app.UseCors("AllowReact");
 
-app.MapPost("/webhook", async (Signal signal, IMediator mediator) =>
+app.MapPost("/webhook", (Signal signal, SignalIngestionChannel channel) =>
 {
-    await mediator.Send(new ProcessSignalCommand(signal));
-    return Results.Accepted();
+    // Fire into the bounded channel — the SignalIngestionWorker processes it asynchronously.
+    // Returns 202 in < 1ms, shielding HTTP from heavy AI swarm processing.
+    return channel.TryWrite(signal) ? Results.Accepted() : Results.StatusCode(503);
 });
 
 app.MapHub<MarketDataHub>("/market-hub");

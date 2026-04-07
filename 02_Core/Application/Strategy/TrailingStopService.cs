@@ -26,16 +26,12 @@ public static class TrailingStopService
         }
         else // Sell
         {
-            if (currentLow < position.OptimalPriceSinceEntry || position.OptimalPriceSinceEntry == 0)
+            if (position.OptimalPriceSinceEntry == 0 || currentLow < position.OptimalPriceSinceEntry)
                 position.OptimalPriceSinceEntry = currentLow;
 
             decimal activationPrice = position.EntryPrice - (decimal)atr;
-            if (position.OptimalPriceSinceEntry > activationPrice && (position.OptimalPriceSinceEntry > 0 || position.OptimalPriceSinceEntry == 0))
-            {
-                // If it's the first check, we need to handle the 0 initialization
-                if (position.OptimalPriceSinceEntry == 0) position.OptimalPriceSinceEntry = currentLow;
-                if (position.OptimalPriceSinceEntry > activationPrice) return false;
-            }
+            if (position.OptimalPriceSinceEntry > activationPrice)
+                return false;
 
             decimal newTrail = position.OptimalPriceSinceEntry + atrDecimal;
             if (newTrail < position.TrailingStopPrice || position.TrailingStopPrice == 0)
@@ -66,15 +62,12 @@ public static class TrailingStopService
         }
         else
         {
-            if (currentLow < trade.OptimalPriceSinceEntry || trade.OptimalPriceSinceEntry == 0)
+            if (trade.OptimalPriceSinceEntry == 0 || currentLow < trade.OptimalPriceSinceEntry)
                 trade.OptimalPriceSinceEntry = currentLow;
 
             decimal activationPrice = trade.EntryPrice - (decimal)atr;
-            if (trade.OptimalPriceSinceEntry > activationPrice && (trade.OptimalPriceSinceEntry > 0 || trade.OptimalPriceSinceEntry == 0))
-            {
-                if (trade.OptimalPriceSinceEntry == 0) trade.OptimalPriceSinceEntry = currentLow;
-                if (trade.OptimalPriceSinceEntry > activationPrice) return false;
-            }
+            if (trade.OptimalPriceSinceEntry > activationPrice)
+                return false;
 
             decimal newTrail = trade.OptimalPriceSinceEntry + atrDecimal;
             if (newTrail < trade.TrailingStopPrice || trade.TrailingStopPrice == 0)

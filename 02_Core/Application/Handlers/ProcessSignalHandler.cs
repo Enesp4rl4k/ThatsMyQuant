@@ -1,6 +1,7 @@
 using MediatR;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Globalization;
 using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Resilience;
@@ -8,6 +9,7 @@ using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Handlers;
 
@@ -20,6 +22,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     private readonly IMarketDataService _marketDataService;
     private readonly ISignalValidator[] _validators;
     private readonly IAgentCoordinator _agentCoordinator;
+    private readonly RegimeOptions _regimeOptions;
+    private readonly ExecutionOptions _executionOptions;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
@@ -30,7 +34,9 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         ITechnicalAnalysisService technicalAnalysis,
         IEnumerable<ISignalValidator> validators,
         IAgentCoordinator agentCoordinator,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        IOptions<RegimeOptions>? regimeOptions = null,
+        IOptions<ExecutionOptions>? executionOptions = null)
     {
         _logger = logger;
         _mediator = mediator;
@@ -39,6 +45,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         _technicalAnalysis = technicalAnalysis;
         _validators = validators.OrderBy(v => v.Order).ToArray();
         _agentCoordinator = agentCoordinator;
+        _regimeOptions = regimeOptions?.Value ?? new RegimeOptions();
+        _executionOptions = executionOptions?.Value ?? new ExecutionOptions();
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
     }
@@ -68,7 +76,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
 
         // STEP 1: Fetch Candle Data
         var candles = await pipeline.ExecuteAsync(async ct =>
-            await _marketDataService.GetCandlesAsync(request.Signal.Symbol, 100, request.Signal.MarketType.ToString()), cancellationToken);
+            await _marketDataService.GetCandlesAsync(request.Signal.Symbol, _regimeOptions.CandleLookbackCount, request.Signal.MarketType.ToString()), cancellationToken);
 
         // STEP 1.5: Detect Market Regime — Adapt Risk Parameters
         var (regime, structure, riskParams) = AnalyzeMarketRegime(candles, request.Signal);
@@ -114,8 +122,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
 
         var riskParams = regime.Regime switch
         {
-            MarketRegime.Volatile  => RiskParameters.Default with { MaxPositionSizePercent = 2.5m },
-            MarketRegime.Trending  => RiskParameters.Default with { MaxPositionSizePercent = 7.5m },
+            MarketRegime.Volatile  => RiskParameters.Default with { MaxPositionSizePercent = _regimeOptions.VolatileMaxPositionSizePercent },
+            MarketRegime.Trending  => RiskParameters.Default with { MaxPositionSizePercent = _regimeOptions.TrendingMaxPositionSizePercent },
             _                      => RiskParameters.Default
         };
 
@@ -199,8 +207,30 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
 
         if (signal.Price > 0)
         {
-            signal.Quantity = Math.Round((riskParams.StartingEquity * adjustedDecision.PositionSizePercent) / signal.Price, 4);
+            // Cap position size to prevent catastrophic oversizing from corrupted data
+            var cappedSizePercent = Math.Min(adjustedDecision.PositionSizePercent, _executionOptions.MaxPositionSizePercent);
+            signal.Quantity = Math.Round((riskParams.StartingEquity * cappedSizePercent) / signal.Price, 4);
             signal.Metadata["RequestedQuantity"] = signal.Quantity.ToString(CultureInfo.InvariantCulture);
+
+            // Validate computed quantity meets minimum thresholds
+            var notionalValue = signal.Quantity * signal.Price;
+            if (signal.Quantity < _executionOptions.MinOrderQuantity || notionalValue < _executionOptions.MinNotionalValue)
+            {
+                signal.Status = TradeStatus.Rejected;
+                signal.Reasoning += $" | Quantity validation failed: Qty={signal.Quantity}, Notional={notionalValue:F2} (min qty={_executionOptions.MinOrderQuantity}, min notional={_executionOptions.MinNotionalValue})";
+                await _signalRepository.UpdateAsync(signal);
+                _logger.LogWarning("❌ QUANTITY REJECTED: Qty={Qty}, Notional={Notional:F2} below minimums", signal.Quantity, notionalValue);
+                _logger.LogInformation("═══════════════════════════════════════════════════════");
+                return (decision, false);
+            }
+        }
+        else
+        {
+            signal.Status = TradeStatus.Rejected;
+            signal.Reasoning += " | Invalid price: signal.Price <= 0";
+            await _signalRepository.UpdateAsync(signal);
+            _logger.LogWarning("❌ PRICE REJECTED: Signal price is {Price}", signal.Price);
+            return (decision, false);
         }
 
         _logger.LogInformation("✅ SWARM APPROVED: Confidence={Confidence}/100 | SL={SL:F2} | TP={TP:F2} | Size={Size:P1} | Action={Action} | Qty={Qty}",

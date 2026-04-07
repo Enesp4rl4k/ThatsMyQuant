@@ -1,4 +1,6 @@
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using static ThatsMyQuant.Application.Strategy.StrategyMathUtils;
 
 namespace ThatsMyQuant.Application.Strategy;
@@ -6,13 +8,15 @@ namespace ThatsMyQuant.Application.Strategy;
 public sealed class ExitPolicyLearningService
 {
     private readonly IStrategyPerformanceStore _store;
+    private readonly StrategyLearningOptions _opts;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private StrategyPerformanceState _state;
 
 
-    public ExitPolicyLearningService(IStrategyPerformanceStore store)
+    public ExitPolicyLearningService(IStrategyPerformanceStore store, IOptions<StrategyLearningOptions>? learningOptions = null)
     {
         _store = store;
+        _opts = learningOptions?.Value ?? new StrategyLearningOptions();
         _state = new StrategyPerformanceState();
     }
 
@@ -189,7 +193,7 @@ public sealed class ExitPolicyLearningService
             }
 
             var weightedTrades = candidates.Sum(item => item.Snapshot.Trades);
-            if (weightedTrades < 3)
+            if (weightedTrades < _opts.LiveSizingMinSample)
             {
                 return decision;
             }
@@ -202,34 +206,34 @@ public sealed class ExitPolicyLearningService
             var multiplier = 1.00m;
             var reason = string.Empty;
 
-            if (driftScore >= 0.65)
+            if (driftScore >= _opts.SevereDriftThreshold)
             {
-                multiplier = 0.78m;
+                multiplier = _opts.SevereDriftMultiplier;
                 reason = $"Live vs paper drift for {decision.ExitPolicyTag} is severe ({driftScore:F2}).";
             }
-            else if (driftScore >= 0.45)
+            else if (driftScore >= _opts.ElevatedDriftThreshold)
             {
-                multiplier = 0.88m;
+                multiplier = _opts.ElevatedDriftMultiplier;
                 reason = $"Live vs paper drift for {decision.ExitPolicyTag} is elevated ({driftScore:F2}).";
             }
-            else if (weightedExpectedValue > 0 && weightedProfitFactor >= 1.40 && weightedWinRate >= 58)
+            else if (weightedExpectedValue > 0 && weightedProfitFactor >= _opts.ExceptionalProfitFactor && weightedWinRate >= _opts.ExceptionalWinRate)
             {
-                multiplier = 1.15m;
+                multiplier = _opts.ExceptionalMultiplier;
                 reason = $"Live exit winner {decision.ExitPolicyTag} is exceptionally healthy (PF {weightedProfitFactor:F2}, WR {weightedWinRate:F1}%, EV {weightedExpectedValue:F2}).";
             }
-            else if (weightedExpectedValue > 0 && weightedProfitFactor >= 1.20 && weightedWinRate >= 50)
+            else if (weightedExpectedValue > 0 && weightedProfitFactor >= _opts.HealthyProfitFactor && weightedWinRate >= _opts.HealthyWinRate)
             {
-                multiplier = 1.08m;
+                multiplier = _opts.HealthyMultiplier;
                 reason = $"Live exit winner {decision.ExitPolicyTag} is healthy (PF {weightedProfitFactor:F2}, WR {weightedWinRate:F1}%, EV {weightedExpectedValue:F2}).";
             }
-            else if (weightedExpectedValue <= 0 || weightedProfitFactor < 0.95 || weightedWinRate < 40)
+            else if (weightedExpectedValue <= 0 || weightedProfitFactor < _opts.UnderperformingProfitFactor || weightedWinRate < _opts.UnderperformingWinRate)
             {
-                multiplier = 0.80m;
+                multiplier = _opts.UnderperformingMultiplier;
                 reason = $"Live exit winner {decision.ExitPolicyTag} is underperforming (PF {weightedProfitFactor:F2}, WR {weightedWinRate:F1}%, EV {weightedExpectedValue:F2}).";
             }
-            else if (weightedProfitFactor < 1.05 || weightedWinRate < 45)
+            else if (weightedProfitFactor < _opts.SoftProfitFactor || weightedWinRate < _opts.SoftWinRate)
             {
-                multiplier = 0.90m;
+                multiplier = _opts.SoftMultiplier;
                 reason = $"Live exit winner {decision.ExitPolicyTag} is soft (PF {weightedProfitFactor:F2}, WR {weightedWinRate:F1}%, EV {weightedExpectedValue:F2}).";
             }
 
@@ -286,10 +290,10 @@ public sealed class ExitPolicyLearningService
                     weightedWinRate,
                     weightedExpectedValue);
             })
-            .Where(item => item.WeightedTrades >= 2.5m &&
+            .Where(item => item.WeightedTrades >= _opts.PolicyMinWeightedTrades &&
                            item.WeightedExpectedValue > 0 &&
-                           item.WeightedProfitFactor >= 1.05 &&
-                           item.WeightedWinRate >= 42)
+                           item.WeightedProfitFactor >= _opts.PolicyMinProfitFactor &&
+                           item.WeightedWinRate >= _opts.PolicyMinWinRate)
             .OrderByDescending(item => item.Score)
             .ToList();
 
@@ -306,7 +310,7 @@ public sealed class ExitPolicyLearningService
             return best;
         }
 
-        return best.Score > current.Score * 1.05m ? best : null;
+        return best.Score > current.Score * _opts.PolicyScoreCompareThreshold ? best : null;
     }
 
     private IEnumerable<ExitPolicyMatchSnapshot> FindMatchingSnapshots(

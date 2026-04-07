@@ -1,7 +1,9 @@
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services.MetaLearning;
 
@@ -9,13 +11,18 @@ public sealed class ReinforcementLearningAgent : IMetaLearningAgent
 {
     private readonly ILogger<ReinforcementLearningAgent> _logger;
     private readonly Dictionary<string, ArmState> _arms = new();
-    private const double ExplorationEpsilon = 0.10;
-    private const int WarmupTrades = 10;
+    private readonly double _explorationEpsilon;
+    private readonly int _warmupTrades;
 
     public string AgentId => "Meta.RLBandit";
 
-    public ReinforcementLearningAgent(ILogger<ReinforcementLearningAgent> logger)
-        => _logger = logger;
+    public ReinforcementLearningAgent(ILogger<ReinforcementLearningAgent> logger, IOptions<MetaLearningAgentOptions>? options = null)
+    {
+        _logger = logger;
+        var opts = options?.Value ?? new MetaLearningAgentOptions();
+        _explorationEpsilon = opts.ExplorationEpsilon;
+        _warmupTrades = opts.WarmupTrades;
+    }
 
     public Task<MetaAdaptation> AdaptAsync(
         IReadOnlyList<Trade> recentHistory,
@@ -48,13 +55,13 @@ public sealed class ReinforcementLearningAgent : IMetaLearningAgent
 
         foreach (var (tag, arm) in _arms)
         {
-            if (arm.Pulls < WarmupTrades)
+            if (arm.Pulls < _warmupTrades)
             {
                 weights[tag] = 1.0f;
                 continue;
             }
 
-            var explore = rng.NextDouble() < ExplorationEpsilon;
+            var explore = rng.NextDouble() < _explorationEpsilon;
             var score = explore ? rng.NextDouble() : arm.WinRate;
             weights[tag] = (float)(0.5 + score);
         }

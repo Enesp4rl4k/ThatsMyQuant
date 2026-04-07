@@ -5,7 +5,7 @@ namespace ThatsMyQuant.Contracts.Interfaces;
 
 public interface IExchangeService
 {
-    Task<Trade> ExecuteOrderAsync(Signal signal);
-    Task<Account> GetAccountStatusAsync();
-    Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side);
+    Task<Trade> ExecuteOrderAsync(Signal signal, CancellationToken cancellationToken = default);
+    Task<Account> GetAccountStatusAsync(CancellationToken cancellationToken = default);
+    Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side, CancellationToken cancellationToken = default);
 }

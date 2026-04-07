@@ -79,3 +79,19 @@ $RECYCLE.BIN/
 *.log
 worker_log.txt
 tmq-tests.log
+
+# Sensitive files — never commit secrets, keys, or certificates
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.cer
+.env
+.env.*
+.env.local
+.env.*.local
+secrets.json
+appsettings.Production.json
+appsettings.*.local.json
+credentials.json

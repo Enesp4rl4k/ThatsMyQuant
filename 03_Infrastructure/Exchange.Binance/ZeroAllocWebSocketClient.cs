@@ -11,14 +11,20 @@ namespace ThatsMyQuant.Infrastructure.Exchange.Binance;
 /// <summary>
 /// A zero-allocation HFT web socket client designed for ingesting L2 Order Book depth streams
 /// from exchanges (Binance, CME) without triggering Garbage Collection (GC) pauses.
-/// Uses System.IO.Pipelines to parse byte buffers directly from the stack, 
+/// Uses System.IO.Pipelines to parse byte buffers directly from the stack,
 /// bypassing all object allocation and traditional string decoding.
 /// </summary>
-public sealed class ZeroAllocWebSocketClient : IDisposable
+public sealed class ZeroAllocWebSocketClient : IAsyncDisposable, IDisposable
 {
     private readonly ClientWebSocket _ws;
     private readonly Pipe _pipe;
     private readonly Uri _endpoint;
+    private Task? _receiveTask;
+    private Task? _processTask;
+    private volatile bool _faulted;
+
+    /// <summary>True if either background loop has faulted. Callers should check and reconnect.</summary>
+    public bool IsFaulted => _faulted;
 
     public ZeroAllocWebSocketClient(Uri endpoint)
     {
@@ -34,13 +40,40 @@ public sealed class ZeroAllocWebSocketClient : IDisposable
 
     /// <summary>
     /// Starts the dual read/parse background tasks.
-    /// In an HFT context, GC pauses are fatal. The Socket IO worker strictly writes bytes.
-    /// The Pipeline reader strictly parses Utf8Json tokens.
+    /// Task references are stored so faults can be observed and trigger reconnection.
     /// </summary>
     public void StartIngestLoop(CancellationToken cancellationToken)
     {
-        _ = ReceiveLoopAsync(_pipe.Writer, cancellationToken);
-        _ = ProcessLoopAsync(_pipe.Reader, cancellationToken);
+        _receiveTask = Task.Run(() => ReceiveLoopAsync(_pipe.Writer, cancellationToken), cancellationToken);
+        _processTask = Task.Run(() => ProcessLoopAsync(_pipe.Reader, cancellationToken), cancellationToken);
+
+        // Observe faults on both tasks without blocking the caller
+        ObserveFaults(_receiveTask, "ReceiveLoop");
+        ObserveFaults(_processTask, "ProcessLoop");
+    }
+
+    /// <summary>
+    /// Awaits both background loops, propagating any unhandled exceptions.
+    /// Call this from reconnection logic to detect silent deaths.
+    /// </summary>
+    public async Task WaitForCompletionAsync()
+    {
+        var tasks = new List<Task>(2);
+        if (_receiveTask != null) tasks.Add(_receiveTask);
+        if (_processTask != null) tasks.Add(_processTask);
+        if (tasks.Count > 0) await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    private void ObserveFaults(Task task, string loopName)
+    {
+        task.ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+            {
+                _faulted = true;
+                Console.Error.WriteLine($"[CRITICAL] ZeroAllocWebSocketClient.{loopName} faulted: {t.Exception?.GetBaseException().Message}");
+            }
+        }, TaskContinuationOptions.OnlyOnFaulted);
     }
 
     private async Task ReceiveLoopAsync(PipeWriter writer, CancellationToken ct)
@@ -59,7 +92,7 @@ public sealed class ZeroAllocWebSocketClient : IDisposable
                 }
 
                 writer.Advance(result.Count);
-                
+
                 var flushResult = await writer.FlushAsync(ct);
                 if (flushResult.IsCompleted || flushResult.IsCanceled)
                 {
@@ -95,13 +128,13 @@ public sealed class ZeroAllocWebSocketClient : IDisposable
                         if (position.HasValue)
                         {
                             var payloadLine = buffer.Slice(0, position.Value);
-                            
+
                             // ZERO ALLOCATION PARSING:
                             ProcessLineStackAllocated(payloadLine);
-                            
+
                             buffer = buffer.Slice(buffer.GetPosition(1, position.Value));
                         }
-                    } 
+                    }
                     while (position.HasValue);
                 }
                 finally
@@ -125,7 +158,7 @@ public sealed class ZeroAllocWebSocketClient : IDisposable
     {
         // For ultimate efficiency, parse the sequence without pulling it into an array
         var reader = new Utf8JsonReader(readOnlySequence);
-        
+
         long lastUpdateId = 0;
         decimal bestBid = 0;
         decimal bestAsk = 0;
@@ -145,12 +178,32 @@ public sealed class ZeroAllocWebSocketClient : IDisposable
                     reader.Read(); // array start
                     reader.Read(); // bid array
                     reader.Read(); // bid price string
-                    
+
                     // In real engine: internal Span<byte> parse or fast decimal parser
-                    // bestBid = FastDecimalParser.Parse(reader.ValueSpan); 
+                    // bestBid = FastDecimalParser.Parse(reader.ValueSpan);
                 }
             }
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        // Await background tasks to observe any final exceptions
+        try
+        {
+            if (_receiveTask != null) await _receiveTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { /* Already logged via ObserveFaults */ }
+
+        try
+        {
+            if (_processTask != null) await _processTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception) { /* Already logged via ObserveFaults */ }
+
+        _ws?.Dispose();
     }
 
     public void Dispose()

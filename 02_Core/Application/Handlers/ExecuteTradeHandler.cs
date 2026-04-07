@@ -1,10 +1,12 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Resilience;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 using ThatsMyQuant.Application.Strategy;
 using System.Globalization;
 
@@ -17,19 +19,22 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
     private readonly ITradeRepository _tradeRepository;
     private readonly CircuitBreakerService _circuitBreaker;
     private readonly PositionSupervisorService _positionSupervisor;
+    private readonly ExecutionOptions _executionOptions;
 
     public ExecuteTradeHandler(
-        ILogger<ExecuteTradeHandler> logger, 
+        ILogger<ExecuteTradeHandler> logger,
         IExchangeService exchangeService,
         ITradeRepository tradeRepository,
         CircuitBreakerService circuitBreaker,
-        PositionSupervisorService positionSupervisor)
+        PositionSupervisorService positionSupervisor,
+        IOptions<ExecutionOptions>? executionOptions = null)
     {
         _logger = logger;
         _exchangeService = exchangeService;
         _tradeRepository = tradeRepository;
         _circuitBreaker = circuitBreaker;
         _positionSupervisor = positionSupervisor;
+        _executionOptions = executionOptions?.Value ?? new ExecutionOptions();
     }
 
     public async Task<Trade> Handle(ExecuteTradeCommand request, CancellationToken cancellationToken)
@@ -58,7 +63,7 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
                 request.Signal.Id,
                 circuitGuard.BlockReason);
 
-            _positionSupervisor.MarkFailed(trackedTrade, circuitGuard.BlockReason);
+            _positionSupervisor.MarkFailed(trackedTrade, circuitGuard.BlockReason ?? "Circuit breaker triggered");
             await _tradeRepository.AddAsync(trackedTrade);
             return trackedTrade;
         }
@@ -66,7 +71,7 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         // Domain Logic: Reject weak liquidity HFT probes before hitting the venue
         if (request.Signal.Metadata.TryGetValue("ExecutionMode", out var mode) && mode == "HFT")
         {
-            if (request.Signal.Volume24h < 500_000m)
+            if (request.Signal.Volume24h < _executionOptions.HftMinVolume24h)
             {
                 _logger.LogWarning("Rejecting HFT Signal {Id} due to insufficient 24h volume ({Volume})", request.Signal.Id, request.Signal.Volume24h);
                 _positionSupervisor.MarkFailed(trackedTrade, "Insufficient 24h volume for HFT execution.");
@@ -84,7 +89,7 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         try
         {
             var venueTrade = await pipeline.ExecuteAsync(async ct =>
-                await _exchangeService.ExecuteOrderAsync(request.Signal), cancellationToken);
+                await _exchangeService.ExecuteOrderAsync(request.Signal, ct), cancellationToken);
 
             _positionSupervisor.ApplyExecutionFill(trackedTrade, venueTrade);
             MapSignalMetadataToTrade(request.Signal, trackedTrade);

@@ -1,18 +1,10 @@
-using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 
-public sealed record MarketExecutionProfile(
-    string Market,
-    string Venue,
-    decimal SlippagePercent,
-    decimal SpreadPercent,
-    decimal CommissionPercentPerSide,
-    decimal MinHftVolume24h,
-    long PreferredMaxLatencyMs);
-
-public sealed class MarketExecutionProfileService
+public sealed class MarketExecutionProfileService : IMarketExecutionProfileService
 {
     private static readonly IReadOnlyList<MarketExecutionProfile> Profiles =
     [

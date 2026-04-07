@@ -1,5 +1,6 @@
 using System;
 using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -26,19 +27,24 @@ public static class ExecutionImpactModel
     /// <param name="dailyVolatilityPercent">Daily volatility (e.g., 0.02 for 2%).</param>
     /// <returns>The final estimated execution fill price penalized by impact.</returns>
     public static decimal CalculateSquareRootImpactPrice(
-        decimal referencePrice, 
-        TradeSide side, 
-        decimal quantity, 
-        decimal dailyVolume = BaselineDailyVolume, 
-        decimal dailyVolatilityPercent = BaselineDailyVolatility)
+        decimal referencePrice,
+        TradeSide side,
+        decimal quantity,
+        decimal dailyVolume = BaselineDailyVolume,
+        decimal dailyVolatilityPercent = BaselineDailyVolatility,
+        TradingCoreOptions? options = null)
     {
         if (quantity <= 0 || dailyVolume <= 0) return referencePrice;
 
+        decimal effectiveDailyVolume = options?.BaselineDailyVolume ?? dailyVolume;
+        decimal effectiveVolatility = options?.BaselineDailyVolatility ?? dailyVolatilityPercent;
+        decimal effectiveCoefficient = options?.ImpactCoefficient ?? ImpactCoefficient;
+
         // V cannot be less than Q for the model, clip at fully absorbing the whole day's liquidity
-        decimal effectiveVolume = Math.Max(dailyVolume, quantity);
+        decimal effectiveVolume = Math.Max(effectiveDailyVolume, quantity);
 
         // Non-linear impact magnitude
-        double impactFraction = (double)ImpactCoefficient * (double)dailyVolatilityPercent * Math.Sqrt((double)(quantity / effectiveVolume));
+        double impactFraction = (double)effectiveCoefficient * (double)effectiveVolatility * Math.Sqrt((double)(quantity / effectiveVolume));
         
         // Convert fraction into absolute price slippage
         decimal expectedSlippage = referencePrice * (decimal)impactFraction;

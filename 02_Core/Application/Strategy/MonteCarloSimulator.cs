@@ -1,14 +1,21 @@
-using ThatsMyQuant.Contracts.Enums;
-using System.Collections.Concurrent;
-
 namespace ThatsMyQuant.Application.Strategy;
 
+/// <summary>
+/// BLUE PATH: Monte Carlo equity simulator.
+/// Uses ThreadLocal&lt;Random&gt; for lock-free parallel throughput
+/// instead of serializing on Random.Shared.
+/// </summary>
 public class MonteCarloSimulator
 {
+    // ThreadLocal avoids lock contention in Parallel.For — each thread gets its own RNG
+    private static readonly ThreadLocal<Random> ThreadRng = new(() =>
+        new Random(Interlocked.Increment(ref _seedCounter) ^ Environment.CurrentManagedThreadId));
+    private static int _seedCounter = Environment.TickCount;
+
     public async Task<MonteCarloResult> RunSimulationsAsync(
-        List<double> historicalPnlTrades, 
-        decimal startingCapital, 
-        int iterations = 10000, 
+        List<double> historicalPnlTrades,
+        decimal startingCapital,
+        int iterations = 10000,
         int stepsPerIteration = 252)
     {
         if (historicalPnlTrades == null || historicalPnlTrades.Count == 0)
@@ -32,17 +39,18 @@ public class MonteCarloSimulator
 
     private static (decimal finalEquity, decimal maxDrawdown) RunSingleIteration(List<double> trades, decimal capital, int steps)
     {
+        var rng = ThreadRng.Value!;
         decimal simEquity = capital;
         decimal peak = capital;
         decimal maxDD = 0;
 
         for (int s = 0; s < steps; s++)
         {
-            decimal randomPnl = (decimal)trades[Random.Shared.Next(trades.Count)];
+            decimal randomPnl = (decimal)trades[rng.Next(trades.Count)];
             simEquity += randomPnl;
 
             if (simEquity > peak) peak = simEquity;
-            
+
             decimal currentDD = peak - simEquity;
             if (currentDD > maxDD) maxDD = currentDD;
 

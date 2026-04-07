@@ -17,6 +17,9 @@ public struct PredictionResult
     public bool DriftIsCritical;
     public int DriftedFeatureCount;
     public double MaxFeatureZScore;
+
+    /// <summary>Default invalid result used as fallback for timeouts and errors.</summary>
+    public static readonly PredictionResult Invalid = new() { Value = 0f, IsValid = false };
 }
 
 /// <summary>

@@ -14,7 +14,7 @@ public class MockBrokerService : IExchangeService
         _logger = logger;
     }
 
-    public Task<Trade> ExecuteOrderAsync(Signal signal)
+    public Task<Trade> ExecuteOrderAsync(Signal signal, CancellationToken cancellationToken = default)
     {
         var trade = new Trade
         {
@@ -31,7 +31,7 @@ public class MockBrokerService : IExchangeService
         return Task.FromResult(trade);
     }
 
-    public Task<Account> GetAccountStatusAsync()
+    public Task<Account> GetAccountStatusAsync(CancellationToken cancellationToken = default)
     {
         return Task.FromResult(new Account
         {
@@ -42,5 +42,5 @@ public class MockBrokerService : IExchangeService
         });
     }
 
-    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side) => Task.FromResult(0m);
+    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side, CancellationToken cancellationToken = default) => Task.FromResult(0m);
 }

@@ -4,7 +4,9 @@ using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -13,12 +15,13 @@ public sealed class BinanceExchangeInfoProvider : IExchangeInfoProvider
     private readonly HttpClient _httpClient;
     private readonly ILogger<BinanceExchangeInfoProvider> _logger;
     private readonly ConcurrentDictionary<string, SymbolInfo> _cache = new();
-    private const string BaseUrl = "https://api.binance.com/api/v3/exchangeInfo";
+    private readonly string _exchangeInfoUrl;
 
-    public BinanceExchangeInfoProvider(IHttpClientFactory httpClientFactory, ILogger<BinanceExchangeInfoProvider> logger)
+    public BinanceExchangeInfoProvider(IHttpClientFactory httpClientFactory, ILogger<BinanceExchangeInfoProvider> logger, IOptions<ExchangeUrlOptions>? urlOptions = null)
     {
         _httpClient = httpClientFactory.CreateClient("Binance");
         _logger = logger;
+        _exchangeInfoUrl = urlOptions?.Value.BinanceExchangeInfoUrl ?? "https://api.binance.com/api/v3/exchangeInfo";
     }
 
     public double GetTickSize(string symbol)
@@ -38,7 +41,7 @@ public sealed class BinanceExchangeInfoProvider : IExchangeInfoProvider
         try
         {
             _logger.LogInformation("Refreshing Binance ExchangeInfo cache...");
-            var response = await _httpClient.GetFromJsonAsync<ExchangeInfoResponse>(BaseUrl, ct);
+            var response = await _httpClient.GetFromJsonAsync<ExchangeInfoResponse>(_exchangeInfoUrl, ct);
             if (response?.Symbols == null) return;
 
             foreach (var s in response.Symbols)

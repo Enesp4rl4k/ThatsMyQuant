@@ -1,20 +1,28 @@
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services.Patterns;
 
 public sealed class IchimokuAgent : IPatternAgent
 {
     private readonly ILogger<IchimokuAgent> _logger;
-    private const int TenkanPeriod = 9;
-    private const int KijunPeriod = 26;
-    private const int SenkouSpanBPeriod = 52;
+    private readonly int _tenkanPeriod;
+    private readonly int _kijunPeriod;
+    private readonly int _senkouSpanBPeriod;
 
     public string AgentId => "Pattern.Ichimoku";
 
-    public IchimokuAgent(ILogger<IchimokuAgent> logger)
-        => _logger = logger;
+    public IchimokuAgent(ILogger<IchimokuAgent> logger, IOptions<PatternAgentOptions>? options = null)
+    {
+        _logger = logger;
+        var opts = options?.Value ?? new PatternAgentOptions();
+        _tenkanPeriod = opts.IchimokuTenkanPeriod;
+        _kijunPeriod = opts.IchimokuKijunPeriod;
+        _senkouSpanBPeriod = opts.IchimokuSenkouSpanBPeriod;
+    }
 
     public Task<PatternSnapshot> AnalyzeAsync(
         Signal signal,
@@ -22,13 +30,13 @@ public sealed class IchimokuAgent : IPatternAgent
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
-        if (candles.Count < SenkouSpanBPeriod + 26)
+        if (candles.Count < _senkouSpanBPeriod + 26)
             return Task.FromResult(PatternSnapshot.Empty);
 
-        var tenkan = Midpoint(candles, TenkanPeriod);
-        var kijun = Midpoint(candles, KijunPeriod);
+        var tenkan = Midpoint(candles, _tenkanPeriod);
+        var kijun = Midpoint(candles, _kijunPeriod);
         var senkouA = (tenkan + kijun) / 2m;
-        var senkouB = Midpoint(candles, SenkouSpanBPeriod);
+        var senkouB = Midpoint(candles, _senkouSpanBPeriod);
 
         var cloudTop = Math.Max(senkouA, senkouB);
         var cloudBottom = Math.Min(senkouA, senkouB);
@@ -43,15 +51,15 @@ public sealed class IchimokuAgent : IPatternAgent
 
         if (tenkan > kijun && candles.Count >= 2)
         {
-            var prevTenkan = Midpoint(candles, TenkanPeriod, 1);
-            var prevKijun = Midpoint(candles, KijunPeriod, 1);
+            var prevTenkan = Midpoint(candles, _tenkanPeriod, 1);
+            var prevKijun = Midpoint(candles, _kijunPeriod, 1);
             if (prevTenkan <= prevKijun)
                 state = IchimokuState.TKCrossBullish;
         }
         else if (tenkan < kijun && candles.Count >= 2)
         {
-            var prevTenkan = Midpoint(candles, TenkanPeriod, 1);
-            var prevKijun = Midpoint(candles, KijunPeriod, 1);
+            var prevTenkan = Midpoint(candles, _tenkanPeriod, 1);
+            var prevKijun = Midpoint(candles, _kijunPeriod, 1);
             if (prevTenkan >= prevKijun)
                 state = IchimokuState.TKCrossBearish;
         }

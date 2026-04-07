@@ -128,6 +128,78 @@ public static class CorrelationService
         double denominator = Math.Sqrt(sumA2 * sumB2);
         return denominator < double.Epsilon ? 0 : sumAb / denominator;
     }
+
+    /// <summary>
+    /// SIMD-accelerated batch correlation matrix.
+    /// Computes pairwise correlations for N series in O(N^2 * L / VectorWidth) time.
+    /// Used by Cold Path for portfolio-wide correlation monitoring.
+    /// </summary>
+    public static double[,] CalculateCorrelationMatrix(double[][] series)
+    {
+        int n = series.Length;
+        var matrix = new double[n, n];
+
+        // Diagonal is always 1.0
+        for (int i = 0; i < n; i++)
+            matrix[i, i] = 1.0;
+
+        // Upper triangle (SIMD-accelerated per pair)
+        Parallel.For(0, n, i =>
+        {
+            for (int j = i + 1; j < n; j++)
+            {
+                double corr = CalculateCorrelation(series[i], series[j]);
+                matrix[i, j] = corr;
+                matrix[j, i] = corr; // Symmetric
+            }
+        });
+
+        return matrix;
+    }
+
+    /// <summary>
+    /// SIMD-accelerated sum of a double array. Used for fast batch aggregations.
+    /// </summary>
+    public static double SimdSum(double[] data)
+    {
+        if (data == null || data.Length == 0) return 0;
+
+        int vectorSize = Vector<double>.Count;
+        var vSum = Vector<double>.Zero;
+        int i = 0;
+
+        for (; i <= data.Length - vectorSize; i += vectorSize)
+        {
+            vSum += new Vector<double>(data, i);
+        }
+
+        double sum = Vector.Sum(vSum);
+        for (; i < data.Length; i++)
+            sum += data[i];
+
+        return sum;
+    }
+
+    /// <summary>
+    /// SIMD-accelerated element-wise difference: result[i] = a[i] - b[i].
+    /// Zero-allocation when caller provides the output buffer.
+    /// </summary>
+    public static void SimdSubtract(double[] a, double[] b, double[] result)
+    {
+        int length = Math.Min(a.Length, Math.Min(b.Length, result.Length));
+        int vectorSize = Vector<double>.Count;
+        int i = 0;
+
+        for (; i <= length - vectorSize; i += vectorSize)
+        {
+            var vA = new Vector<double>(a, i);
+            var vB = new Vector<double>(b, i);
+            (vA - vB).CopyTo(result, i);
+        }
+
+        for (; i < length; i++)
+            result[i] = a[i] - b[i];
+    }
 }
 
 public class CorrelationCheckResult

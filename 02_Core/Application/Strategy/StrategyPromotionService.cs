@@ -1,3 +1,4 @@
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using System.Threading;
@@ -8,13 +9,13 @@ namespace ThatsMyQuant.Application.Strategy;
 public sealed class StrategyPromotionService
 {
     private readonly IStrategyPerformanceStore _store;
-    private readonly MarketExecutionProfileService _executionProfiles;
+    private readonly IMarketExecutionProfileService _executionProfiles;
     private readonly object _sync = new();
     private StrategyPerformanceState _state;
 
     public StrategyPromotionService(
         IStrategyPerformanceStore store,
-        MarketExecutionProfileService? executionProfiles = null)
+        IMarketExecutionProfileService? executionProfiles = null)
     {
         _store = store;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();

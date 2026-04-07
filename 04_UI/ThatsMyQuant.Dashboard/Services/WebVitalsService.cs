@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.Extensions.Configuration;
 using System.Diagnostics;
 
 namespace ThatsMyQuant.Dashboard.Services;
@@ -14,10 +15,11 @@ public class WebVitalsService : IWebVitalsService, IAsyncDisposable
     private readonly HubConnection _connection;
     private bool _isConnected;
 
-    public WebVitalsService()
+    public WebVitalsService(IConfiguration? configuration = null)
     {
+        var hubUrl = configuration?["Endpoints:SignalRHub"] ?? "http://localhost:5202/marketdata";
         _connection = new HubConnectionBuilder()
-            .WithUrl("http://localhost:5202/marketdata")
+            .WithUrl(hubUrl)
             .WithAutomaticReconnect()
             .Build();
     }

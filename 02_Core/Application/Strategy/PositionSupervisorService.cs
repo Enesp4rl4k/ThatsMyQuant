@@ -1,6 +1,8 @@
 using System.Globalization;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -19,6 +21,14 @@ public sealed record PositionLifecycleAction(
 
 public sealed class PositionSupervisorService
 {
+    private readonly decimal _breakevenBufferFraction;
+
+    public PositionSupervisorService(IOptions<TradingCoreOptions>? tradingOptions = null)
+    {
+        var opts = tradingOptions?.Value ?? new TradingCoreOptions();
+        _breakevenBufferFraction = opts.BreakevenBufferFraction;
+    }
+
     public Trade CreateSubmittedTrade(Signal signal)
     {
         var requestedQuantity = signal.Quantity > 0m
@@ -232,7 +242,7 @@ public sealed class PositionSupervisorService
                 currentPrice);
     }
 
-    private static void ApplyBreakevenProtection(PaperPosition position, Candle candle)
+    private void ApplyBreakevenProtection(PaperPosition position, Candle candle)
     {
         if (position.IsBreakevenArmed || position.BreakevenTriggerFraction <= 0m)
             return;
@@ -249,7 +259,7 @@ public sealed class PositionSupervisorService
             return;
 
         position.IsBreakevenArmed = true;
-        var buffer = position.EntryPrice * 0.0005m;
+        var buffer = position.EntryPrice * _breakevenBufferFraction;
         position.StopLoss = position.Side == TradeSide.Buy
             ? Math.Max(position.StopLoss, position.EntryPrice + buffer)
             : position.StopLoss == 0m
@@ -257,7 +267,7 @@ public sealed class PositionSupervisorService
                 : Math.Min(position.StopLoss, position.EntryPrice - buffer);
     }
 
-    private static void ApplyBreakevenProtection(Trade trade, Candle candle)
+    private void ApplyBreakevenProtection(Trade trade, Candle candle)
     {
         if (trade.IsBreakevenArmed || trade.BreakevenTriggerFraction <= 0m)
             return;
@@ -274,7 +284,7 @@ public sealed class PositionSupervisorService
             return;
 
         trade.IsBreakevenArmed = true;
-        var buffer = trade.EntryPrice * 0.0005m;
+        var buffer = trade.EntryPrice * _breakevenBufferFraction;
         trade.StopLoss = trade.Side == TradeSide.Buy
             ? Math.Max(trade.StopLoss, trade.EntryPrice + buffer)
             : trade.StopLoss == 0m

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
 using System.Threading;
+using ThatsMyQuant.Application.HftInfrastructure;
 using ThatsMyQuant.Application.Risk;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
@@ -11,13 +12,16 @@ using ThatsMyQuant.Contracts.Options;
 namespace ThatsMyQuant.Application.Strategy;
 
 /// <summary>
-/// Dedicated portfolio governor responsible for sizing, drawdown controls,
+/// YELLOW PATH: Portfolio governor responsible for sizing, drawdown controls,
 /// portfolio heat caps, and execution-quality feedback loops.
+/// Whispers risk state updates to HotStateBuffer for Red Path consumption.
 /// </summary>
 public class RiskAgent : IFocusedAgent
 {
     private readonly ILogger<RiskAgent> _logger;
     private readonly MemoryPortfolioManager? _portfolioManager;
+    private readonly VpinCalculator? _vpinCalculator;
+    private readonly HotStateBuffer? _hotState;
     private readonly TokenBucketRateLimiter _rateLimiter;
     private readonly RiskGovernorOptions _options;
     private readonly ConcurrentDictionary<Guid, Trade> _observedTrades = new();
@@ -35,12 +39,16 @@ public class RiskAgent : IFocusedAgent
     public RiskAgent(
         ILogger<RiskAgent> logger,
         MemoryPortfolioManager? portfolioManager = null,
-        IOptions<RiskGovernorOptions>? options = null)
+        IOptions<RiskGovernorOptions>? options = null,
+        VpinCalculator? vpinCalculator = null,
+        HotStateBuffer? hotState = null)
     {
         _logger = logger;
         _portfolioManager = portfolioManager;
+        _vpinCalculator = vpinCalculator;
+        _hotState = hotState;
         _options = options?.Value ?? new RiskGovernorOptions();
-        _rateLimiter = new TokenBucketRateLimiter(10, 10.0);
+        _rateLimiter = new TokenBucketRateLimiter(_options.RateLimiterTokens, _options.RateLimiterRefillPerSecond);
     }
 
     public Task ResetAsync(string symbol, CancellationToken ct = default)
@@ -53,11 +61,18 @@ public class RiskAgent : IFocusedAgent
     public Task ProcessStepAsync(Candle candle, CancellationToken ct = default)
         => Task.CompletedTask;
 
-    public void ResetKillSwitch() => _killSwitchArmed = false;
+    public void ResetKillSwitch()
+    {
+        _killSwitchArmed = false;
+        _hotState?.SetKillSwitch(false);
+        _hotState?.SetTradingAllowed(true);
+    }
 
     public void ArmKillSwitch(string reason)
     {
         _killSwitchArmed = true;
+        _hotState?.SetKillSwitch(true);
+        _hotState?.SetTradingAllowed(false);
         _logger.LogCritical("RISK KILL-SWITCH ARMED: {Reason}", reason);
     }
 
@@ -102,6 +117,10 @@ public class RiskAgent : IFocusedAgent
         {
             return Task.FromResult((false, "Risk governor compressed size below minimum tradable threshold.", 0m));
         }
+
+        // YELLOW PATH: Whisper updated risk state to HotStateBuffer for Red Path
+        _hotState?.UpdateSafePositionSize(safeAllocation);
+        _hotState?.UpdateDrawdown(state.DrawdownPercent);
 
         var reasons = new List<string>
         {
@@ -157,6 +176,9 @@ public class RiskAgent : IFocusedAgent
         var executionCheck = CheckExecutionHealth(state);
         if (!executionCheck.Approved) return Task.FromResult(executionCheck);
 
+        var vpinCheck = CheckVpinToxicity();
+        if (!vpinCheck.Approved) return Task.FromResult(vpinCheck);
+
         var streakCheck = CheckLossStreak(state.ClosedTrades, signal);
         if (!streakCheck.Approved) return Task.FromResult(streakCheck);
 
@@ -211,6 +233,7 @@ public class RiskAgent : IFocusedAgent
     {
         if (_observedTrades.Count <= _options.MaxTrackedTrades) return;
 
+        // First pass: evict closed trades (oldest first)
         var staleTradeIds = _observedTrades.Values
             .Where(t => t.IsClosed)
             .OrderBy(t => t.ExitTime ?? t.EntryTime)
@@ -221,6 +244,21 @@ public class RiskAgent : IFocusedAgent
         foreach (var tradeId in staleTradeIds)
         {
             _observedTrades.TryRemove(tradeId, out _);
+        }
+
+        // Hard ceiling: if still over limit after closed-trade eviction, evict oldest entries regardless of state
+        if (_observedTrades.Count > _options.MaxTrackedTrades)
+        {
+            var overflow = _observedTrades.Values
+                .OrderBy(t => t.EntryTime)
+                .Take(_observedTrades.Count - _options.MaxTrackedTrades)
+                .Select(t => t.Id)
+                .ToList();
+
+            foreach (var tradeId in overflow)
+            {
+                _observedTrades.TryRemove(tradeId, out _);
+            }
         }
     }
 
@@ -303,6 +341,18 @@ public class RiskAgent : IFocusedAgent
             return (false, "Execution venue quality is degraded beyond risk tolerance.");
         }
 
+        return (true, "");
+    }
+
+    private (bool Approved, string Reason) CheckVpinToxicity()
+    {
+        if (_vpinCalculator == null) return (true, "");
+        var snapshot = _vpinCalculator.GetSnapshot();
+        if (snapshot.IsToxic)
+        {
+            _logger.LogWarning("VPIN toxicity guard triggered: VPIN={Vpin:F3} (threshold={Threshold:F2})", snapshot.Vpin, snapshot.ToxicityThreshold);
+            return (false, $"VPIN toxicity guard: informed trading probability {snapshot.Vpin:F3} exceeds threshold. Halting to avoid adverse selection.");
+        }
         return (true, "");
     }
 

@@ -1,9 +1,18 @@
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
 public sealed class StrategyExpectancyService
 {
+    private readonly StrategyLearningOptions _opts;
+
+    public StrategyExpectancyService(IOptions<StrategyLearningOptions>? learningOptions = null)
+    {
+        _opts = learningOptions?.Value ?? new StrategyLearningOptions();
+    }
+
     public ExpectancyGuardResult Evaluate(
         IReadOnlyList<Trade> recentTrades,
         Signal signal,
@@ -18,10 +27,10 @@ public sealed class StrategyExpectancyService
                 string.Equals(trade.StrategyTag, decision.StrategyTag, StringComparison.OrdinalIgnoreCase) &&
                 string.Equals(trade.RegimeTag, decision.RegimeTag, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(trade => trade.ExitTime)
-            .Take(30)
+            .Take(_opts.TradeLookback)
             .ToList();
 
-        if (bucketTrades.Count < 4)
+        if (bucketTrades.Count < _opts.MinSample)
         {
             return new ExpectancyGuardResult(
                 true,
@@ -42,10 +51,10 @@ public sealed class StrategyExpectancyService
                             string.Equals(ResolveSessionBucket(trade.ExitTime.Value), currentSession, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        var sessionExpectedValue = sessionTrades.Count >= 3 ? ComputeExpectedValue(sessionTrades) : expectedValue;
-        var sessionProfitFactor = sessionTrades.Count >= 3 ? ComputeProfitFactor(sessionTrades) : profitFactor;
+        var sessionExpectedValue = sessionTrades.Count >= _opts.SessionMinTrades ? ComputeExpectedValue(sessionTrades) : expectedValue;
+        var sessionProfitFactor = sessionTrades.Count >= _opts.SessionMinTrades ? ComputeProfitFactor(sessionTrades) : profitFactor;
 
-        if (expectedValue <= 0 && profitFactor < 0.95)
+        if (expectedValue <= 0 && profitFactor < _opts.BlockProfitFactorThreshold)
         {
             return new ExpectancyGuardResult(
                 false,
@@ -56,7 +65,7 @@ public sealed class StrategyExpectancyService
                 profitFactor);
         }
 
-        if (sessionTrades.Count >= 3 && sessionExpectedValue <= 0 && sessionProfitFactor < 1.00)
+        if (sessionTrades.Count >= _opts.SessionMinTrades && sessionExpectedValue <= 0 && sessionProfitFactor < _opts.BlockSessionProfitFactorThreshold)
         {
             return new ExpectancyGuardResult(
                 false,
@@ -67,22 +76,22 @@ public sealed class StrategyExpectancyService
                 sessionProfitFactor);
         }
 
-        if (expectedValue <= 0 || profitFactor < 1.10 || winRate < 0.45)
+        if (expectedValue <= 0 || profitFactor < _opts.ReduceProfitFactorThreshold || winRate < _opts.ReduceWinRateThreshold)
         {
             return new ExpectancyGuardResult(
                 true,
-                0.60m,
+                _opts.ReduceSizeMultiplier,
                 $"Expectancy guard reduced size: EV {expectedValue:F2}, PF {profitFactor:F2}, WR {winRate:P0}.",
                 bucketTrades.Count,
                 expectedValue,
                 profitFactor);
         }
 
-        if (sessionTrades.Count >= 3 && (sessionExpectedValue <= 0 || sessionProfitFactor < 1.10))
+        if (sessionTrades.Count >= _opts.SessionMinTrades && (sessionExpectedValue <= 0 || sessionProfitFactor < _opts.ReduceProfitFactorThreshold))
         {
             return new ExpectancyGuardResult(
                 true,
-                0.75m,
+                _opts.SessionSoftMultiplier,
                 $"Session edge is soft in {currentSession}: EV {sessionExpectedValue:F2}, PF {sessionProfitFactor:F2}.",
                 sessionTrades.Count,
                 sessionExpectedValue,
@@ -98,7 +107,7 @@ public sealed class StrategyExpectancyService
             profitFactor);
     }
 
-    private static decimal ComputeExpectedValue(IEnumerable<Trade> trades)
+    private decimal ComputeExpectedValue(IEnumerable<Trade> trades)
     {
         var pnlValues = trades.Select(ComputePnl).ToList();
         if (pnlValues.Count == 0)
@@ -115,7 +124,7 @@ public sealed class StrategyExpectancyService
         return (winRate * avgWin) + ((1m - winRate) * avgLoss);
     }
 
-    private static double ComputeProfitFactor(IEnumerable<Trade> trades)
+    private double ComputeProfitFactor(IEnumerable<Trade> trades)
     {
         var pnlValues = trades.Select(ComputePnl).ToList();
         var grossProfit = pnlValues.Where(pnl => pnl > 0).Sum();
@@ -129,11 +138,11 @@ public sealed class StrategyExpectancyService
         return (double)(grossProfit / grossLoss);
     }
 
-    private static decimal ComputePnl(Trade trade)
+    private decimal ComputePnl(Trade trade)
     {
         var direction = trade.Side == Contracts.Enums.TradeSide.Sell ? -1m : 1m;
         var grossPnl = (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * direction;
-        var feeRate = 0.0005m; // 5 bps per side, 10 bps round trip
+        var feeRate = _opts.ComputePnlFeeRate; // 5 bps per side, 10 bps round trip
         var fees = (trade.EntryPrice * trade.Quantity + trade.ExitPrice * trade.Quantity) * feeRate;
         var slippageCost = trade.EntryPrice * trade.Quantity * (trade.EntrySlippagePercent / 100m);
         return grossPnl - fees - slippageCost;

@@ -51,22 +51,17 @@ public class SignalRepository : ISignalRepository
 
     public async Task AddAsync(Signal signal)
     {
-        if (_signalWriterChannel?.TryWrite(SignalPersistenceBatchWriter.Clone(signal)) == true)
-        {
-            return;
-        }
-
+        // Write-ahead: persist to DB first to guarantee durability, then enqueue
+        // for batch optimization. This eliminates the race where a channel write
+        // succeeds but the batch writer crashes before flushing.
         await SignalPersistenceBatchWriter.UpsertAsync(_db, signal);
+        _signalWriterChannel?.TryWrite(SignalPersistenceBatchWriter.Clone(signal));
     }
 
     public async Task UpdateAsync(Signal signal)
     {
-        if (_signalWriterChannel?.TryWrite(SignalPersistenceBatchWriter.Clone(signal)) == true)
-        {
-            return;
-        }
-
         await SignalPersistenceBatchWriter.UpsertAsync(_db, signal);
+        _signalWriterChannel?.TryWrite(SignalPersistenceBatchWriter.Clone(signal));
     }
 
     public async Task<Dictionary<TradeStatus, int>> GetStatusCountsAsync()

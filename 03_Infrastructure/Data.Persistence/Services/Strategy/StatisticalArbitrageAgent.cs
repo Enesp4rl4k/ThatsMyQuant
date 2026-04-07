@@ -35,8 +35,20 @@ public sealed class StatisticalArbitrageAgent : IStrategyAgent
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
         var closes = candles.TakeLast(_options.LookbackBars).Select(c => (double)c.Close).ToArray();
-        var mean = closes.Average();
-        var variance = closes.Select(c => (c - mean) * (c - mean)).Average();
+
+        // Welford's online algorithm for numerically stable mean/variance computation.
+        // The naive formula (sum of squared deviations from mean) suffers from catastrophic
+        // cancellation when values are large and close together (e.g. BTC prices ~60000).
+        double wMean = 0, m2 = 0;
+        for (int i = 0; i < closes.Length; i++)
+        {
+            var delta = closes[i] - wMean;
+            wMean += delta / (i + 1);
+            var delta2 = closes[i] - wMean;
+            m2 += delta * delta2;
+        }
+        var mean = wMean;
+        var variance = closes.Length > 1 ? m2 / closes.Length : 0;
         var stdDev = Math.Sqrt(variance);
 
         if (stdDev < 1e-10 || Math.Abs(mean) < 1e-10)
@@ -109,6 +121,7 @@ public sealed class StatisticalArbitrageAgent : IStrategyAgent
             }
         }
 
+        confidence = Math.Clamp(confidence, 0f, 100f);
         var direction = zScore > 0 ? "short" : "long";
         var reasoning = string.Join(" | ", reasons);
         return Task.FromResult(StrategyVote.Approve(StrategyTag, confidence, $"StatArb {direction} ({confirmedFactors}/4 factors): {reasoning}"));

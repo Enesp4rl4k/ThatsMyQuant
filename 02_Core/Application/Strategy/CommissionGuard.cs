@@ -1,3 +1,5 @@
+using ThatsMyQuant.Contracts.Options;
+
 namespace ThatsMyQuant.Application.Strategy;
 
 /// <summary>
@@ -14,18 +16,20 @@ public static class CommissionGuard
     /// Negative-EV trades where the broker takes the entire profit margin will return false.
     /// </summary>
     public static bool IsTradeProfitableAfterFees(
-        decimal entryPrice, 
-        decimal expectedExitPrice, 
-        decimal quantity, 
-        decimal feeRate = DefaultTakerFeeRate)
+        decimal entryPrice,
+        decimal expectedExitPrice,
+        decimal quantity,
+        decimal feeRate = DefaultTakerFeeRate,
+        TradingCoreOptions? options = null)
     {
         if (quantity <= 0 || entryPrice <= 0 || expectedExitPrice <= 0) return false;
 
+        decimal effectiveFeeRate = options?.DefaultTakerFeeRate ?? feeRate;
         decimal expectedGrossProfit = Math.Abs(expectedExitPrice - entryPrice) * quantity;
-        
+
         // Slippage/Fee is levied on both notional entry volume and notional exit volume
-        decimal entryFee = (entryPrice * quantity) * feeRate;
-        decimal exitFee = (expectedExitPrice * quantity) * feeRate;
+        decimal entryFee = (entryPrice * quantity) * effectiveFeeRate;
+        decimal exitFee = (expectedExitPrice * quantity) * effectiveFeeRate;
         decimal totalEstimatedFee = entryFee + exitFee;
 
         // Strict constraint: The Gross Profit must be strictly greater than the costs.
@@ -36,18 +40,20 @@ public static class CommissionGuard
     /// Calculates the absolute Net Profit/Loss (PnL) after two-way commissions have been deducted.
     /// </summary>
     public static decimal CalculateNetPnL(
-        decimal entryPrice, 
-        decimal exitPrice, 
-        decimal quantity, 
+        decimal entryPrice,
+        decimal exitPrice,
+        decimal quantity,
         string side = "Buy",
-        decimal feeRate = DefaultTakerFeeRate)
+        decimal feeRate = DefaultTakerFeeRate,
+        TradingCoreOptions? options = null)
     {
-        decimal grossPnL = side == "Buy" 
-            ? (exitPrice - entryPrice) * quantity 
+        decimal effectiveFeeRate = options?.DefaultTakerFeeRate ?? feeRate;
+        decimal grossPnL = side == "Buy"
+            ? (exitPrice - entryPrice) * quantity
             : (entryPrice - exitPrice) * quantity;
 
-        decimal entryFee = (entryPrice * quantity) * feeRate;
-        decimal exitFee = (exitPrice * quantity) * feeRate;
+        decimal entryFee = (entryPrice * quantity) * effectiveFeeRate;
+        decimal exitFee = (exitPrice * quantity) * effectiveFeeRate;
         
         return grossPnL - (entryFee + exitFee);
     }

@@ -23,28 +23,28 @@ public class ChaosExchangeDecorator : IExchangeService
         _logger = logger;
     }
 
-    public async Task<Trade> ExecuteOrderAsync(Signal signal)
+    public async Task<Trade> ExecuteOrderAsync(Signal signal, CancellationToken cancellationToken = default)
     {
-        await SimulateChaosAsync("ExecuteOrder");
+        await SimulateChaosAsync("ExecuteOrder", cancellationToken);
 
         _logger.LogWarning("[CHAOS] Passing through ExecuteOrder for {Symbol}", signal.Symbol);
-        return await _inner.ExecuteOrderAsync(signal);
+        return await _inner.ExecuteOrderAsync(signal, cancellationToken);
     }
 
-    public async Task<Account> GetAccountStatusAsync()
+    public async Task<Account> GetAccountStatusAsync(CancellationToken cancellationToken = default)
     {
-        await SimulateChaosAsync("GetAccountStatus");
-        return await _inner.GetAccountStatusAsync();
+        await SimulateChaosAsync("GetAccountStatus", cancellationToken);
+        return await _inner.GetAccountStatusAsync(cancellationToken);
     }
 
-    private async Task SimulateChaosAsync(string methodName)
+    private async Task SimulateChaosAsync(string methodName, CancellationToken cancellationToken)
     {
         // 1. Simulate Network Latency (Jitter)
         if (Random.Shared.NextDouble() < 0.3) // 30% chance of high latency
         {
             int delay = Random.Shared.Next(100, MaxLatencyMs);
             _logger.LogWarning("[CHAOS] Injecting {Delay}ms latency into {Method}", delay, methodName);
-            await Task.Delay(delay);
+            await Task.Delay(delay, cancellationToken);
         }
 
         // 2. Simulate Hard API Failure
@@ -54,5 +54,5 @@ public class ChaosExchangeDecorator : IExchangeService
             throw new TimeoutException($"[CHAOS_ERROR] Simulated exchange Timeout/Disconnect in {methodName}");
         }
     }
-    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side) => _inner.GetQueuePositionAsync(symbol, price, side);
+    public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side, CancellationToken cancellationToken = default) => _inner.GetQueuePositionAsync(symbol, price, side, cancellationToken);
 }

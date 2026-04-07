@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.ML;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.MachineLearning;
 
@@ -11,11 +13,13 @@ public class AlphaModelTrainer
 {
     private readonly ILogger<AlphaModelTrainer> _logger;
     private readonly MLContext _mlContext;
+    private readonly MachineLearningOptions _mlOptions;
 
-    public AlphaModelTrainer(ILogger<AlphaModelTrainer> logger)
+    public AlphaModelTrainer(ILogger<AlphaModelTrainer> logger, IOptions<MachineLearningOptions>? mlOptions = null)
     {
         _logger = logger;
-        _mlContext = new MLContext(seed: 42); // Deterministic seed for reproducible testing
+        _mlOptions = mlOptions?.Value ?? new MachineLearningOptions();
+        _mlContext = new MLContext(seed: _mlOptions.Seed);
     }
 
     /// <summary>
@@ -24,7 +28,7 @@ public class AlphaModelTrainer
     /// </summary>
     public double TrainAndSaveModel(List<CandleMlData> trainingData, string modelPath = "PredictiveAlphaModel.zip")
     {
-        if (trainingData.Count < 100)
+        if (trainingData.Count < _mlOptions.MinTrainingData)
         {
             _logger.LogWarning("Insufficient candle data to train ML.NET Alpha Model.");
             return 0.0;
@@ -34,15 +38,15 @@ public class AlphaModelTrainer
         IDataView dataView = _mlContext.Data.LoadFromEnumerable(trainingData);
 
         // Split data 80/20 for Training and internal blind Accuracy Validation
-        var testTrainSplit = _mlContext.Data.TrainTestSplit(dataView, testFraction: 0.2);
+        var testTrainSplit = _mlContext.Data.TrainTestSplit(dataView, testFraction: _mlOptions.TestFraction);
 
         // Define the Gradient Boosted Tree algorithm
         var pipeline = _mlContext.Regression.Trainers.FastTree(
             labelColumnName: "Label",
             featureColumnName: "Features",
-            numberOfLeaves: 20,
-            numberOfTrees: 100,
-            learningRate: 0.2);
+            numberOfLeaves: _mlOptions.NumberOfLeaves,
+            numberOfTrees: _mlOptions.NumberOfTrees,
+            learningRate: _mlOptions.LearningRate);
 
         _logger.LogInformation("Beginning ML.NET FastTree Training Phase...");
         var model = pipeline.Fit(testTrainSplit.TrainSet);

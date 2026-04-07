@@ -32,6 +32,8 @@ public partial class MainViewModel : ObservableObject
     private readonly IStrategyHealthStore _strategyHealthStore;
     private readonly IAgentCoordinator _agentCoordinator;
     private readonly bool _enableAutomaticAnalysis;
+    private readonly CancellationTokenSource _viewModelCts = new();
+    private readonly List<Task> _backgroundTasks = new();
 
     // --- Sub-ViewModels ---
     [ObservableProperty] private MarketOverviewViewModel _marketOverview = new();
@@ -415,26 +417,29 @@ public partial class MainViewModel : ObservableObject
         _focusBacktest = focusBacktest;
         _enableAutomaticAnalysis = enableAutomaticAnalysis;
 
-        // Start Web Vitals Synchronization
-        _ = Task.Run(async () => {
-            await webVitalsService.StartAsync();
-            // Periodic update loop
-            while (true)
+        // Start Web Vitals Synchronization (tracked background task)
+        var vitalsToken = _viewModelCts.Token;
+        _backgroundTasks.Add(Task.Run(async () => {
+            try
             {
-                // Calculate real scores based on system state
-                double protection = (double)CalculatedProtectionScore();
-                double investment = (double)CalculatedInvestmentScore();
-                double fitness = (double)CalculatedFitnessScore();
-                
-                await webVitalsService.UpdateVitalsAsync(protection, investment, fitness);
-                await Task.Delay(5000); // Sync every 5 seconds
+                await webVitalsService.StartAsync();
+                while (!vitalsToken.IsCancellationRequested)
+                {
+                    double protection = (double)CalculatedProtectionScore();
+                    double investment = (double)CalculatedInvestmentScore();
+                    double fitness = (double)CalculatedFitnessScore();
+
+                    await webVitalsService.UpdateVitalsAsync(protection, investment, fitness);
+                    await Task.Delay(5000, vitalsToken);
+                }
             }
-        });
+            catch (OperationCanceledException) { }
+        }, vitalsToken));
 
         LoadSymbols();
-        
+
         // Asynchronously initialize data without blocking the UI thread.
-        _ = Task.Run(async () => await InitializeAsync());
+        _backgroundTasks.Add(Task.Run(async () => await InitializeAsync()));
 
         UpdateRuntimeIntegrityStatus();
         AddSystemLog("SYSTEM: Terminal initialized. Multi-asset support active.");
@@ -5405,7 +5410,7 @@ public partial class MainViewModel : ObservableObject
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Brush> _brushCache = new();
     private void AddReasoningOverlay(double x, double y, double width, double height, string title, string detail, string fillHex)
     {
-        var fillBrush = _brushCache.GetOrAdd(fillHex, hex => (Brush)new BrushConverter().ConvertFromString(hex)!);
+        var fillBrush = _brushCache.GetOrAdd(fillHex, hex => Freeze((Brush)new BrushConverter().ConvertFromString(hex)!));
 
         ReasoningOverlays.Add(new ReasoningOverlayViewModel
         {
@@ -5905,13 +5910,15 @@ public partial class MainViewModel : ObservableObject
     }
 
 
-    // Brush helpers
-    private static readonly Brush GreenBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0xB9, 0x50));
-    private static readonly Brush RedBrush = new SolidColorBrush(Color.FromRgb(0xDA, 0x36, 0x33));
-    private static readonly Brush BuyColorBrush = new SolidColorBrush(Color.FromRgb(0x00, 0xFF, 0xBB)); // Neon Emerald
-    private static readonly Brush SellColorBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x33, 0x66)); // Electric Raspberry
-    private static readonly Brush OrangeBrush = new SolidColorBrush(Color.FromRgb(0xF0, 0x88, 0x3E));
-    private static readonly Brush GrayBrush = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
+    // Brush helpers — Frozen so they are cross-thread safe (required for unit tests on non-UI threads)
+    private static readonly Brush GreenBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x3F, 0xB9, 0x50)));
+    private static readonly Brush RedBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xDA, 0x36, 0x33)));
+    private static readonly Brush BuyColorBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x00, 0xFF, 0xBB))); // Neon Emerald
+    private static readonly Brush SellColorBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xFF, 0x33, 0x66))); // Electric Raspberry
+    private static readonly Brush OrangeBrush = Freeze(new SolidColorBrush(Color.FromRgb(0xF0, 0x88, 0x3E)));
+    private static readonly Brush GrayBrush = Freeze(new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E)));
+
+    private static Brush Freeze(Brush brush) { brush.Freeze(); return brush; }
 
     private void InvokeOnUi(Action action)
     {
@@ -6131,7 +6138,26 @@ public partial class MainViewModel : ObservableObject
         }
 
         if (QueueHealth != "Optimal") score -= 15;
-        
+
         return Math.Clamp(score, 0, 100);
+    }
+
+    /// <summary>
+    /// Cancels all tracked background tasks and waits for graceful shutdown.
+    /// Call this when the MainWindow is closing.
+    /// </summary>
+    public async Task ShutdownAsync()
+    {
+        _viewModelCts.Cancel();
+        try
+        {
+            await Task.WhenAll(_backgroundTasks.Where(t => !t.IsCompleted)).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (OperationCanceledException) { }
+        catch (TimeoutException) { }
+        finally
+        {
+            _viewModelCts.Dispose();
+        }
     }
 }

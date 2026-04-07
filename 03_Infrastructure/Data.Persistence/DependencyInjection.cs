@@ -13,7 +13,7 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddThatsMyQuantInfrastructure(this IServiceCollection services)
     {
-        services.AddSingleton(sp => MemoryPortfolioManager.Instance);
+        services.AddSingleton<MemoryPortfolioManager>();
         services.AddSingleton<ISharedPortfolioStateManager>(sp => sp.GetRequiredService<MemoryPortfolioManager>());
 
         // Tier 1: Foundation

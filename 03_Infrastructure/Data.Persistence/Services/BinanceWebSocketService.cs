@@ -15,6 +15,7 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
     private readonly ILogger<BinanceWebSocketService> _logger;
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _cts;
+    private Task? _receiveLoopTask;
     private readonly HashSet<string> _activeSymbols = new();
     private readonly OrderBookLevel[] _bidScratch = new OrderBookLevel[DepthLevelsCapacity];
     private readonly OrderBookLevel[] _askScratch = new OrderBookLevel[DepthLevelsCapacity];
@@ -49,7 +50,7 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
             await _webSocket.ConnectAsync(uri, _cts.Token);
             _logger.LogInformation("Connected to Binance WebSocket with {Count} symbols.", _activeSymbols.Count);
 
-            _ = ReceiveLoopAsync(_cts.Token);
+            _receiveLoopTask = ReceiveLoopAsync(_cts.Token);
         }
         catch (Exception ex)
         {
@@ -242,6 +243,15 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
         finally
         {
             _cts = null;
+        }
+
+        // Wait for the receive loop to complete after cancellation
+        if (_receiveLoopTask is not null)
+        {
+            try { await _receiveLoopTask.WaitAsync(TimeSpan.FromSeconds(5)); }
+            catch (OperationCanceledException) { }
+            catch (TimeoutException) { _logger.LogWarning("Receive loop did not stop within timeout."); }
+            finally { _receiveLoopTask = null; }
         }
 
         if (_webSocket != null)

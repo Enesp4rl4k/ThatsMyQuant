@@ -1,21 +1,28 @@
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services.Risk;
 
 public sealed class PortfolioOptimiserAgent : IRiskGuardAgent
 {
     private readonly ILogger<PortfolioOptimiserAgent> _logger;
-    private const int MaxOpenTrades = 8;
-    private const decimal MaxPortfolioHeat = 0.15m;
+    private readonly int _maxOpenTrades;
+    private readonly decimal _maxPortfolioHeat;
 
     public string GuardId => "Risk.PortfolioOptimiser";
     public int Order => 1;
 
-    public PortfolioOptimiserAgent(ILogger<PortfolioOptimiserAgent> logger)
-        => _logger = logger;
+    public PortfolioOptimiserAgent(ILogger<PortfolioOptimiserAgent> logger, IOptions<RiskGuardAgentOptions>? options = null)
+    {
+        _logger = logger;
+        var opts = options?.Value ?? new RiskGuardAgentOptions();
+        _maxOpenTrades = opts.MaxOpenTrades;
+        _maxPortfolioHeat = opts.MaxPortfolioHeat;
+    }
 
     public Task<RiskGuardResult> EvaluateAsync(
         Signal signal,
@@ -40,7 +47,7 @@ public sealed class PortfolioOptimiserAgent : IRiskGuardAgent
         }
 
         var currentHeat = openTrades.Sum(t => t.PositionSizePercent);
-        if (currentHeat + decision.PositionSizePercent > 0.30m) // 30% total exposure limit
+        if (currentHeat + decision.PositionSizePercent > _maxPortfolioHeat * 2) // total exposure limit
         {
             return Task.FromResult(RiskGuardResult.Block(GuardId, SignalReasonFlags.PortfolioOptimiserVeto,
                 $"Total portfolio exposure ({currentHeat + decision.PositionSizePercent:P0}) exceeds 30% cap"));

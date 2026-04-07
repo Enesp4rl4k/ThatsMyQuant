@@ -99,6 +99,7 @@ public sealed class ScalpingStrategyAgent : IStrategyAgent
         if (absOfi > _options.VeryStrongOfiThreshold) confidence += _options.VeryStrongOfiBonus;
         if (spreadBps > 0 && spreadBps < _options.TightSpreadBps) confidence += _options.TightSpreadBonus;
 
+        confidence = Math.Clamp(confidence, 0f, 100f);
         var reasoning = string.Join(" | ", reasons);
         return Task.FromResult(ofi > 0
             ? StrategyVote.Approve(StrategyTag, confidence, $"Scalp long ({confirmedFactors}/5 factors): {reasoning}")

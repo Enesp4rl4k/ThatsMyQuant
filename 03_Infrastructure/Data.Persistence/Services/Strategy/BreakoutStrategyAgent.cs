@@ -104,6 +104,7 @@ public sealed class BreakoutStrategyAgent : IStrategyAgent
         if (thinAir) confidence += _options.ThinAirBonus;
         if (baseQuality > (decimal)_options.TightConsolidationQuality) confidence += _options.TightConsolidationBonus;
 
+        confidence = Math.Clamp(confidence, 0f, 100f);
         var reasoning = string.Join(" | ", reasons);
         return Task.FromResult(isBullish
             ? StrategyVote.Approve(StrategyTag, confidence, $"Breakout ({confirmedFactors}/5 factors): {reasoning}")
@@ -155,6 +156,7 @@ public sealed class BreakoutStrategyAgent : IStrategyAgent
     private static bool CheckRetest(IReadOnlyList<Candle> candles, decimal level, bool bullish, decimal proximityPct, int lookbackBars)
     {
         if (candles.Count < lookbackBars + 2) return false;
+        if (Math.Abs(level) < 0.0000000001m) return false;
 
         var proximity = Math.Abs(level) * proximityPct;
         var touched = false;

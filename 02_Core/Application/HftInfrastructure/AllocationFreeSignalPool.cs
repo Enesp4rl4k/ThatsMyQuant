@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.HftInfrastructure;
@@ -35,12 +36,36 @@ public class AllocationFreeSignalPool
     }
 
     /// <summary>
-    /// Cleans and restores the object to the Stack pool.
+    /// Cleans ALL fields and restores the object to the Stack pool.
+    /// Every mutable field must be reset to prevent stale data leaking into the next rental.
     /// </summary>
     public void Return(Signal signal)
     {
+        signal.Id = Guid.NewGuid();
+        signal.Source = string.Empty;
         signal.Symbol = string.Empty;
+        signal.Side = TradeSide.Buy;
         signal.Price = 0;
+        signal.Status = TradeStatus.Pending;
+        signal.RetryCount = 0;
+        signal.Quantity = 0m;
+        signal.Confidence = 0;
+        signal.Reasoning = string.Empty;
+        signal.StrategyTag = "TrendConfluence";
+        signal.RegimeTag = "Unknown";
+        signal.MarketType = MarketType.BIST;
+        signal.Exchange = "Binance";
+        signal.Timestamp = DateTime.UtcNow;
+        signal.Volume24h = 0;
+        signal.OrderFlowImbalance = null;
+        signal.BestBid = null;
+        signal.BestAsk = null;
+        signal.WallAgeMs = null;
+        signal.ExecutionAction = ExecutionActionType.None;
+        signal.PriceActionSignal = PriceActionType.None;
+        signal.ReasonFlags = SignalReasonFlags.None;
+        signal.Metadata.Clear();
+
         _pool.Push(signal);
     }
 }

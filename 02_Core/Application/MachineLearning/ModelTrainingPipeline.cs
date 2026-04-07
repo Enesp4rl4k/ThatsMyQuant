@@ -1,6 +1,9 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.MachineLearning;
 
@@ -11,16 +14,19 @@ namespace ThatsMyQuant.Application.MachineLearning;
 /// </summary>
 public sealed class ModelTrainingPipeline
 {
-    private const int FeatureCount = 5;
-    private const int MinimumTrainableSamples = 50;
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
+    private const string ModelName = "trade-outcome-model";
+
+    private readonly int _featureCount;
+    private readonly int _minimumTrainableSamples;
+    private readonly double _l2Regularization;
     private readonly ILogger<ModelTrainingPipeline> _logger;
     private readonly FeatureEngineeringAgent _featureAgent;
     private readonly FeatureDriftMonitor? _featureDriftMonitor;
+    private readonly IModelArtifactStore _artifactStore;
     private readonly List<LabeledSample> _samples = new();
     private readonly object _lock = new();
-    private readonly string _artifactPath;
 
     private int _totalSamples;
     private int _positiveSamples;
@@ -30,26 +36,25 @@ public sealed class ModelTrainingPipeline
     public int PositiveSamples => _positiveSamples;
     public double ClassBalance => _totalSamples > 0 ? (double)_positiveSamples / _totalSamples : 0.5;
     public bool HasActiveModel => _activeModel is not null;
-    public string ArtifactPath => _artifactPath;
+    public string ArtifactPath => _artifactStore.GetArtifactPath(ModelName);
 
     public ModelTrainingPipeline(
         ILogger<ModelTrainingPipeline> logger,
         FeatureEngineeringAgent featureAgent,
+        IModelArtifactStore artifactStore,
         FeatureDriftMonitor? featureDriftMonitor = null,
-        string? artifactDirectory = null)
+        IOptions<FeatureOptions>? featureOptions = null,
+        IOptions<MachineLearningOptions>? mlOptions = null)
     {
         _logger = logger;
         _featureAgent = featureAgent;
+        _artifactStore = artifactStore;
         _featureDriftMonitor = featureDriftMonitor;
-
-        var modelDirectory = artifactDirectory ??
-            Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "ThatsMyQuant",
-                "ml-models");
-
-        Directory.CreateDirectory(modelDirectory);
-        _artifactPath = Path.Combine(modelDirectory, "trade-outcome-model.json");
+        var featOpts = featureOptions?.Value ?? new FeatureOptions();
+        var mlOpts = mlOptions?.Value ?? new MachineLearningOptions();
+        _featureCount = featOpts.FeatureCount;
+        _minimumTrainableSamples = mlOpts.MinimumTrainableSamples;
+        _l2Regularization = mlOpts.L2Regularization;
 
         TryLoadPersistedModel();
     }
@@ -60,7 +65,7 @@ public sealed class ModelTrainingPipeline
     /// </summary>
     public void RecordSample(Trade trade, decimal pnl)
     {
-        var features = new float[FeatureCount];
+        var features = new float[_featureCount];
         _featureAgent.CopyTo(features.AsSpan());
 
         var sample = new LabeledSample
@@ -110,7 +115,7 @@ public sealed class ModelTrainingPipeline
                 PositiveSamples = _positiveSamples,
                 NegativeSamples = _totalSamples - _positiveSamples,
                 ClassBalance = ClassBalance,
-                IsTrainable = _totalSamples >= MinimumTrainableSamples && ClassBalance > 0.1 && ClassBalance < 0.9,
+                IsTrainable = _totalSamples >= _minimumTrainableSamples && ClassBalance > 0.1 && ClassBalance < 0.9,
                 UniqueSymbols = _samples.Select(s => s.Symbol).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
                 DateRange = _samples.Count > 0
                     ? (_samples.Min(s => s.Timestamp), _samples.Max(s => s.Timestamp))
@@ -131,9 +136,9 @@ public sealed class ModelTrainingPipeline
             dataset = _samples.Select(CloneSample).ToList();
         }
 
-        if (dataset.Count < MinimumTrainableSamples)
+        if (dataset.Count < _minimumTrainableSamples)
         {
-            _logger.LogWarning("Insufficient samples for training: {Count} < {Minimum}", dataset.Count, MinimumTrainableSamples);
+            _logger.LogWarning("Insufficient samples for training: {Count} < {Minimum}", dataset.Count, _minimumTrainableSamples);
             return new TrainingResult { Success = false, Reason = "Insufficient data" };
         }
 
@@ -157,14 +162,13 @@ public sealed class ModelTrainingPipeline
         var positiveWeight = positives > 0 ? (double)negatives / positives : 1.0;
         var negativeWeight = negatives > 0 ? (double)positives / negatives : 1.0;
 
-        var weights = new double[FeatureCount];
+        var weights = new double[_featureCount];
         double bias = 0.0;
         double previousLoss = double.MaxValue;
-        const double l2Regularization = 0.0005;
 
         for (var epoch = 0; epoch < epochs; epoch++)
         {
-            var gradWeights = new double[FeatureCount];
+            var gradWeights = new double[_featureCount];
             double gradBias = 0.0;
             double totalLoss = 0.0;
 
@@ -176,7 +180,7 @@ public sealed class ModelTrainingPipeline
                 var error = probability - label;
 
                 gradBias += sampleWeight * error;
-                for (var i = 0; i < FeatureCount; i++)
+                for (var i = 0; i < _featureCount; i++)
                 {
                     gradWeights[i] += sampleWeight * error * row.Features[i];
                 }
@@ -187,9 +191,9 @@ public sealed class ModelTrainingPipeline
             var scale = 1.0 / trainRows.Count;
             bias -= learningRate * gradBias * scale;
 
-            for (var i = 0; i < FeatureCount; i++)
+            for (var i = 0; i < _featureCount; i++)
             {
-                var regularizedGradient = (gradWeights[i] * scale) + (l2Regularization * weights[i]);
+                var regularizedGradient = (gradWeights[i] * scale) + (_l2Regularization * weights[i]);
                 weights[i] -= learningRate * regularizedGradient;
             }
 
@@ -259,7 +263,7 @@ public sealed class ModelTrainingPipeline
             Bias = bias,
             FeatureMeans = normalization.Means.ToArray(),
             FeatureStdDevs = normalization.StdDevs.ToArray(),
-            ArtifactPath = _artifactPath,
+            ArtifactPath = ArtifactPath,
             TrainedAtUtc = trainedAtUtc
         };
     }
@@ -269,7 +273,7 @@ public sealed class ModelTrainingPipeline
         probability = 0.5;
         predictedPositive = false;
 
-        if (_activeModel is null || features.Length < FeatureCount)
+        if (_activeModel is null || features.Length < _featureCount)
         {
             return false;
         }
@@ -296,33 +300,33 @@ public sealed class ModelTrainingPipeline
 
     public bool TryLoadPersistedModel()
     {
-        if (!File.Exists(_artifactPath))
+        if (!_artifactStore.ExistsAsync(ModelName).GetAwaiter().GetResult())
         {
             return false;
         }
 
         try
         {
-            var json = File.ReadAllText(_artifactPath);
+            var json = _artifactStore.LoadAsync(ModelName).GetAwaiter().GetResult();
             var artifact = JsonSerializer.Deserialize<TrainingModelArtifact>(json, JsonOptions);
 
             if (artifact is null ||
-                artifact.Weights.Length != FeatureCount ||
-                artifact.FeatureMeans.Length != FeatureCount ||
-                artifact.FeatureStdDevs.Length != FeatureCount)
+                artifact.Weights.Length != _featureCount ||
+                artifact.FeatureMeans.Length != _featureCount ||
+                artifact.FeatureStdDevs.Length != _featureCount)
             {
-                _logger.LogWarning("Persisted model artifact is invalid and was ignored: {ArtifactPath}", _artifactPath);
+                _logger.LogWarning("Persisted model artifact is invalid and was ignored: {ArtifactPath}", ArtifactPath);
                 return false;
             }
 
             _activeModel = artifact;
             _featureDriftMonitor?.SetBaseline(artifact.FeatureMeans, artifact.FeatureStdDevs);
-            _logger.LogInformation("Loaded persisted trade outcome model from {ArtifactPath}", _artifactPath);
+            _logger.LogInformation("Loaded persisted trade outcome model from {ArtifactPath}", ArtifactPath);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Unable to load persisted trade outcome model from {ArtifactPath}", _artifactPath);
+            _logger.LogWarning(ex, "Unable to load persisted trade outcome model from {ArtifactPath}", ArtifactPath);
             return false;
         }
     }
@@ -340,16 +344,13 @@ public sealed class ModelTrainingPipeline
     public void ClearPersistedModel()
     {
         _activeModel = null;
-        if (File.Exists(_artifactPath))
-        {
-            File.Delete(_artifactPath);
-        }
+        _artifactStore.DeleteAsync(ModelName).GetAwaiter().GetResult();
     }
 
     private void PersistArtifact(TrainingModelArtifact artifact)
     {
         var json = JsonSerializer.Serialize(artifact, JsonOptions);
-        File.WriteAllText(_artifactPath, json);
+        _artifactStore.SaveAsync(ModelName, json).GetAwaiter().GetResult();
     }
 
     private static (List<LabeledSample> Train, List<LabeledSample> Test) CreateStratifiedSplit(
@@ -376,12 +377,12 @@ public sealed class ModelTrainingPipeline
         return (train, test);
     }
 
-    private static NormalizationStats ComputeNormalizationStats(IReadOnlyList<LabeledSample> trainSet)
+    private NormalizationStats ComputeNormalizationStats(IReadOnlyList<LabeledSample> trainSet)
     {
-        var means = new double[FeatureCount];
-        var stdDevs = new double[FeatureCount];
+        var means = new double[_featureCount];
+        var stdDevs = new double[_featureCount];
 
-        for (var i = 0; i < FeatureCount; i++)
+        for (var i = 0; i < _featureCount; i++)
         {
             means[i] = trainSet.Average(sample => sample.Features[i]);
             var variance = trainSet.Average(sample =>
@@ -400,13 +401,13 @@ public sealed class ModelTrainingPipeline
         return new NormalizationStats(means, stdDevs);
     }
 
-    private static TrainingRow CreateTrainingRow(LabeledSample sample, NormalizationStats normalization)
+    private TrainingRow CreateTrainingRow(LabeledSample sample, NormalizationStats normalization)
         => new(NormalizeFeatures(sample.Features, normalization.Means, normalization.StdDevs), sample.Label);
 
-    private static double[] NormalizeFeatures(IReadOnlyList<float> features, IReadOnlyList<double> means, IReadOnlyList<double> stdDevs)
+    private double[] NormalizeFeatures(IReadOnlyList<float> features, IReadOnlyList<double> means, IReadOnlyList<double> stdDevs)
     {
-        var normalized = new double[FeatureCount];
-        for (var i = 0; i < FeatureCount; i++)
+        var normalized = new double[_featureCount];
+        for (var i = 0; i < _featureCount; i++)
         {
             normalized[i] = (features[i] - means[i]) / stdDevs[i];
         }
@@ -414,10 +415,10 @@ public sealed class ModelTrainingPipeline
         return normalized;
     }
 
-    private static double ScoreProbability(IReadOnlyList<double> normalizedFeatures, IReadOnlyList<double> weights, double bias)
+    private double ScoreProbability(IReadOnlyList<double> normalizedFeatures, IReadOnlyList<double> weights, double bias)
     {
         var score = bias;
-        for (var i = 0; i < FeatureCount; i++)
+        for (var i = 0; i < _featureCount; i++)
         {
             score += normalizedFeatures[i] * weights[i];
         }
@@ -431,7 +432,7 @@ public sealed class ModelTrainingPipeline
         return -(label * Math.Log(clipped) + ((1 - label) * Math.Log(1 - clipped)));
     }
 
-    private static EvaluationMetrics Evaluate(IReadOnlyList<TrainingRow> rows, IReadOnlyList<double> weights, double bias)
+    private EvaluationMetrics Evaluate(IReadOnlyList<TrainingRow> rows, IReadOnlyList<double> weights, double bias)
     {
         var tp = 0;
         var fp = 0;
@@ -464,10 +465,10 @@ public sealed class ModelTrainingPipeline
         return new EvaluationMetrics(accuracy, precision, recall, f1, balancedAccuracy, logLoss);
     }
 
-    private static float[] SanitizeFeatures(ReadOnlySpan<float> features)
+    private float[] SanitizeFeatures(ReadOnlySpan<float> features)
     {
-        var sanitized = new float[FeatureCount];
-        for (var i = 0; i < FeatureCount; i++)
+        var sanitized = new float[_featureCount];
+        for (var i = 0; i < _featureCount; i++)
         {
             sanitized[i] = FeatureEngineeringAgent.SafeFloat(features[i]);
         }

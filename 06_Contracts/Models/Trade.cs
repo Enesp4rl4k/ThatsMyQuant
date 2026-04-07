@@ -50,6 +50,8 @@ public class Trade
     public bool HasTakenPartialProfit { get; set; }
     public decimal TrailingStopPrice { get; set; }
     public decimal OptimalPriceSinceEntry { get; set; }
+    public decimal MaxAdverseExcursion { get; set; }
+    public decimal MaxFavorableExcursion { get; set; }
     public decimal MarkPrice { get; set; }
     public int BarsHeld { get; set; }
     public int MaxHoldingBars { get; set; }
@@ -88,12 +90,42 @@ public class Trade
     {
         get
         {
-            var realizedExitPrice = AverageExitPrice > 0m
-                ? AverageExitPrice
-                : ExitPrice;
-            return EntryPrice > 0m && (IsClosed || ClosedQuantity > 0m)
-                ? ((realizedExitPrice - EntryPrice) / EntryPrice) * (Side == TradeSide.Sell ? -1m : 1m)
-                : 0m;
+            if (EntryPrice <= 0m)
+                return 0m;
+
+            // For partial exits, compute weighted P&L across closed and open portions
+            var direction = Side == TradeSide.Sell ? -1m : 1m;
+            var totalQuantity = Quantity > 0m ? Quantity : 1m;
+
+            decimal weightedPnlPercent = 0m;
+
+            // Closed portion
+            if (ClosedQuantity > 0m)
+            {
+                var closedExitPrice = AverageExitPrice > 0m ? AverageExitPrice : ExitPrice;
+                if (closedExitPrice > 0m)
+                {
+                    var closedPnl = ((closedExitPrice - EntryPrice) / EntryPrice) * direction;
+                    weightedPnlPercent += closedPnl * (ClosedQuantity / totalQuantity);
+                }
+            }
+
+            // Open (unrealized) portion — use MarkPrice if available
+            var openQuantity = totalQuantity - ClosedQuantity;
+            if (openQuantity > 0m && MarkPrice > 0m && !IsClosed)
+            {
+                var unrealizedPnl = ((MarkPrice - EntryPrice) / EntryPrice) * direction;
+                weightedPnlPercent += unrealizedPnl * (openQuantity / totalQuantity);
+            }
+
+            // Fully closed trade with no partial tracking — fall back to simple calculation
+            if (ClosedQuantity <= 0m && IsClosed)
+            {
+                var exitP = AverageExitPrice > 0m ? AverageExitPrice : ExitPrice;
+                return exitP > 0m ? ((exitP - EntryPrice) / EntryPrice) * direction : 0m;
+            }
+
+            return weightedPnlPercent;
         }
     }
 }

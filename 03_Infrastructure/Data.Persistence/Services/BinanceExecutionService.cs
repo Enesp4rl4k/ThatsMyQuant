@@ -3,11 +3,14 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using Polly;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Enums;
 using System.Buffers;
 using System.Net.Http.Headers;
+using Microsoft.Extensions.Options;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -18,7 +21,7 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
     private readonly string _apiKey;
     private readonly byte[] _apiSecretBytes;
     private readonly HMACSHA256 _hmac;
-    private const string BaseUrl = "https://api.binance.com";
+    private readonly string _baseUrl;
     private const VenueKind Venue = VenueKind.Binance;
 
     private readonly ConcurrentDictionary<string, OrderBookSnapshot> _latestOrderBooks = new();
@@ -26,19 +29,21 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
     private readonly ISharedPortfolioStateManager _portfolio;
 
     public BinanceExecutionService(
-        ILogger<BinanceExecutionService> logger, 
-        HttpClient httpClient, 
-        string apiKey, 
+        ILogger<BinanceExecutionService> logger,
+        HttpClient httpClient,
+        string apiKey,
         string apiSecret,
         IStreamingMarketDataService streamingService,
-        ISharedPortfolioStateManager? portfolioStateManager = null)
+        ISharedPortfolioStateManager? portfolioStateManager = null,
+        IOptions<ExchangeUrlOptions>? urlOptions = null)
     {
         _logger = logger;
         _httpClient = httpClient;
         _apiKey = apiKey;
         _apiSecretBytes = Encoding.UTF8.GetBytes(apiSecret);
         _hmac = new HMACSHA256(_apiSecretBytes);
-        _portfolio = portfolioStateManager ?? MemoryPortfolioManager.Instance;
+        _baseUrl = urlOptions?.Value.BinanceRestBaseUrl ?? "https://api.binance.com";
+        _portfolio = portfolioStateManager ?? throw new ArgumentNullException(nameof(portfolioStateManager));
         
         _httpClient.DefaultRequestHeaders.Add("X-MBX-APIKEY", _apiKey);
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -49,7 +54,7 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
         }
     }
 
-    public async Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side)
+    public async Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side, CancellationToken cancellationToken = default)
     {
         if (!_latestOrderBooks.TryGetValue(symbol, out var book))
         {
@@ -84,7 +89,7 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
         return await Task.FromResult(volumeAhead);
     }
 
-    public async Task<Trade> ExecuteOrderAsync(Signal signal)
+    public async Task<Trade> ExecuteOrderAsync(Signal signal, CancellationToken cancellationToken = default)
     {
         // Institutional Guard: Local balance check via MemoryPortfolioManager
         var requiredNotional = signal.Quantity * signal.Price;
@@ -102,10 +107,11 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
         
         var signature = ComputeSignature(queryString);
         
-        // Use a background HttpClient or Direct Socket for HFT if available. 
-        // Here we optimize the POST request.
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/api/v3/order?{queryString}&signature={signature}");
-        var response = await _httpClient.SendAsync(request);
+        // Use resilience pipeline for retries on transient failures (network timeouts, 5xx)
+        var pipeline = Application.Resilience.ResiliencePolicies.CreateRetryPipeline(_logger);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/api/v3/order?{queryString}&signature={signature}");
+        var response = await pipeline.ExecuteAsync(async ct =>
+            await _httpClient.SendAsync(request, ct), cancellationToken);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -133,7 +139,7 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
         };
     }
 
-    public async Task<Account> GetAccountStatusAsync()
+    public async Task<Account> GetAccountStatusAsync(CancellationToken cancellationToken = default)
     {
         // Use localized portfolio state if already synced, otherwise fetch.
         var availableUsdt = _portfolio.GetAvailableBalance(Venue, "USDT");
@@ -152,7 +158,7 @@ public sealed class BinanceExecutionService : IExchangeService, IDisposable
         var queryString = $"timestamp={timestamp}";
         var signature = ComputeSignature(queryString);
 
-        var response = await _httpClient.GetAsync($"{BaseUrl}/api/v3/account?{queryString}&signature={signature}");
+        var response = await _httpClient.GetAsync($"{_baseUrl}/api/v3/account?{queryString}&signature={signature}");
         
         if (!response.IsSuccessStatusCode)
         {

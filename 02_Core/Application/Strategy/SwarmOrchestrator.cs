@@ -1,10 +1,12 @@
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
 using System.Linq;
@@ -42,14 +44,18 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     private readonly IAgentCoordinator _agentCoordinator;
     private readonly ILogger<SwarmOrchestrator> _logger;
 
-    private const float MlDownsideThreshold = -0.01f;
-    private const float SuccessThreshold = 0.6f;
-    private const float ElevatedDriftPenalty = 0.15f;
-    private const decimal ElevatedDriftSizeMultiplier = 0.65m;
+    private readonly SwarmOptions _swarmOptions;
+    private readonly float _mlDownsideThreshold;
+    private readonly float _successThreshold;
+    private readonly float _elevatedDriftPenalty;
+    private readonly decimal _elevatedDriftSizeMultiplier;
+    private readonly int _maxConsecutiveFailures;
+    private readonly TimeSpan _haltCooldownPeriod;
+    private readonly TimeSpan _agentTimeout;
 
     private int _consecutiveFailures;
-    private const int MaxConsecutiveFailures = 3;
-    private bool _isSystemHalted;
+    private volatile bool _isSystemHalted;
+    private long _haltedAtTicks;
 
     public SwarmOrchestrator(
         RiskAgent riskAgent,
@@ -59,7 +65,8 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         IPortfolioStateCache portfolioCache,
         OFIExecutionAgent ofiAgent,
         IAgentCoordinator agentCoordinator,
-        ILogger<SwarmOrchestrator> logger)
+        ILogger<SwarmOrchestrator> logger,
+        IOptions<SwarmOptions>? swarmOptions = null)
     {
         _riskAgent = riskAgent;
         _sentimentAgent = sentimentAgent;
@@ -69,14 +76,32 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         _ofiAgent = ofiAgent;
         _agentCoordinator = agentCoordinator;
         _logger = logger;
+        _swarmOptions = swarmOptions?.Value ?? new SwarmOptions();
+        _mlDownsideThreshold = _swarmOptions.MlDownsideThreshold;
+        _successThreshold = _swarmOptions.SuccessThreshold;
+        _elevatedDriftPenalty = _swarmOptions.ElevatedDriftPenalty;
+        _elevatedDriftSizeMultiplier = _swarmOptions.ElevatedDriftSizeMultiplier;
+        _maxConsecutiveFailures = _swarmOptions.MaxConsecutiveFailures;
+        _haltCooldownPeriod = TimeSpan.FromMinutes(_swarmOptions.HaltCooldownMinutes);
+        _agentTimeout = TimeSpan.FromSeconds(_swarmOptions.AgentTimeoutSeconds);
     }
 
     public async Task<SwarmConsensusResult> Handle(SwarmNegotiationRequest request, CancellationToken cancellationToken)
     {
         if (_isSystemHalted)
         {
-            _logger.LogCritical("Swarm Orchestrator is HALTED due to repeated failures. Manual intervention required.");
-            return new SwarmConsensusResult { Approved = false, RejectionFlags = SignalReasonFlags.SystemError };
+            var haltedAt = new DateTime(Interlocked.Read(ref _haltedAtTicks), DateTimeKind.Utc);
+            if (DateTime.UtcNow - haltedAt < _haltCooldownPeriod)
+            {
+                _logger.LogCritical("Swarm Orchestrator is HALTED (cooldown until {ResumeAt:HH:mm:ss} UTC).",
+                    haltedAt + _haltCooldownPeriod);
+                return new SwarmConsensusResult { Approved = false, RejectionFlags = SignalReasonFlags.SystemError };
+            }
+
+            // Auto-recover after cooldown period
+            _isSystemHalted = false;
+            Interlocked.Exchange(ref _consecutiveFailures, 0);
+            _logger.LogWarning("Swarm Orchestrator auto-recovered after {Cooldown} cooldown.", _haltCooldownPeriod);
         }
 
         var result = new SwarmConsensusResult { Approved = false };
@@ -136,7 +161,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
             _logger.LogError(ex, "Swarm Orchestration CRITICAL FAILURE for {Symbol}", request.Signal.Symbol);
             
             var failures = Interlocked.Increment(ref _consecutiveFailures);
-            if (failures >= MaxConsecutiveFailures)
+            if (failures >= _maxConsecutiveFailures)
             {
                 TriggerEmergencyShutdown();
             }
@@ -151,10 +176,11 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     private void TriggerEmergencyShutdown()
     {
         _isSystemHalted = true;
-        _logger.LogCritical("!!! EMERGENCY SHUTDOWN TRIGGERED !!! 3 consecutive orchestration failures.");
-        
-        // In a real HFT system, this would also call a 'CancelAllOrders' command to the exchange.
-        // For now, we arm the RiskAgent's kill switch as a secondary safety layer.
+        Interlocked.Exchange(ref _haltedAtTicks, DateTime.UtcNow.Ticks);
+        _logger.LogCritical("!!! EMERGENCY SHUTDOWN TRIGGERED !!! 3 consecutive orchestration failures. Auto-recovery in {Cooldown}.",
+            _haltCooldownPeriod);
+
+        // Arm the RiskAgent's kill switch as a secondary safety layer.
         _riskAgent.ArmKillSwitch("Global Orchestration Failure Threshold Reached (3 Strikes).");
     }
 
@@ -169,24 +195,53 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         };
     }
 
+    private async Task<T> RunWithTimeoutAsync<T>(string agentName, Task<T> agentTask, T fallback, CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(_agentTimeout);
+            return await agentTask.WaitAsync(timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _logger.LogWarning("Agent [{AgentName}] timed out after {Timeout}s — using fallback result",
+                agentName, _agentTimeout.TotalSeconds);
+            return fallback;
+        }
+    }
+
     private async Task<((bool Approved, string Reason) Sentiment, (bool Approved, string Reason, decimal SafePositionSizePercent) Risk, PredictionResult Prediction)>
         RunConcurrentAgents(SwarmNegotiationRequest request, RiskParameters riskParams, CancellationToken ct)
     {
         var recentTrades = _portfolioCache.GetRecentTrades();
-        var sentimentTask = _sentimentAgent.EvaluateAsync(request.Signal.Symbol, ct);
-        var riskTask = _riskAgent.EvaluateAsync(
-            request.InitialDecision,
-            riskParams,
-            request.Signal.Volume24h,
-            recentTrades,
-            request.Signal);
+        var sentimentTask = RunWithTimeoutAsync(
+            "Sentiment",
+            _sentimentAgent.EvaluateAsync(request.Signal.Symbol, ct),
+            (Approved: false, Reason: "Sentiment agent timed out"),
+            ct);
+
+        var riskTask = RunWithTimeoutAsync(
+            "Risk",
+            _riskAgent.EvaluateAsync(
+                request.InitialDecision,
+                riskParams,
+                request.Signal.Volume24h,
+                recentTrades,
+                request.Signal),
+            (Approved: false, Reason: "Risk agent timed out", SafePositionSizePercent: 0m),
+            ct);
 
         // Offload ML latency to avoid blocking I/O pipeline during multi-agent consensus
-        var mlTask = Task.Run(() => 
-        {
-            _featureAgent.ApplyFoundationData(request.Foundation);
-            return _inferenceAgent.PredictNextReturn(_featureAgent);
-        }, ct);
+        var mlTask = RunWithTimeoutAsync(
+            "MLInference",
+            Task.Run(() =>
+            {
+                _featureAgent.ApplyFoundationData(request.Foundation);
+                return _inferenceAgent.PredictNextReturn(_featureAgent);
+            }, ct),
+            PredictionResult.Invalid,
+            ct);
 
         await Task.WhenAll(sentimentTask, riskTask, mlTask).WaitAsync(ct);
         return (await sentimentTask, await riskTask, await mlTask);
@@ -216,7 +271,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         }
         if (ml.IsValid)
         {
-            if (ml.Value < MlDownsideThreshold && decision.Side == TradeSide.Buy)
+            if (ml.Value < _mlDownsideThreshold && decision.Side == TradeSide.Buy)
             {
                 result.RejectionFlags |= SignalReasonFlags.MachineLearningVeto;
                 score -= 0.5f;
@@ -231,7 +286,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
                         "Elevated ML feature drift reduced model confidence contribution for {DriftedCount} features (max z-score {MaxZ:F2})",
                         ml.DriftedFeatureCount,
                         ml.MaxFeatureZScore);
-                    score -= ElevatedDriftPenalty;
+                    score -= _elevatedDriftPenalty;
                 }
             }
         }
@@ -287,10 +342,10 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
     private void FinalizeConsensus(float score, (bool Approved, string Reason, decimal Size) risk, PredictionResult ml,
         TradeDecision decision, decimal sizeMultiplier, SwarmConsensusResult result)
     {
-        if (score >= SuccessThreshold && result.RejectionFlags == SignalReasonFlags.None)
+        if (score >= _successThreshold && result.RejectionFlags == SignalReasonFlags.None)
         {
             result.Approved = true;
-            var driftAdjustedSizeMultiplier = ml.DriftDetected ? sizeMultiplier * ElevatedDriftSizeMultiplier : sizeMultiplier;
+            var driftAdjustedSizeMultiplier = ml.DriftDetected ? sizeMultiplier * _elevatedDriftSizeMultiplier : sizeMultiplier;
             result.AdjustedKellyFraction = risk.Size * (decimal)(1.0f + ml.Value) * driftAdjustedSizeMultiplier;
             result.AdjustedTakeProfit = decision.TakeProfit;
             if (result.ExecutionAction == ExecutionActionType.None) result.ExecutionAction = ExecutionActionType.MarketTaker;

@@ -1,5 +1,6 @@
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -30,8 +31,10 @@ public static class MarketRegimeDetector
         public string Description { get; init; } = "";
     }
 
-    public static RegimeResult Detect(IReadOnlyList<Candle> candles, int lookback = 20)
+    public static RegimeResult Detect(IReadOnlyList<Candle> candles, int lookback = 20, MarketRegimeDetectionOptions? options = null)
     {
+        var opts = options ?? new MarketRegimeDetectionOptions();
+
         if (candles.Count < lookback + 14)
             return new RegimeResult { Regime = MarketRegime.Unknown, AdaptedRsiPeriod = 14,
                 AdaptedEmaFast = 20, AdaptedEmaSlow = 50, StopLossMultiplier = 2.0,
@@ -46,25 +49,25 @@ public static class MarketRegimeDetector
         // Compute directional movement AND Shannon Entropy
         double trendStrength = ComputeTrendStrength(recentCandles);
         double normalizedEntropy = ComputeShannonEntropy(recentCandles);
-        double garchVolatilityForecast = ComputeGarchVolatility(recentCandles);
+        double garchVolatilityForecast = ComputeGarchVolatility(recentCandles, opts);
 
         // Shannon Entropy: < 0.82 means the returns distribution is organized (trending).
         // > 0.90 means it's mostly random noise (ranging).
-        bool isTrending = normalizedEntropy < 0.82 && atrPercent < 1.5 && garchVolatilityForecast < 1.0;
+        bool isTrending = normalizedEntropy < opts.ShannonEntropyThreshold && atrPercent < opts.AtrPercentLowThreshold && garchVolatilityForecast < opts.GarchLowThreshold;
         
         // Trigger volatile regime if ATR is huge OR if GARCH(1,1) forecasts an impending volatility cluster.
-        bool isVolatile = atrPercent > 3.0 || garchVolatilityForecast > 1.5;
+        bool isVolatile = atrPercent > opts.AtrPercentHighThreshold || garchVolatilityForecast > opts.GarchHighThreshold;
 
         if (isVolatile)
         {
             return new RegimeResult
             {
                 Regime = MarketRegime.Volatile,
-                AdaptedRsiPeriod = 14,
-                AdaptedEmaFast = 20,
-                AdaptedEmaSlow = 50,
-                StopLossMultiplier = 3.0,  // Wider stops in volatile markets
-                TakeProfitMultiplier = 4.5,
+                AdaptedRsiPeriod = opts.VolatileRsiPeriod,
+                AdaptedEmaFast = opts.VolatileEmaFast,
+                AdaptedEmaSlow = opts.VolatileEmaSlow,
+                StopLossMultiplier = opts.VolatileStopLossMultiplier,  // Wider stops in volatile markets
+                TakeProfitMultiplier = opts.VolatileTakeProfitMultiplier,
                 Description = $"VOLATILE — ATR={atrPercent:F1}%, GARCH={garchVolatilityForecast:F2}%. Impending/active volatility cluster detected."
             };
         }
@@ -74,11 +77,11 @@ public static class MarketRegimeDetector
             return new RegimeResult
             {
                 Regime = MarketRegime.Trending,
-                AdaptedRsiPeriod = 10,     // More responsive RSI
-                AdaptedEmaFast = 15,       // Faster EMA to ride trends
-                AdaptedEmaSlow = 40,
-                StopLossMultiplier = 2.0,
-                TakeProfitMultiplier = 4.0, // Let winners run longer in trends
+                AdaptedRsiPeriod = opts.TrendingRsiPeriod,     // More responsive RSI
+                AdaptedEmaFast = opts.TrendingEmaFast,       // Faster EMA to ride trends
+                AdaptedEmaSlow = opts.TrendingEmaSlow,
+                StopLossMultiplier = opts.TrendingStopLossMultiplier,
+                TakeProfitMultiplier = opts.TrendingTakeProfitMultiplier, // Let winners run longer in trends
                 Description = $"TRENDING — Entropy={normalizedEntropy:F2}. Organized structure. Riding the trend."
             };
         }
@@ -86,11 +89,11 @@ public static class MarketRegimeDetector
         return new RegimeResult
         {
             Regime = MarketRegime.Ranging,
-            AdaptedRsiPeriod = 20,     // Slower RSI to avoid false signals
-            AdaptedEmaFast = 20,
-            AdaptedEmaSlow = 50,
-            StopLossMultiplier = 1.5,  // Tighter stops in range
-            TakeProfitMultiplier = 2.0,
+            AdaptedRsiPeriod = opts.RangingRsiPeriod,     // Slower RSI to avoid false signals
+            AdaptedEmaFast = opts.RangingEmaFast,
+            AdaptedEmaSlow = opts.RangingEmaSlow,
+            StopLossMultiplier = opts.RangingStopLossMultiplier,  // Tighter stops in range
+            TakeProfitMultiplier = opts.RangingTakeProfitMultiplier,
             Description = $"RANGING — Entropy={normalizedEntropy:F2}. High noise {trendStrength:P0} directional. Mean-reversion mode."
         };
     }
@@ -192,14 +195,16 @@ public static class MarketRegimeDetector
     /// Captures volatility clustering which ATR often lags.
     /// \sigma^2_t = \omega + \alpha \cdot r_{t-1}^2 + \beta \cdot \sigma^2_{t-1}
     /// </summary>
-    private static double ComputeGarchVolatility(IReadOnlyList<Candle> candles)
+    private static double ComputeGarchVolatility(IReadOnlyList<Candle> candles, MarketRegimeDetectionOptions? options = null)
     {
         if (candles.Count < 2) return 0;
-        
+
+        var opts = options ?? new MarketRegimeDetectionOptions();
+
         // High-frequency GARCH(1,1) parameters (fast reacting)
-        double omega = 0.000005;
-        double alpha = 0.15;
-        double beta = 0.80; 
+        double omega = opts.GarchOmega;
+        double alpha = opts.GarchAlpha;
+        double beta = opts.GarchBeta;
 
         var returns = new List<double>(candles.Count);
         for (int i = 1; i < candles.Count; i++)

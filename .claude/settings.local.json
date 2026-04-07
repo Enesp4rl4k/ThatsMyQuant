@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin -type d -name *Indicator* -o -type d -name *Risk* -o -type d -name *Strategy*)",
+      "Bash(for dir:*)",
+      "Bash(do echo:*)",
+      "Read(//c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin/**)",
+      "Bash(done)",
+      "Bash(grep -r \"class.*\\\\|interface.*\" 02_Core/Application/Risk/*.cs 02_Core/Application/Strategy/PerformanceTracker.cs 02_Core/Application/Strategy/RiskCalculator.cs --include=\"*.cs\")",
+      "Bash(wc -l 02_Core/Application/Strategy/*.cs)",
+      "Bash(grep -E \"\\(PositionSupervisorService|StrategyAgent|EngineHardening|PaperTrading|ExecuteTradeHandler|MainViewModel\\)\\\\.cs$\")",
+      "Bash(dotnet build:*)",
+      "Bash(dotnet test:*)",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin/01_Services/CLI.Tool -type f -name *.cs -o -name *.csproj)",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin/01_Services/Listener.Api -type f -name *.cs)",
+      "Bash(dotnet restore:*)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -r \"CLI\\\\.Tool\\\\|ThatsMyQuant\\\\.CLI\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin --include=*.csproj)",
+      "Bash(grep -r Class1 /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin --include=*.cs --include=*.csproj)",
+      "Bash(grep -r AI.DeepSeek /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin --include=*.csproj --include=*.cs)",
+      "Bash(grep -r MockBrokerService /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin --include=*.cs --include=*.csproj)",
+      "Bash(rm -f \"01_Services/Gateway.Api/Protos/greet.proto\")",
+      "Bash(rm -f \"03_Infrastructure/AI.DeepSeek/Class1.cs\")",
+      "Bash(rm -f \"01_Services/Execution.Worker/Worker.cs\")",
+      "Bash(rm -f \"01_Services/QuantEngine.Worker/Worker.cs\")",
+      "Bash(rm -f \"src/ThatsMyQuant.Infrastructure/Services/MockBrokerService.cs\")",
+      "Bash(xargs wc:*)",
+      "Bash(grep -l \"Should\\(\\)\" \"C:\\\\Users\\\\parlak\\\\Downloads\\\\ThatsMyQuant\\\\.claude\\\\worktrees\\\\objective-franklin\\\\05_Tests\\\\ThatsMyQuant.Tests\"/**/*.cs)",
+      "Bash(grep -h \"^public class \" \"C:\\\\Users\\\\parlak\\\\Downloads\\\\ThatsMyQuant\\\\.claude\\\\worktrees\\\\objective-franklin\\\\02_Core\\\\Application\\\\Strategy\"/*.cs)",
+      "Bash(find \"C:\\\\Users\\\\parlak\\\\Downloads\\\\ThatsMyQuant\\\\.claude\\\\worktrees\\\\objective-franklin\\\\02_Core\\\\Application\" -name \"*.cs\" -not -path \"*/obj/*\" -exec grep -l \"^public class \" {})",
+      "Bash(grep -h \"class.*Agent\\\\|class.*Service\\\\|class.*Coordinator\\\\|class.*Engine\" \"C:\\\\Users\\\\parlak\\\\Downloads\\\\ThatsMyQuant\\\\.claude\\\\worktrees\\\\objective-franklin\\\\02_Core\\\\Application\\\\Strategy\"/*.cs)",
+      "Bash(grep -r \"http://\" --include=\"*.cs\" --include=\"*.json\" ! -path \"*/bin/*\" ! -path \"*/obj/*\")",
+      "Bash(grep -n \"\\\\.Result\\\\|\\\\.Wait\\(\\)\" /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/objective-franklin/02_Core/Application/**/*.cs)",
+      "Bash(grep -h \"^public class \\\\|^public sealed class \" \"C:\\\\Users\\\\parlak\\\\Downloads\\\\ThatsMyQuant\\\\.claude\\\\worktrees\\\\objective-franklin\\\\03_Infrastructure\\\\Data.Persistence\\\\Services\"/*.cs)",
+      "Bash(grep -r \"localhost\" --include=\"*.json\" --include=\"*.cs\" ! -path \"*/bin/*\" ! -path \"*/obj/*\")",
+      "Bash(grep -h \"^public class \\\\|^public sealed class \" \"C:\\\\Users\\\\parlak\\\\Downloads\\\\ThatsMyQuant\\\\.claude\\\\worktrees\\\\objective-franklin\\\\03_Infrastructure\\\\Data.Persistence\\\\Services\"/**/*.cs)",
+      "Bash(grep -r \"var client = new\\\\|new HttpClient\\\\|httpClient\\\\.\" --include=\"*.cs\" ! -path \"*/bin/*\" ! -path \"*/obj/*\")",
+      "Bash(find 05_Tests -name *.cs -not -path */obj/*)",
+      "Bash(find . -name \"*.cs\" ! -path \"*/bin/*\" ! -path \"*/obj/*\" -type f -exec grep -l \"Crypto\\\\|Hash\\\\|Encrypt\" {})"
+    ]
+  }
+}

@@ -14,15 +14,10 @@ public sealed class MemoryPortfolioManager : ISharedPortfolioStateManager
 {
     private const long BalanceScale = 100_000_000L;
 
-    private static readonly Lazy<MemoryPortfolioManager> _instance =
-        new(() => new MemoryPortfolioManager());
-
-    public static MemoryPortfolioManager Instance => _instance.Value;
-
     private readonly ConcurrentDictionary<BalanceKey, AtomicBalanceCell> _balances = new();
     private readonly ConcurrentDictionary<PositionKey, AtomicPositionCell> _positions = new();
 
-    private MemoryPortfolioManager() { }
+    public MemoryPortfolioManager() { }
 
     public decimal AvailableUsdt => GetAvailableBalance(VenueKind.Binance, "USDT");
 

@@ -12,7 +12,7 @@ public class PaperTradingService
     private readonly ILogger<PaperTradingService> _logger;
     private readonly StrategyPromotionService? _promotionService;
     private readonly ExitPolicyLearningService? _exitPolicyLearningService;
-    private readonly MarketExecutionProfileService _executionProfiles;
+    private readonly IMarketExecutionProfileService _executionProfiles;
     private readonly PositionSupervisorService _positionSupervisor;
     public PaperPortfolio Portfolio { get; } = new();
 
@@ -22,7 +22,7 @@ public class PaperTradingService
         ILogger<PaperTradingService> logger,
         StrategyPromotionService? promotionService = null,
         ExitPolicyLearningService? exitPolicyLearningService = null,
-        MarketExecutionProfileService? executionProfiles = null,
+        IMarketExecutionProfileService? executionProfiles = null,
         PositionSupervisorService? positionSupervisor = null)
     {
         _analysis = analysis;

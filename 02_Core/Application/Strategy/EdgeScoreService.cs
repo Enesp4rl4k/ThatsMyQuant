@@ -1,4 +1,7 @@
+using Microsoft.Extensions.Options;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -7,18 +10,13 @@ namespace ThatsMyQuant.Application.Strategy;
 
 public sealed class EdgeScoreService
 {
-    private readonly MarketExecutionProfileService _executionProfiles;
+    private readonly IMarketExecutionProfileService _executionProfiles;
+    private readonly TradingCoreOptions _opts;
 
-    private const decimal WeightSignal = 0.30m;
-    private const decimal WeightHistorical = 0.30m;
-    private const decimal WeightExecution = 0.25m;
-    private const decimal WeightRisk = 0.15m;
-    private const decimal CoreWeight = 0.70m;
-    private const decimal ExecutionBlendWeight = 0.30m;
-
-    public EdgeScoreService(MarketExecutionProfileService? executionProfiles = null)
+    public EdgeScoreService(IMarketExecutionProfileService? executionProfiles = null, IOptions<TradingCoreOptions>? tradingOptions = null)
     {
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
+        _opts = tradingOptions?.Value ?? new TradingCoreOptions();
     }
 
     public EdgeScoreBreakdown Evaluate(
@@ -35,10 +33,10 @@ public sealed class EdgeScoreService
             ComputeRiskContext(guards.Portfolio, guards.Risk)
         );
 
-        var finalScore = (metrics.Signal * WeightSignal) + (metrics.Historical * WeightHistorical) +
-                         (metrics.Execution * WeightExecution) + (metrics.Risk * WeightRisk);
+        var finalScore = (metrics.Signal * _opts.WeightSignal) + (metrics.Historical * _opts.WeightHistorical) +
+                         (metrics.Execution * _opts.WeightExecution) + (metrics.Risk * _opts.WeightRisk);
 
-        var adjustedScore = (finalScore * CoreWeight) + (metrics.Execution * ExecutionBlendWeight);
+        var adjustedScore = (finalScore * _opts.CoreWeight) + (metrics.Execution * _opts.ExecutionBlendWeight);
 
         var reasons = new List<string> {
             $"S:{metrics.Signal:F1}", $"H:{metrics.Historical:F1}", $"E:{metrics.Execution:F1}", $"R:{metrics.Risk:F1}"
@@ -49,14 +47,14 @@ public sealed class EdgeScoreService
 
     private EdgeScoreBreakdown ResolveFinalDecision(ScoreMetrics m, decimal final, decimal adj, List<string> reasons)
     {
-        if (m.Execution < 60m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: Low Execution (<60)");
-        if (m.Risk < 50m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: High Risk");
+        if (m.Execution < _opts.ExecutionGateThreshold) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, $"Hard gate: Low Execution (<{_opts.ExecutionGateThreshold})");
+        if (m.Risk < _opts.RiskGateThreshold) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: High Risk");
 
         return adj switch
         {
-            >= 85m => CreateBreakdown(m, new BreakdownResult(final, adj, 1.00m, "full", true), reasons),
-            >= 70m => CreateBreakdown(m, new BreakdownResult(final, adj, 0.65m, "reduced", true), reasons, "Band: reduced size"),
-            >= 55m => CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "probe", false), reasons, "Band: probe/paper only"),
+            _ when adj >= _opts.BandFullThreshold => CreateBreakdown(m, new BreakdownResult(final, adj, 1.00m, "full", true), reasons),
+            _ when adj >= _opts.BandReducedThreshold => CreateBreakdown(m, new BreakdownResult(final, adj, 0.65m, "reduced", true), reasons, "Band: reduced size"),
+            _ when adj >= _opts.BandProbeThreshold => CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "probe", false), reasons, "Band: probe/paper only"),
             _ => CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Band: reject")
         };
     }
