@@ -3,6 +3,7 @@ using System.Windows.Input;
 using System.Windows.Controls;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using ThatsMyQuant.Dashboard.Services;
 using ThatsMyQuant.Dashboard.ViewModels;
 
 namespace ThatsMyQuant.Dashboard;
@@ -10,17 +11,29 @@ namespace ThatsMyQuant.Dashboard;
 public partial class MainWindow : Window
 {
     private MainViewModel ViewModel => (MainViewModel)DataContext;
+    private readonly IdleTimeoutService? _idleTimeoutService;
 
-    public MainWindow(MainViewModel viewModel)
+    public MainWindow(MainViewModel viewModel, IdleTimeoutService? idleTimeoutService = null)
     {
         InitializeComponent();
         DataContext = viewModel;
+        _idleTimeoutService = idleTimeoutService;
+
         Loaded += MainWindow_Loaded;
         KeyDown += MainWindow_KeyDown;
+
+        if (_idleTimeoutService != null)
+        {
+            MouseMove  += (_, _) => _idleTimeoutService.IdleMonitor.Reset();
+            MouseDown  += (_, _) => _idleTimeoutService.IdleMonitor.Reset();
+        }
     }
 
     private void MainWindow_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
+        // Reset idle timer on any key press (Req 3.1, 3.2)
+        _idleTimeoutService?.IdleMonitor.Reset();
+
         if (e.Key == System.Windows.Input.Key.F11)
         {
             ToggleFullScreen();
@@ -51,11 +64,23 @@ public partial class MainWindow : Window
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         Loaded -= MainWindow_Loaded;
-        await Dispatcher.InvokeAsync(async () =>
+        try
         {
+            await Task.Yield();
             await ViewModel.RefreshAnalysisCommand.ExecuteAsync(null);
             await ViewModel.RefreshStrategyLeaderboardAsync();
-        }, DispatcherPriority.Background);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"Initial dashboard refresh failed, but the shell will stay open.\n\n{ex.Message}",
+                "ThatsMyQuant Dashboard",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+        }
+
+        // Start idle monitoring after the window is fully loaded (Req 3.1, 3.2)
+        _idleTimeoutService?.Start();
     }
 
 

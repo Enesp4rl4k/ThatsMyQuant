@@ -1,12 +1,15 @@
 using System.Windows;
 using System.Windows.Input;
+using Microsoft.Extensions.DependencyInjection;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Dashboard.Auth;
+using ThatsMyQuant.Dashboard.Views;
+using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
 
 namespace ThatsMyQuant.Dashboard;
 
 public partial class LoginWindow : Window
 {
-    public bool IsAuthenticated { get; private set; } = false;
-
     public LoginWindow()
     {
         InitializeComponent();
@@ -22,20 +25,41 @@ public partial class LoginWindow : Window
         System.Windows.Application.Current.Shutdown();
     }
 
-    private void Login_Click(object sender, RoutedEventArgs e)
+    private async void Login_Click(object sender, RoutedEventArgs e)
     {
         ErrorText.Visibility = Visibility.Collapsed;
+        try
+        {
+            var authService = App.ServiceProvider!.GetRequiredService<IUserAuthService>();
+            var user = await authService.AuthenticateAsync(EmailBox.Text, PasswordBox.Password);
 
-        // Mock Authentication for phase 11 user parameters
-        if (EmailBox.Text == "admin@thatsmyquant.com" && PasswordBox.Password == "admin")
-        {
-            IsAuthenticated = true;
-            this.DialogResult = true;
-            this.Close();
+            if (user is null)
+            {
+                ErrorText.Text = "Invalid credentials or account is inactive.";
+                ErrorText.Visibility = Visibility.Visible;
+                return;
+            }
+
+            CurrentSession.Current = user;
+
+            if (user.MustChangePassword)
+            {
+                var vm = new ChangePasswordDialogViewModel(authService);
+                var dialog = new ChangePasswordDialog(vm) { Owner = this };
+                var changed = dialog.ShowDialog();
+                if (changed != true)
+                {
+                    CurrentSession.Clear();
+                    return;
+                }
+            }
+
+            DialogResult = true;
+            Close();
         }
-        else
+        catch (Exception ex)
         {
-            ErrorText.Text = "Invalid email or password.";
+            ErrorText.Text = $"Login failed: {ex.Message}";
             ErrorText.Visibility = Visibility.Visible;
         }
     }

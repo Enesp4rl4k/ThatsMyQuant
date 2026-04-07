@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NSubstitute;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Options;
@@ -189,6 +190,40 @@ public class MomentumStrategyAgentTests
         result.Vote.Should().Be(VoteOutcome.Reject);
         result.Reasoning.Should().Contain("Bearish momentum");
     }
+
+    [Fact]
+    public async Task Evaluate_UsesPromotedTuningProfile()
+    {
+        var tuningService = new StrategyTuningService(new InMemoryStrategyTuningStateStore());
+        await tuningService.SaveCandidateAsync(
+            StrategyTuningService.MomentumKey,
+            new StrategyParameterProfile
+            {
+                StrategyKey = StrategyTuningService.MomentumKey,
+                PrimaryValue = 101m,
+                SecondaryValue = 20m,
+                TertiaryValue = 1.10m,
+                SwarmWeight = 20
+            });
+        await tuningService.PromoteCandidateAsync(StrategyTuningService.MomentumKey);
+
+        var agent = new MomentumStrategyAgent(
+            Substitute.For<ILogger<MomentumStrategyAgent>>(),
+            Options.Create(new MomentumOptions()),
+            tuningService);
+
+        var candles = StrategyAgentTestData.LinearCandles(60, 80m, 120m, 1_200m);
+        for (var i = candles.Count - 3; i < candles.Count; i++)
+            candles[i].Volume = 3_000m;
+
+        var result = await agent.EvaluateAsync(
+            StrategyAgentTestData.Signal(120m),
+            PatternSnapshot.Empty,
+            StrategyAgentTestData.Foundation(vwap: 100m),
+            candles);
+
+        result.Vote.Should().Be(VoteOutcome.Abstain);
+    }
 }
 
 public class BreakoutStrategyAgentTests
@@ -350,5 +385,18 @@ public class StatisticalArbitrageAgentTests
 
         result.Vote.Should().Be(VoteOutcome.Approve);
         result.Reasoning.Should().Contain("StatArb short");
+    }
+}
+
+file sealed class InMemoryStrategyTuningStateStore : IStrategyTuningStateStore
+{
+    private StrategyTuningState _state = StrategyTuningState.CreateDefault();
+
+    public Task<StrategyTuningState> LoadAsync() => Task.FromResult(_state.Clone());
+
+    public Task SaveAsync(StrategyTuningState state)
+    {
+        _state = state.Clone();
+        return Task.CompletedTask;
     }
 }

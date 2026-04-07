@@ -5,6 +5,7 @@ using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
 using MediatR;
 using ThatsMyQuant.Application.MachineLearning;
+using ThatsMyQuant.Application.HftInfrastructure;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -15,6 +16,7 @@ public sealed class TickPipeline : IAsyncDisposable
     private readonly IMediator _mediator;
     private readonly FeatureEngineeringAgent _featureAgent;
     private readonly ITickLogger _tickLogger;
+    private readonly HeartbeatMonitor _heartbeatMonitor;
     private readonly Channel<MarketTick> _tickChannel;
     private readonly Channel<OrderBookSnapshot> _orderBookChannel;
     private readonly Action<MarketTick> _tickHandler;
@@ -29,13 +31,15 @@ public sealed class TickPipeline : IAsyncDisposable
         ILogger<TickPipeline> logger, 
         IMediator mediator,
         FeatureEngineeringAgent featureAgent,
-        ITickLogger tickLogger)
+        ITickLogger tickLogger,
+        HeartbeatMonitor heartbeatMonitor)
     {
         _streamingService = streamingService;
         _logger = logger;
         _mediator = mediator;
         _featureAgent = featureAgent;
         _tickLogger = tickLogger;
+        _heartbeatMonitor = heartbeatMonitor;
 
         // Bounded channel options optimized for single-reader/writer
         var tickOptions = new BoundedChannelOptions(10_000)
@@ -83,6 +87,7 @@ public sealed class TickPipeline : IAsyncDisposable
                 try
                 {
                     _featureAgent.ProcessTickNatively((double)tick.Price);
+                    _heartbeatMonitor.RecordHeartbeat();
                     await _tickLogger.LogTickAsync(tick).ConfigureAwait(false);
                 }
                 catch (Exception ex)

@@ -15,26 +15,42 @@ namespace ThatsMyQuant.Tests.Handlers;
 public class ExecuteTradeHandlerTests
 {
     private readonly ILogger<ExecuteTradeHandler> _logger;
+    private readonly ILogger<AdaptiveExecutionOrchestrator> _adaptiveExecutionLogger;
     private readonly IExchangeService _exchangeService;
+    private readonly IExchangeService _okxExchangeService;
+    private readonly IExchangeServiceResolver _exchangeResolver;
     private readonly ITradeRepository _tradeRepository;
     private readonly ILogger<CircuitBreakerService> _circuitBreakerLogger;
     private readonly MemoryPortfolioManager _portfolio;
     private readonly CircuitBreakerService _circuitBreaker;
     private readonly PositionSupervisorService _positionSupervisor;
+    private readonly AdaptiveExecutionOrchestrator _adaptiveExecutionOrchestrator;
     private readonly ExecuteTradeHandler _handler;
 
     public ExecuteTradeHandlerTests()
     {
         _logger = Substitute.For<ILogger<ExecuteTradeHandler>>();
+        _adaptiveExecutionLogger = Substitute.For<ILogger<AdaptiveExecutionOrchestrator>>();
         _exchangeService = Substitute.For<IExchangeService>();
+        _okxExchangeService = Substitute.For<IExchangeService>();
+        _exchangeResolver = Substitute.For<IExchangeServiceResolver>();
         _tradeRepository = Substitute.For<ITradeRepository>();
         _circuitBreakerLogger = Substitute.For<ILogger<CircuitBreakerService>>();
         _portfolio = new MemoryPortfolioManager();
         _portfolio.SetBalance("USDT", 100_000m);
         _circuitBreaker = new CircuitBreakerService(_circuitBreakerLogger, _portfolio);
         _positionSupervisor = new PositionSupervisorService();
+        _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(Array.Empty<Trade>());
+        _exchangeResolver.CanResolve(Arg.Any<string>()).Returns(true);
+        _exchangeResolver.Resolve(Arg.Any<string>()).Returns(_exchangeService);
+        _exchangeResolver.Resolve(Arg.Is<string>(value => value.Equals("OKX", StringComparison.OrdinalIgnoreCase))).Returns(_okxExchangeService);
+        _adaptiveExecutionOrchestrator = new AdaptiveExecutionOrchestrator(
+            _adaptiveExecutionLogger,
+            _tradeRepository,
+            _exchangeResolver,
+            new MarketExecutionProfileService());
 
-        _handler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, _circuitBreaker, _positionSupervisor);
+        _handler = new ExecuteTradeHandler(_logger, _tradeRepository, _circuitBreaker, _positionSupervisor, _adaptiveExecutionOrchestrator);
     }
 
 
@@ -123,6 +139,89 @@ public class ExecuteTradeHandlerTests
         result.RemainingQuantity.Should().Be(1.5m);
         result.RequestedQuantity.Should().Be(1.5m);
         result.PositionSizePercent.Should().Be(0.03m);
+    }
+
+    [Fact]
+    public async Task Handle_AcceptedVenueOrderWithoutFill_ShouldPreserveAcceptedLifecycle()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 2m,
+            Source = "Manual"
+        };
+
+        var acceptedTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            Side = signal.Side,
+            EntryPrice = signal.Price,
+            RequestedQuantity = 2m,
+            Quantity = 0m,
+            FilledQuantity = 0m,
+            RemainingQuantity = 2m,
+            Status = TradeStatus.Pending,
+            LifecycleStatus = TradeLifecycleStatus.Accepted,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(acceptedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.Status.Should().Be(TradeStatus.Pending);
+        result.LifecycleStatus.Should().Be(TradeLifecycleStatus.Accepted);
+        result.Quantity.Should().Be(0m);
+        result.RemainingQuantity.Should().Be(2m);
+        await _tradeRepository.Received().UpdateAsync(Arg.Is<Trade>(trade =>
+            trade.LifecycleStatus == TradeLifecycleStatus.Accepted &&
+            trade.Status == TradeStatus.Pending &&
+            trade.RemainingQuantity == 2m));
+    }
+
+    [Fact]
+    public async Task Handle_PartiallyFilledVenueOrder_ShouldPreservePartialFillLifecycle()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 2m,
+            Source = "Manual"
+        };
+
+        var partialTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            Side = signal.Side,
+            EntryPrice = 100.6m,
+            RequestedQuantity = 2m,
+            Quantity = 0.75m,
+            FilledQuantity = 0.75m,
+            RemainingQuantity = 1.25m,
+            Status = TradeStatus.Executed,
+            LifecycleStatus = TradeLifecycleStatus.PartiallyFilled,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(partialTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.Status.Should().Be(TradeStatus.Executed);
+        result.LifecycleStatus.Should().Be(TradeLifecycleStatus.PartiallyFilled);
+        result.Quantity.Should().Be(0.75m);
+        result.FilledQuantity.Should().Be(0.75m);
+        result.RemainingQuantity.Should().Be(1.25m);
     }
 
     [Fact]
@@ -437,6 +536,125 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_WhenPrimaryVenueDegrades_ShouldRouteToAlternateVenueAndTrimSize()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 2.0m,
+            Exchange = "Binance",
+            MarketType = MarketType.Crypto,
+            Source = "Manual"
+        };
+        signal.Metadata["PromotionStage"] = "LiveProbe";
+        signal.Metadata["RequestedPositionFraction"] = "0.08";
+
+        _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            CreateLiveTrade("BTC-USD", "REAL", 0.32m, 720, 0.76m),
+            CreateLiveTrade("BTC-USD", "REAL", 0.28m, 680, 0.82m),
+            CreateLiveTrade("BTC-USD", "REAL", 0.30m, 760, 0.78m),
+            CreateLiveTrade("BTC-USD", "REAL-OKX", 0.18m, 320, 0.92m),
+            CreateLiveTrade("BTC-USD", "REAL-OKX", 0.17m, 310, 0.93m),
+            CreateLiveTrade("BTC-USD", "REAL-OKX", 0.16m, 300, 0.94m)
+        });
+
+        _okxExchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(callInfo =>
+        {
+            var routedSignal = callInfo.Arg<Signal>();
+            return new Trade
+            {
+                Id = Guid.NewGuid(),
+                SignalId = routedSignal.Id,
+                Symbol = routedSignal.Symbol,
+                Side = routedSignal.Side,
+                EntryPrice = routedSignal.Price,
+                Quantity = routedSignal.Quantity,
+                FilledQuantity = routedSignal.Quantity,
+                RemainingQuantity = routedSignal.Quantity,
+                RequestedQuantity = routedSignal.Quantity,
+                Status = TradeStatus.Executed,
+                LifecycleStatus = TradeLifecycleStatus.Active,
+                ExecutionMode = "REAL-OKX",
+                EntryTime = DateTime.UtcNow
+            };
+        });
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        await _okxExchangeService.Received(1).ExecuteOrderAsync(Arg.Is<Signal>(routed =>
+            routed.Exchange == "OKX" &&
+            routed.Quantity == 1.0m &&
+            routed.Metadata["AdaptiveThrottleMultiplier"] == "0.50"));
+        await _exchangeService.DidNotReceive().ExecuteOrderAsync(Arg.Any<Signal>());
+        result.VenueImpactLabel.Should().Contain("Adaptive route -> OKX");
+        result.VenueExecutionScope.Should().Contain("rerouted to OKX");
+        result.PositionSizePercent.Should().Be(0.04m);
+        result.ExecutionMode.Should().Be("REAL-OKX");
+    }
+
+    [Fact]
+    public async Task Handle_WhenAlternateVenueUnavailable_ShouldRetainVenueAndThrottleSize()
+    {
+        Signal? capturedSignal = null;
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 4.0m,
+            Exchange = "Binance",
+            MarketType = MarketType.Crypto,
+            Source = "Manual"
+        };
+        signal.Metadata["RequestedPositionFraction"] = "0.10";
+
+        _exchangeResolver.CanResolve(Arg.Is<string>(value => value.Equals("OKX", StringComparison.OrdinalIgnoreCase))).Returns(false);
+        _tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            CreateLiveTrade("BTC-USD", "REAL", 0.18m, 290, 0.92m),
+            CreateLiveTrade("BTC-USD", "REAL", 0.17m, 280, 0.91m),
+            CreateLiveTrade("BTC-USD", "REAL", 0.16m, 270, 0.93m)
+        });
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(callInfo =>
+        {
+            var routedSignal = callInfo.Arg<Signal>();
+            capturedSignal = routedSignal;
+            return new Trade
+            {
+                Id = Guid.NewGuid(),
+                SignalId = routedSignal.Id,
+                Symbol = routedSignal.Symbol,
+                Side = routedSignal.Side,
+                EntryPrice = routedSignal.Price,
+                Quantity = routedSignal.Quantity,
+                FilledQuantity = routedSignal.Quantity,
+                RemainingQuantity = routedSignal.Quantity,
+                RequestedQuantity = routedSignal.Quantity,
+                Status = TradeStatus.Executed,
+                LifecycleStatus = TradeLifecycleStatus.Active,
+                ExecutionMode = "REAL",
+                EntryTime = DateTime.UtcNow
+            };
+        });
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        capturedSignal.Should().NotBeNull();
+        capturedSignal!.Exchange.Should().Be("Binance");
+        capturedSignal.Quantity.Should().Be(3.4m);
+        capturedSignal.Metadata["AdaptiveThrottleMultiplier"].Should().Be("0.85");
+        result.VenueImpactLabel.Should().Contain("Venue capped size");
+        result.VenueExecutionScope.Should().Contain("size trimmed");
+        result.PositionSizePercent.Should().Be(0.085m);
+    }
+
+    [Fact]
     public async Task Handle_HftSignalWithWeakLiquidity_ShouldReturnFailedTrade()
     {
         var signal = new Signal
@@ -514,7 +732,7 @@ public class ExecuteTradeHandlerTests
             _circuitBreakerLogger,
             _portfolio,
             maxConsecutiveErrors: 3);
-        var strictHandler = new ExecuteTradeHandler(_logger, _exchangeService, _tradeRepository, strictCircuitBreaker, _positionSupervisor);
+        var strictHandler = new ExecuteTradeHandler(_logger, _tradeRepository, strictCircuitBreaker, _positionSupervisor, _adaptiveExecutionOrchestrator);
 
         _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>())
             .ThrowsAsync(new Exception("Venue rejected request"));
@@ -535,5 +753,29 @@ public class ExecuteTradeHandlerTests
 
         strictCircuitBreaker.IsHalted.Should().BeTrue();
         strictCircuitBreaker.HaltReason.Should().Contain("Error cascade halt");
+    }
+
+    private static Trade CreateLiveTrade(string symbol, string executionMode, decimal slippagePercent, long latencyMs, decimal venueBias)
+    {
+        return new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = Guid.NewGuid(),
+            Symbol = symbol,
+            Side = TradeSide.Buy,
+            EntryPrice = 100m,
+            ExitPrice = 101m,
+            Quantity = 1m,
+            ClosedQuantity = 1m,
+            Status = TradeStatus.Executed,
+            LifecycleStatus = TradeLifecycleStatus.Closed,
+            ExecutionMode = executionMode,
+            PromotionStage = "ScaledLive",
+            EntrySlippagePercent = slippagePercent,
+            ExecutionLatencyMs = latencyMs,
+            VenueExecutionBias = venueBias,
+            EntryTime = DateTime.UtcNow.AddMinutes(-30),
+            ExitTime = DateTime.UtcNow.AddMinutes(-5)
+        };
     }
 }

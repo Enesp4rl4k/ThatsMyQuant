@@ -14,6 +14,7 @@ public sealed class ApiVault : IDisposable
     private byte[]? _nonce;
     private byte[]? _tag;
     private byte[]? _masterKek; // Key Encryption Key
+    private bool _disposed;
 
     public void SecureInboundKey(string plainTextKey)
     {
@@ -45,6 +46,9 @@ public sealed class ApiVault : IDisposable
     /// </summary>
     public byte[] GetTransientDecryptedKey()
     {
+        if (_disposed)
+            throw new InvalidOperationException("ApiVault has been disposed — key material has been zeroed.");
+
         if (_encryptedKey == null || _masterKek == null || _nonce == null || _tag == null)
             throw new InvalidOperationException("API Key Vault is empty or corrupted.");
 
@@ -65,6 +69,7 @@ public sealed class ApiVault : IDisposable
 
     public void Dispose()
     {
+        _disposed = true;
         if (_masterKek != null) Array.Clear(_masterKek, 0, _masterKek.Length);
         if (_encryptedKey != null) Array.Clear(_encryptedKey, 0, _encryptedKey.Length);
         if (_nonce != null) Array.Clear(_nonce, 0, _nonce.Length);

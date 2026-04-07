@@ -56,6 +56,9 @@ public class PaperPosition
     public string PromotionStage { get; set; } = "Paper";
     public decimal TrailingStopPrice { get; set; }
     public decimal OptimalPriceSinceEntry { get; set; }
+    public decimal WorstPriceSinceEntry { get; set; }
+    public decimal MaxFavorableExcursionPercent { get; set; }
+    public decimal MaxAdverseExcursionPercent { get; set; }
     public DateTime EntryTime { get; set; } = DateTime.UtcNow;
     public DateTime? ExitTime { get; set; }
     public decimal RealizedPnL { get; set; }

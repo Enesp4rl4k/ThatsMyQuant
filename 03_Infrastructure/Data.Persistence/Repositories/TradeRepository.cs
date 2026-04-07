@@ -31,6 +31,20 @@ public class TradeRepository : ITradeRepository
             .Take(count)
             .ToListAsync();
 
+    public async Task<IReadOnlyList<Trade>> GetOpenAsync(int count = 100)
+        => await _db.Trades
+            .AsNoTracking()
+            .Where(t =>
+                t.LifecycleStatus == Contracts.Enums.TradeLifecycleStatus.Submitted ||
+                t.LifecycleStatus == Contracts.Enums.TradeLifecycleStatus.Accepted ||
+                t.LifecycleStatus == Contracts.Enums.TradeLifecycleStatus.PartiallyFilled ||
+                t.LifecycleStatus == Contracts.Enums.TradeLifecycleStatus.Active ||
+                t.LifecycleStatus == Contracts.Enums.TradeLifecycleStatus.PartialExit ||
+                t.LifecycleStatus == Contracts.Enums.TradeLifecycleStatus.Closing)
+            .OrderByDescending(t => t.EntryTime)
+            .Take(count)
+            .ToListAsync();
+
     public async Task AddAsync(Trade trade)
     {
         await _db.Trades.AddAsync(trade);

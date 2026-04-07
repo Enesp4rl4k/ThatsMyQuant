@@ -1,7 +1,9 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using System.Text.Json;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -9,19 +11,22 @@ public class TelegramAlertService : IAlertingService
 {
     private readonly ILogger<TelegramAlertService> _logger;
     private readonly HttpClient _httpClient;
+    private readonly IOptions<TelegramOptions> _options;
 
-    private const string BotToken = "";
-    private const string ChatId = "";
-
-    public TelegramAlertService(ILogger<TelegramAlertService> logger, HttpClient httpClient)
+    public TelegramAlertService(
+        ILogger<TelegramAlertService> logger,
+        HttpClient httpClient,
+        IOptions<TelegramOptions> options)
     {
         _logger = logger;
         _httpClient = httpClient;
+        _options = options;
     }
 
     public async Task SendTradeAlertAsync(string symbol, TradeDecision decision, IndicatorSnapshot snapshot, AlertAuditContext auditContext)
     {
-        if (string.IsNullOrEmpty(BotToken))
+        var opts = _options.Value;
+        if (string.IsNullOrEmpty(opts.BotToken))
         {
             _logger.LogInformation(
                 "MOCK ALERT {Symbol} {Side} | {Edge} | {Exit} | {Stage} | {ExactBucket}",
@@ -55,14 +60,14 @@ Trade Signal: {symbol}
         {
             var payload = new
             {
-                chat_id = ChatId,
+                chat_id = opts.ChatId,
                 text = message
             };
 
             var json = JsonSerializer.Serialize(payload);
             var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
 
-            var url = $"https://api.telegram.org/bot{BotToken}/sendMessage";
+            var url = $"https://api.telegram.org/bot{opts.BotToken}/sendMessage";
             var response = await _httpClient.PostAsync(url, content);
 
             if (!response.IsSuccessStatusCode)

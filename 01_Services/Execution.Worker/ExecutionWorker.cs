@@ -6,6 +6,7 @@ using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Application.Observability;
 using ThatsMyQuant.Application.Strategy;
 
 namespace ThatsMyQuant.Execution.Worker;
@@ -15,15 +16,24 @@ public class ExecutionWorker : BackgroundService
     private readonly ILogger<ExecutionWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly TickPipeline _tickPipeline;
+    private readonly ExecutionSignalQueue _executionSignalQueue;
+    private readonly OperationalTelemetry _telemetry;
+    private readonly CircuitBreakerService _circuitBreaker;
 
     public ExecutionWorker(
         ILogger<ExecutionWorker> logger, 
         IServiceProvider serviceProvider,
-        TickPipeline tickPipeline)
+        TickPipeline tickPipeline,
+        ExecutionSignalQueue executionSignalQueue,
+        OperationalTelemetry telemetry,
+        CircuitBreakerService circuitBreaker)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
         _tickPipeline = tickPipeline;
+        _executionSignalQueue = executionSignalQueue;
+        _telemetry = telemetry;
+        _circuitBreaker = circuitBreaker;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -32,43 +42,162 @@ public class ExecutionWorker : BackgroundService
         
         // Start the zero-allocation tick pipeline (MiroFish Pattern)
         _tickPipeline.Start(stoppingToken);
-        while (!stoppingToken.IsCancellationRequested)
+        await RunStartupReconciliationAsync(stoppingToken);
+        await SeedQueuedSignalsAsync(stoppingToken);
+
+        var queueTask = DrainExecutionQueueAsync(stoppingToken);
+        var recoveryTask = RunSignalRecoveryLoopAsync(stoppingToken);
+        var lifecycleTask = RunLifecycleLoopAsync(stoppingToken);
+        try
         {
-            await PollAndProcessSignals(stoppingToken);
-            await Task.Delay(1500, stoppingToken);
+            await Task.WhenAll(queueTask, recoveryTask, lifecycleTask);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
         }
     }
 
-    private async Task PollAndProcessSignals(CancellationToken stoppingToken)
+    private async Task RunSignalRecoveryLoopAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+
+        while (await timer.WaitForNextTickAsync(stoppingToken))
+        {
+            if (_circuitBreaker.IsHalted)
+            {
+                _logger.LogWarning("ExecutionWorker: system halted, skipping queue recovery.");
+                continue;
+            }
+
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
+                var queuedSignals = await signalRepository.GetByStatusAsync(TradeStatus.Queued, 25);
+
+                foreach (var signal in queuedSignals)
+                {
+                    _executionSignalQueue.TryEnqueue(signal);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Execution worker queue recovery loop failed.");
+            }
+        }
+    }
+
+    private async Task RunLifecycleLoopAsync(CancellationToken stoppingToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+
+        while (await timer.WaitForNextTickAsync(stoppingToken))
+        {
+            try
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var lifecycleService = scope.ServiceProvider.GetRequiredService<LivePositionLifecycleService>();
+                var supervised = await lifecycleService.SuperviseOpenTradesAsync(stoppingToken);
+                _telemetry.RecordLifecycleSupervision(supervised);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Execution worker lifecycle supervision loop failed.");
+            }
+        }
+    }
+
+    private async Task DrainExecutionQueueAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await foreach (var signal in _executionSignalQueue.ReadAllAsync(stoppingToken))
+            {
+                using var scope = _serviceProvider.CreateScope();
+                var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
+                var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+
+                try
+                {
+                    await ProcessSingleSignal(signal, signalRepository, mediator, stoppingToken);
+                }
+                finally
+                {
+                    _executionSignalQueue.MarkCompleted(signal.Id);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task SeedQueuedSignalsAsync(CancellationToken stoppingToken)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
+        var queuedSignals = await signalRepository.GetByStatusAsync(TradeStatus.Queued, 100);
+
+        foreach (var signal in queuedSignals)
+        {
+            _executionSignalQueue.TryEnqueue(signal);
+        }
+    }
+
+    private async Task RunStartupReconciliationAsync(CancellationToken stoppingToken)
     {
         try
         {
             using var scope = _serviceProvider.CreateScope();
-            var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
-            var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
+            var exchangeService = scope.ServiceProvider.GetService<IExchangeService>();
+            var syncService = scope.ServiceProvider.GetService<TradeExecutionSyncService>();
 
-            var queuedSignals = await signalRepository.GetByStatusAsync(TradeStatus.Queued, 25);
-            foreach (var signal in queuedSignals)
+            if (exchangeService is not IExchangeOrderStateProvider orderStateProvider || syncService is null)
             {
-                await ProcessSingleSignal(signal, signalRepository, mediator, stoppingToken);
+                return;
             }
+
+            var openOrders = await orderStateProvider.GetOpenOrdersAsync(stoppingToken);
+            var result = await syncService.ReconcileOpenOrdersAsync(openOrders, stoppingToken);
+
+            _logger.LogInformation(
+                "Startup execution reconciliation complete. Matched={Matched}, Updated={Updated}, OrphanedVenueOrders={Orphaned}, MissingLocalOrders={Missing}",
+                result.MatchedTrades,
+                result.UpdatedTrades,
+                result.OrphanedVenueOrders,
+                result.MissingLocalOrders);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Execution worker polling loop failed.");
+            _logger.LogError(ex, "Execution startup reconciliation failed.");
         }
     }
 
     private async Task ProcessSingleSignal(Signal signal, ISignalRepository signalRepository, IMediator mediator, CancellationToken stoppingToken)
     {
+        using var logScope = TradingLogScope.Begin(_logger, signal);
+
+        // Circuit breaker check before dispatch
+        var (allowed, blockReason) = _circuitBreaker.CheckOrderAllowed();
+        if (!allowed)
+        {
+            signal.Status = TradeStatus.Rejected;
+            signal.Reasoning += $" | CircuitBreaker: {blockReason}";
+            _logger.LogWarning("Signal {Id} blocked by circuit breaker: {Reason}", signal.Id, blockReason);
+            await signalRepository.UpdateAsync(signal);
+            return;
+        }
+
         try
         {
             var tradeResult = await mediator.Send(new ExecuteTradeCommand(signal), stoppingToken);
             ApplyExecutionResult(signal, tradeResult);
+            _circuitBreaker.RecordSuccess();
         }
         catch (Exception ex)
         {
             HandleExecutionException(signal, ex);
+            _circuitBreaker.RecordError(ex);
         }
         finally
         {
@@ -78,10 +207,15 @@ public class ExecutionWorker : BackgroundService
 
     private void ApplyExecutionResult(Signal signal, Trade? tradeResult)
     {
-        if (tradeResult != null && tradeResult.Status == TradeStatus.Executed)
+        if (tradeResult != null && tradeResult.Status != TradeStatus.Failed)
         {
-            signal.Status = TradeStatus.Executed;
-            _logger.LogInformation("Executed queued signal {SignalId} ({Symbol})", signal.Id, signal.Symbol);
+            signal.Status = tradeResult.Status;
+            _logger.LogInformation(
+                "Execution worker updated Signal {SignalId} ({Symbol}) to {Status}/{Lifecycle}",
+                signal.Id,
+                signal.Symbol,
+                tradeResult.Status,
+                tradeResult.LifecycleStatus);
         }
         else
         {
@@ -98,6 +232,7 @@ public class ExecutionWorker : BackgroundService
         {
             signal.Status = TradeStatus.DeadLetter;
             signal.Reasoning = $"{signal.Reasoning} | Worker execution failed (Max Retries): {ex.Message}";
+            _telemetry.RecordDeadLetter(signal.Symbol);
         }
         else
         {

@@ -17,6 +17,33 @@ public partial class StrategyStudioViewModel : ObservableObject
     [ObservableProperty] private double _aiConfidenceThreshold = 75;
     [ObservableProperty] private bool _isAiAutomationEnabled = false;
 
+    // --- STRATEGY PROMOTION WORKFLOW ---
+    public ObservableCollection<string> TuningStrategies { get; } = new() { "Momentum", "Breakout", "Scalping", "StatArb" };
+    [ObservableProperty] private string _selectedTuningStrategy = "Momentum";
+    [ObservableProperty] private string _tuningStageSummary = "Strategy ladder telemetry will appear after the next refresh.";
+    [ObservableProperty] private string _tuningHealthSummary = "No strategy bucket has been selected yet.";
+    [ObservableProperty] private string _tuningProjectionSummary = "Stage a candidate profile to compare it against the active runtime.";
+    [ObservableProperty] private string _tuningPromotionSummary = "No profile promotion has been executed yet.";
+    [ObservableProperty] private string _tuningRollbackSummary = "No rollback is available yet.";
+    [ObservableProperty] private Brush _tuningProjectionColor = GrayBrush;
+    [ObservableProperty] private string _activeProfileSummary = "Active runtime profile is loading.";
+    [ObservableProperty] private string _candidateProfileSummary = "Candidate profile matches the active runtime.";
+    [ObservableProperty] private string _tuningPrimaryLabel = "Primary";
+    [ObservableProperty] private string _tuningSecondaryLabel = "Secondary";
+    [ObservableProperty] private string _tuningTertiaryLabel = "Tertiary";
+    [ObservableProperty] private decimal _tuningPrimaryMinimum = 0m;
+    [ObservableProperty] private decimal _tuningPrimaryMaximum = 100m;
+    [ObservableProperty] private decimal _tuningSecondaryMinimum = 0m;
+    [ObservableProperty] private decimal _tuningSecondaryMaximum = 100m;
+    [ObservableProperty] private decimal _tuningTertiaryMinimum = 0m;
+    [ObservableProperty] private decimal _tuningTertiaryMaximum = 100m;
+    [ObservableProperty] private decimal _tuningPrimaryValue = 60m;
+    [ObservableProperty] private decimal _tuningSecondaryValue = 20m;
+    [ObservableProperty] private decimal _tuningTertiaryValue = 1.10m;
+    [ObservableProperty] private int _tuningSwarmWeight = 20;
+    [ObservableProperty] private string _tuningNote = "";
+    [ObservableProperty] private bool _canRollbackTuning = false;
+
     // --- RISK MANAGEMENT ---
     [ObservableProperty] private decimal _riskDailyLossLimit = 5.0m;
     [ObservableProperty] private decimal _riskMaxPositionSize = 2.0m;

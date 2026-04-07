@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\06_Contracts\ThatsMyQuant.Contracts.csproj" />
+    <ProjectReference Include="..\..\02_Core\Application\ThatsMyQuant.Application.csproj" />
+    <ProjectReference Include="..\..\03_Infrastructure\Data.Persistence\ThatsMyQuant.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

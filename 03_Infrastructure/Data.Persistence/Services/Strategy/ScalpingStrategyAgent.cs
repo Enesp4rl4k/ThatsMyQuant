@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
@@ -11,14 +12,19 @@ public sealed class ScalpingStrategyAgent : IStrategyAgent
 {
     private readonly ILogger<ScalpingStrategyAgent> _logger;
     private readonly ScalpingOptions _options;
+    private readonly StrategyTuningService? _tuningService;
 
     public string StrategyTag => "Scalping";
-    public int SwarmWeight => _options.SwarmWeight;
+    public int SwarmWeight => ResolveOptions().SwarmWeight;
 
-    public ScalpingStrategyAgent(ILogger<ScalpingStrategyAgent> logger, IOptions<ScalpingOptions>? options = null)
+    public ScalpingStrategyAgent(
+        ILogger<ScalpingStrategyAgent> logger,
+        IOptions<ScalpingOptions>? options = null,
+        StrategyTuningService? tuningService = null)
     {
         _logger = logger;
         _options = options?.Value ?? new ScalpingOptions();
+        _tuningService = tuningService;
     }
 
     public bool CanHandle(Signal signal, MarketRegime regime)
@@ -31,23 +37,24 @@ public sealed class ScalpingStrategyAgent : IStrategyAgent
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
+        var options = ResolveOptions();
         var hasSqueeze = patterns.BollingerSqueeze;
         var ofi = foundation.BidAskImbalance;
         var absOfi = Math.Abs(ofi);
-        if (absOfi < _options.MinOfiThreshold)
+        if (absOfi < options.MinOfiThreshold)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
         var spreadBps = ComputeSpreadBps(signal, foundation);
-        var spreadTight = spreadBps > 0 && spreadBps <= _options.MaxSpreadBps;
-        var fillProbability = EstimateFillProbability(ofi, spreadBps, ofi > 0, _options.MaxSpreadBps);
-        var fillLikely = fillProbability >= _options.MinFillProbability;
+        var spreadTight = spreadBps > 0 && spreadBps <= options.MaxSpreadBps;
+        var fillProbability = EstimateFillProbability(ofi, spreadBps, ofi > 0, options.MaxSpreadBps);
+        var fillLikely = fillProbability >= options.MinFillProbability;
 
         var tickMomentumConfirmed = false;
         if (!double.IsNaN(patterns.VwapDeviationSigmas))
         {
             var absDeviation = Math.Abs(patterns.VwapDeviationSigmas);
             tickMomentumConfirmed = absDeviation > 0.2
-                && absDeviation < _options.MaxVwapDeviation
+                && absDeviation < options.MaxVwapDeviation
                 && ((ofi > 0 && patterns.VwapDeviationSigmas < 0) || (ofi < 0 && patterns.VwapDeviationSigmas > 0));
         }
 
@@ -60,7 +67,7 @@ public sealed class ScalpingStrategyAgent : IStrategyAgent
             reasons.Add("BB squeeze");
         }
 
-        if (absOfi >= _options.StrongOfiThreshold)
+        if (absOfi >= options.StrongOfiThreshold)
         {
             confirmedFactors++;
             reasons.Add($"OFI={ofi:F2}");
@@ -95,14 +102,19 @@ public sealed class ScalpingStrategyAgent : IStrategyAgent
         if (confirmedFactors < 3)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        float confidence = confirmedFactors * _options.BaseConfidencePerFactor;
-        if (absOfi > _options.VeryStrongOfiThreshold) confidence += _options.VeryStrongOfiBonus;
-        if (spreadBps > 0 && spreadBps < _options.TightSpreadBps) confidence += _options.TightSpreadBonus;
+        float confidence = confirmedFactors * options.BaseConfidencePerFactor;
+        if (absOfi > options.VeryStrongOfiThreshold) confidence += options.VeryStrongOfiBonus;
+        if (spreadBps > 0 && spreadBps < options.TightSpreadBps) confidence += options.TightSpreadBonus;
 
         var reasoning = string.Join(" | ", reasons);
         return Task.FromResult(ofi > 0
             ? StrategyVote.Approve(StrategyTag, confidence, $"Scalp long ({confirmedFactors}/5 factors): {reasoning}")
             : StrategyVote.Reject(StrategyTag, confidence, $"Scalp short ({confirmedFactors}/5 factors): {reasoning}"));
+    }
+
+    private ScalpingOptions ResolveOptions()
+    {
+        return _tuningService?.GetScalpingOptions() ?? _options;
     }
 
     private static double ComputeSpreadBps(Signal signal, FoundationSnapshot foundation)

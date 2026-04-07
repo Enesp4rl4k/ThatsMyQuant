@@ -8,7 +8,7 @@ namespace ThatsMyQuant.Application.HftInfrastructure;
 /// </summary>
 public class HeartbeatMonitor
 {
-    private DateTime _lastHeartbeat = DateTime.UtcNow;
+    private long _lastHeartbeatTick = Environment.TickCount64;
     private readonly TimeSpan _maxStaleThreshold;
     private readonly DeadMansSwitch _safetySwitch;
 
@@ -23,7 +23,7 @@ public class HeartbeatMonitor
     /// </summary>
     public void RecordHeartbeat()
     {
-        _lastHeartbeat = DateTime.UtcNow;
+        _lastHeartbeatTick = Environment.TickCount64;
     }
 
     /// <summary>
@@ -31,7 +31,7 @@ public class HeartbeatMonitor
     /// </summary>
     public void AuditConnection()
     {
-        if (DateTime.UtcNow - _lastHeartbeat > _maxStaleThreshold)
+        if (Environment.TickCount64 - _lastHeartbeatTick > _maxStaleThreshold.TotalMilliseconds)
         {
             // Catastrophic latency spike or exchange failure.
             _safetySwitch.TriggerLiquidationEvacuation("Heartbeat stale threshold exceeded (>50ms). Exchange presumed disconnected.");

@@ -20,6 +20,8 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="MediatR" Version="14.1.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" Version="10.0.5" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.5" />
@@ -29,6 +31,12 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.3" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Proxies" Version="9.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="9.0.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\terminal-chart.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <PropertyGroup>

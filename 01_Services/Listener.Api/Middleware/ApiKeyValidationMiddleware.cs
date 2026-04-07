@@ -20,7 +20,12 @@ public sealed class ApiKeyValidationMiddleware
     public async Task InvokeAsync(HttpContext context)
     {
         var path = context.Request.Path;
-        var isExemptPath = path.StartsWithSegments("/webhook") || path.StartsWithSegments("/health");
+        var isExemptPath = path.StartsWithSegments("/webhook") ||
+                           path.StartsWithSegments("/health") ||
+                           path.StartsWithSegments("/ready") ||
+                           path.StartsWithSegments("/metrics") ||
+                           path.StartsWithSegments("/metrics.json") ||
+                           path.StartsWithSegments("/ops");
         if (isExemptPath)
         {
             await _next(context);

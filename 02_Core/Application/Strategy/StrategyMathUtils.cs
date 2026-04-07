@@ -38,4 +38,43 @@ internal static class StrategyMathUtils
 
         return (double)(grossProfit / grossLoss);
     }
+
+    internal static double ComputeUlcerIndex(IEnumerable<decimal> equityCurve)
+    {
+        var equityList = equityCurve.ToList();
+        if (equityList.Count < 2) return 0;
+
+        decimal peakEquity = 0;
+        double squaredDrawdownSum = 0;
+
+        foreach (var equity in equityList)
+        {
+            if (equity > peakEquity) peakEquity = equity;
+            if (peakEquity > 0)
+            {
+                var drawdownPercent = (double)((peakEquity - equity) / peakEquity * 100m);
+                squaredDrawdownSum += drawdownPercent * drawdownPercent;
+            }
+        }
+
+        return Math.Sqrt(squaredDrawdownSum / equityList.Count);
+    }
+
+    internal static double ComputeSortinoRatio(IEnumerable<decimal> returnsPercent, double riskFreeRatePercent = 0.0)
+    {
+        var returnList = returnsPercent.Select(x => (double)x).ToList();
+        if (returnList.Count < 2) return 0;
+
+        var meanReturn = returnList.Average();
+        var downsideReturns = returnList.Where(r => r < riskFreeRatePercent).Select(r => r - riskFreeRatePercent).ToList();
+
+        if (downsideReturns.Count == 0) return 99; // Infinite Sortino (no downside risk)
+
+        var expectedDownsideVariance = downsideReturns.Sum(r => r * r) / returnList.Count;
+        var downsideDeviation = Math.Sqrt(expectedDownsideVariance);
+
+        if (downsideDeviation == 0) return 99;
+
+        return (meanReturn - riskFreeRatePercent) / downsideDeviation;
+    }
 }

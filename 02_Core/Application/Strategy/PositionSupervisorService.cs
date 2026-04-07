@@ -63,36 +63,49 @@ public sealed class PositionSupervisorService
         trade.LastUpdatedTime = atUtc ?? DateTime.UtcNow;
     }
 
+    public void MarkClosing(Trade trade, string reason, DateTime? atUtc = null)
+    {
+        trade.LifecycleStatus = TradeLifecycleStatus.Closing;
+        trade.ExitReason = reason;
+        trade.LastUpdatedTime = atUtc ?? DateTime.UtcNow;
+    }
+
     public void ApplyExecutionFill(Trade trackedTrade, Trade venueTrade)
     {
         var now = DateTime.UtcNow;
-        var executedQuantity = venueTrade.Quantity > 0m
-            ? venueTrade.Quantity
-            : trackedTrade.RequestedQuantity;
+        var executedQuantity = venueTrade.FilledQuantity > 0m
+            ? venueTrade.FilledQuantity
+            : venueTrade.Quantity;
         var requestedQuantity = trackedTrade.RequestedQuantity > 0m
             ? trackedTrade.RequestedQuantity
-            : executedQuantity;
+            : (venueTrade.RequestedQuantity > 0m ? venueTrade.RequestedQuantity : executedQuantity);
 
         trackedTrade.Symbol = string.IsNullOrWhiteSpace(venueTrade.Symbol) ? trackedTrade.Symbol : venueTrade.Symbol;
         trackedTrade.EntryPrice = venueTrade.EntryPrice > 0m ? venueTrade.EntryPrice : trackedTrade.EntryPrice;
-        trackedTrade.MarkPrice = trackedTrade.EntryPrice;
-        trackedTrade.EntryTime = venueTrade.EntryTime == default ? trackedTrade.EntryTime : venueTrade.EntryTime;
+        trackedTrade.MarkPrice = venueTrade.MarkPrice > 0m
+            ? venueTrade.MarkPrice
+            : (trackedTrade.EntryPrice > 0m ? trackedTrade.EntryPrice : trackedTrade.MarkPrice);
+        trackedTrade.EntryTime = venueTrade.EntryTime == default
+            ? trackedTrade.EntryTime
+            : venueTrade.EntryTime;
         trackedTrade.ExecutionLatencyMs = venueTrade.ExecutionLatencyMs > 0 ? venueTrade.ExecutionLatencyMs : trackedTrade.ExecutionLatencyMs;
         trackedTrade.EntrySlippagePercent = venueTrade.EntrySlippagePercent != 0m ? venueTrade.EntrySlippagePercent : trackedTrade.EntrySlippagePercent;
         trackedTrade.ExecutionMode = string.IsNullOrWhiteSpace(venueTrade.ExecutionMode) ? trackedTrade.ExecutionMode : venueTrade.ExecutionMode;
         trackedTrade.PromotionStage = string.IsNullOrWhiteSpace(venueTrade.PromotionStage) ? trackedTrade.PromotionStage : venueTrade.PromotionStage;
+        trackedTrade.RequestedQuantity = requestedQuantity;
         trackedTrade.Quantity = executedQuantity;
         trackedTrade.FilledQuantity = executedQuantity;
-        trackedTrade.RemainingQuantity = executedQuantity;
+        trackedTrade.RemainingQuantity = ResolveRemainingQuantity(trackedTrade, venueTrade, requestedQuantity, executedQuantity);
         trackedTrade.ClosedQuantity = 0m;
-        trackedTrade.RequestedQuantity = requestedQuantity;
-        trackedTrade.Status = TradeStatus.Executed;
-        trackedTrade.LifecycleStatus = executedQuantity + 0.00000001m < requestedQuantity
-            ? TradeLifecycleStatus.PartiallyFilled
-            : TradeLifecycleStatus.Active;
+        trackedTrade.AverageExitPrice = venueTrade.AverageExitPrice > 0m ? venueTrade.AverageExitPrice : trackedTrade.AverageExitPrice;
+        trackedTrade.SubmittedTime ??= venueTrade.SubmittedTime ?? now;
+        trackedTrade.Status = ResolveExecutionStatus(venueTrade, executedQuantity);
+        trackedTrade.LifecycleStatus = ResolveExecutionLifecycle(venueTrade, requestedQuantity, executedQuantity);
         trackedTrade.LastUpdatedTime = now;
         trackedTrade.OptimalPriceSinceEntry = trackedTrade.EntryPrice;
-        trackedTrade.ExitReason = string.Empty;
+        trackedTrade.ExitReason = trackedTrade.Status == TradeStatus.Failed
+            ? venueTrade.ExitReason
+            : string.Empty;
     }
 
     public void MarkFailed(Trade trade, string reason)
@@ -107,6 +120,7 @@ public sealed class PositionSupervisorService
     {
         position.BarsHeld++;
         position.CurrentPrice = current.Close;
+        UpdateMafe(position, current);
         ApplyBreakevenProtection(position, current);
 
         var partialAction = TryResolvePartialExit(position, current.Close);
@@ -131,6 +145,7 @@ public sealed class PositionSupervisorService
     {
         trade.BarsHeld++;
         trade.MarkPrice = current.Close;
+        UpdateMafe(trade, current);
         ApplyBreakevenProtection(trade, current);
 
         var partialAction = TryResolvePartialExit(trade, current.Close);
@@ -284,7 +299,6 @@ public sealed class PositionSupervisorService
 
     private static string? ResolveExitReason(PaperPosition position, Candle current, Candle previous, bool trailingHit)
     {
-        if (trailingHit) return "TrailingSL";
         if (position.Side == TradeSide.Buy)
         {
             if (position.StopLoss > 0m && current.Close <= position.StopLoss) return "StopLoss";
@@ -295,6 +309,9 @@ public sealed class PositionSupervisorService
             if (position.StopLoss > 0m && current.Close >= position.StopLoss) return "StopLoss";
             if (position.TakeProfit > 0m && current.Close <= position.TakeProfit) return "TakeProfit";
         }
+
+        if (trailingHit) return "TrailingSL";
+        if (position.MaxAdverseExcursionPercent <= -3.0m) return "MafeStatisticalStop";
 
         var strategyExit = TryGetStrategyPolicyExit(position.ExitPolicyTag, position.Side, position.IsBreakevenArmed, position.BarsHeld, position.MaxHoldingBars, current, previous);
         if (strategyExit != null) return strategyExit;
@@ -307,7 +324,6 @@ public sealed class PositionSupervisorService
 
     private static string? ResolveExitReason(Trade trade, Candle current, Candle previous, bool trailingHit)
     {
-        if (trailingHit) return "TrailingSL";
         if (trade.Side == TradeSide.Buy)
         {
             if (trade.StopLoss > 0m && current.Close <= trade.StopLoss) return "StopLoss";
@@ -318,6 +334,9 @@ public sealed class PositionSupervisorService
             if (trade.StopLoss > 0m && current.Close >= trade.StopLoss) return "StopLoss";
             if (trade.TakeProfit > 0m && current.Close <= trade.TakeProfit) return "TakeProfit";
         }
+
+        if (trailingHit) return "TrailingSL";
+        if (trade.MaxAdverseExcursionPercent <= -3.0m) return "MafeStatisticalStop";
 
         var strategyExit = TryGetStrategyPolicyExit(trade.ExitPolicyTag, trade.Side, trade.IsBreakevenArmed, trade.BarsHeld, trade.MaxHoldingBars, current, previous);
         if (strategyExit != null) return strategyExit;
@@ -371,4 +390,118 @@ public sealed class PositionSupervisorService
 
     private static string? TryGetString(Signal signal, string key)
         => signal.Metadata.TryGetValue(key, out var value) ? value : null;
+
+    private static TradeStatus ResolveExecutionStatus(Trade venueTrade, decimal executedQuantity)
+    {
+        if (venueTrade.Status == TradeStatus.Failed ||
+            venueTrade.LifecycleStatus is TradeLifecycleStatus.Rejected or TradeLifecycleStatus.Failed)
+        {
+            return TradeStatus.Failed;
+        }
+
+        if (executedQuantity > 0m)
+        {
+            return TradeStatus.Executed;
+        }
+
+        return venueTrade.Status == TradeStatus.Executed
+            ? TradeStatus.Pending
+            : venueTrade.Status;
+    }
+
+    private static TradeLifecycleStatus ResolveExecutionLifecycle(Trade venueTrade, decimal requestedQuantity, decimal executedQuantity)
+    {
+        if (venueTrade.LifecycleStatus is TradeLifecycleStatus.Rejected or TradeLifecycleStatus.Failed)
+        {
+            return venueTrade.LifecycleStatus;
+        }
+
+        if (venueTrade.LifecycleStatus is TradeLifecycleStatus.Submitted or TradeLifecycleStatus.Accepted)
+        {
+            return executedQuantity > 0m
+                ? (executedQuantity + 0.00000001m < requestedQuantity
+                    ? TradeLifecycleStatus.PartiallyFilled
+                    : TradeLifecycleStatus.Active)
+                : venueTrade.LifecycleStatus;
+        }
+
+        if (venueTrade.LifecycleStatus == TradeLifecycleStatus.PartiallyFilled)
+        {
+            return TradeLifecycleStatus.PartiallyFilled;
+        }
+
+        if (venueTrade.LifecycleStatus == TradeLifecycleStatus.Active)
+        {
+            return executedQuantity + 0.00000001m < requestedQuantity
+                ? TradeLifecycleStatus.PartiallyFilled
+                : TradeLifecycleStatus.Active;
+        }
+
+        if (executedQuantity <= 0m)
+        {
+            return TradeLifecycleStatus.Accepted;
+        }
+
+        return executedQuantity + 0.00000001m < requestedQuantity
+            ? TradeLifecycleStatus.PartiallyFilled
+            : TradeLifecycleStatus.Active;
+    }
+
+    private static decimal ResolveRemainingQuantity(Trade trackedTrade, Trade venueTrade, decimal requestedQuantity, decimal executedQuantity)
+    {
+        if (venueTrade.RemainingQuantity > 0m)
+        {
+            return venueTrade.RemainingQuantity;
+        }
+
+        if (venueTrade.LifecycleStatus is TradeLifecycleStatus.Submitted or TradeLifecycleStatus.Accepted)
+        {
+            return requestedQuantity > 0m
+                ? Math.Max(0m, requestedQuantity - executedQuantity)
+                : trackedTrade.RemainingQuantity;
+        }
+
+        if (requestedQuantity > 0m && executedQuantity + 0.00000001m < requestedQuantity)
+        {
+            return Math.Max(0m, requestedQuantity - executedQuantity);
+        }
+
+        return executedQuantity;
+    }
+
+    private static void UpdateMafe(Trade trade, Candle current)
+    {
+        if (trade.EntryPrice <= 0m) return;
+
+        if (trade.OptimalPriceSinceEntry == 0m || (trade.Side == TradeSide.Buy ? current.High > trade.OptimalPriceSinceEntry : current.Low < trade.OptimalPriceSinceEntry))
+            trade.OptimalPriceSinceEntry = trade.Side == TradeSide.Buy ? current.High : current.Low;
+
+        if (trade.WorstPriceSinceEntry == 0m || (trade.Side == TradeSide.Buy ? current.Low < trade.WorstPriceSinceEntry : current.High > trade.WorstPriceSinceEntry))
+            trade.WorstPriceSinceEntry = trade.Side == TradeSide.Buy ? current.Low : current.High;
+
+        var direction = trade.Side == TradeSide.Buy ? 1m : -1m;
+        var mfe = ((trade.OptimalPriceSinceEntry - trade.EntryPrice) / trade.EntryPrice) * direction * 100m;
+        var mae = ((trade.WorstPriceSinceEntry - trade.EntryPrice) / trade.EntryPrice) * direction * 100m;
+
+        if (mfe > trade.MaxFavorableExcursionPercent) trade.MaxFavorableExcursionPercent = mfe;
+        if (mae < trade.MaxAdverseExcursionPercent) trade.MaxAdverseExcursionPercent = mae;
+    }
+
+    private static void UpdateMafe(PaperPosition position, Candle current)
+    {
+        if (position.EntryPrice <= 0m) return;
+
+        if (position.OptimalPriceSinceEntry == 0m || (position.Side == TradeSide.Buy ? current.High > position.OptimalPriceSinceEntry : current.Low < position.OptimalPriceSinceEntry))
+            position.OptimalPriceSinceEntry = position.Side == TradeSide.Buy ? current.High : current.Low;
+
+        if (position.WorstPriceSinceEntry == 0m || (position.Side == TradeSide.Buy ? current.Low < position.WorstPriceSinceEntry : current.High > position.WorstPriceSinceEntry))
+            position.WorstPriceSinceEntry = position.Side == TradeSide.Buy ? current.Low : current.High;
+
+        var direction = position.Side == TradeSide.Buy ? 1m : -1m;
+        var mfe = ((position.OptimalPriceSinceEntry - position.EntryPrice) / position.EntryPrice) * direction * 100m;
+        var mae = ((position.WorstPriceSinceEntry - position.EntryPrice) / position.EntryPrice) * direction * 100m;
+
+        if (mfe > position.MaxFavorableExcursionPercent) position.MaxFavorableExcursionPercent = mfe;
+        if (mae < position.MaxAdverseExcursionPercent) position.MaxAdverseExcursionPercent = mae;
+    }
 }

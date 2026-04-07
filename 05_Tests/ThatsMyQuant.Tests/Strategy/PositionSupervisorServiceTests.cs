@@ -80,6 +80,75 @@ public class PositionSupervisorServiceTests
     }
 
     [Fact]
+    public void ApplyExecutionFill_ShouldPreserveAcceptedLifecycleWhenVenueHasNoFillYet()
+    {
+        var tracked = _service.CreateSubmittedTrade(new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTCUSDT",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 2m
+        });
+        var venueTrade = new Trade
+        {
+            SignalId = tracked.SignalId,
+            Symbol = tracked.Symbol,
+            Side = tracked.Side,
+            EntryPrice = tracked.EntryPrice,
+            RequestedQuantity = 2m,
+            Quantity = 0m,
+            FilledQuantity = 0m,
+            RemainingQuantity = 2m,
+            Status = TradeStatus.Pending,
+            LifecycleStatus = TradeLifecycleStatus.Accepted,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _service.ApplyExecutionFill(tracked, venueTrade);
+
+        tracked.Status.Should().Be(TradeStatus.Pending);
+        tracked.LifecycleStatus.Should().Be(TradeLifecycleStatus.Accepted);
+        tracked.Quantity.Should().Be(0m);
+        tracked.RemainingQuantity.Should().Be(2m);
+    }
+
+    [Fact]
+    public void ApplyExecutionFill_ShouldPreservePartialFillLifecycleFromVenue()
+    {
+        var tracked = _service.CreateSubmittedTrade(new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "ETHUSDT",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 2m
+        });
+        var venueTrade = new Trade
+        {
+            SignalId = tracked.SignalId,
+            Symbol = tracked.Symbol,
+            Side = tracked.Side,
+            EntryPrice = 100.8m,
+            Quantity = 0.8m,
+            FilledQuantity = 0.8m,
+            RequestedQuantity = 2m,
+            RemainingQuantity = 1.2m,
+            Status = TradeStatus.Executed,
+            LifecycleStatus = TradeLifecycleStatus.PartiallyFilled,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _service.ApplyExecutionFill(tracked, venueTrade);
+
+        tracked.Status.Should().Be(TradeStatus.Executed);
+        tracked.LifecycleStatus.Should().Be(TradeLifecycleStatus.PartiallyFilled);
+        tracked.Quantity.Should().Be(0.8m);
+        tracked.FilledQuantity.Should().Be(0.8m);
+        tracked.RemainingQuantity.Should().Be(1.2m);
+    }
+
+    [Fact]
     public void AdvanceTrade_ShouldEmitPartialExitBeforeFinalClose()
     {
         var trade = new Trade

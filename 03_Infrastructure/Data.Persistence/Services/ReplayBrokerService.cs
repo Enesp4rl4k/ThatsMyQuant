@@ -32,12 +32,17 @@ public class ReplayBrokerService : IExchangeService
             SignalId = signal.Id,
             Symbol = signal.Symbol,
             Side = signal.Side,
-            Quantity = 1.0m, // Simulated static allocation size
+            Quantity = signal.Quantity > 0m ? signal.Quantity : 1.0m,
+            FilledQuantity = signal.Quantity > 0m ? signal.Quantity : 1.0m,
+            RemainingQuantity = signal.Quantity > 0m ? signal.Quantity : 1.0m,
+            RequestedQuantity = signal.Quantity > 0m ? signal.Quantity : 1.0m,
             EntryPrice = signal.Price,
             EntryTime = _clock.UtcNow, 
             Status = TradeStatus.Executed,
+            LifecycleStatus = TradeLifecycleStatus.Active,
             StrategyTag = signal.StrategyTag,
-            RegimeTag = signal.RegimeTag
+            RegimeTag = signal.RegimeTag,
+            ExecutionMode = "REPLAY"
         };
 
         return Task.FromResult(trade);
@@ -53,4 +58,8 @@ public class ReplayBrokerService : IExchangeService
     }
 
     public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side) => Task.FromResult(0m);
+
+    public Task<List<string>> GetFavoritesAsync() => Task.FromResult(new List<string>());
+
+    public Task<int> CancelAllOrdersAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
 }

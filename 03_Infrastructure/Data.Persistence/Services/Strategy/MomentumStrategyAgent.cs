@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
@@ -11,14 +12,19 @@ public sealed class MomentumStrategyAgent : IStrategyAgent
 {
     private readonly ILogger<MomentumStrategyAgent> _logger;
     private readonly MomentumOptions _options;
+    private readonly StrategyTuningService? _tuningService;
 
     public string StrategyTag => "Momentum";
-    public int SwarmWeight => _options.SwarmWeight;
+    public int SwarmWeight => ResolveOptions().SwarmWeight;
 
-    public MomentumStrategyAgent(ILogger<MomentumStrategyAgent> logger, IOptions<MomentumOptions>? options = null)
+    public MomentumStrategyAgent(
+        ILogger<MomentumStrategyAgent> logger,
+        IOptions<MomentumOptions>? options = null,
+        StrategyTuningService? tuningService = null)
     {
         _logger = logger;
         _options = options?.Value ?? new MomentumOptions();
+        _tuningService = tuningService;
     }
 
     public bool CanHandle(Signal signal, MarketRegime regime)
@@ -31,31 +37,33 @@ public sealed class MomentumStrategyAgent : IStrategyAgent
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
-        if (candles.Count < _options.MinCandles)
+        var options = ResolveOptions();
+
+        if (candles.Count < options.MinCandles)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var rsi = ComputeRsi(candles, _options.RsiPeriod);
-        var isBullish = rsi > _options.RsiBullThreshold;
-        var isBearish = rsi < _options.RsiBearThreshold;
+        var rsi = ComputeRsi(candles, options.RsiPeriod);
+        var isBullish = rsi > options.RsiBullThreshold;
+        var isBearish = rsi < options.RsiBearThreshold;
 
         if (!isBullish && !isBearish)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var adx = ComputeAdx(candles, _options.AdxPeriod);
-        var hasTrend = adx >= _options.AdxTrendThreshold;
-        var strongTrend = adx >= _options.AdxStrongThreshold;
+        var adx = ComputeAdx(candles, options.AdxPeriod);
+        var hasTrend = adx >= options.AdxTrendThreshold;
+        var strongTrend = adx >= options.AdxStrongThreshold;
 
-        var aggregated = AggregateCandles(candles, _options.MultiTfAggFactor);
+        var aggregated = AggregateCandles(candles, options.MultiTfAggFactor);
         var mtfConfirmed = false;
-        if (aggregated.Count >= _options.RsiPeriod + 1)
+        if (aggregated.Count >= options.RsiPeriod + 1)
         {
-            var mtfRsi = ComputeRsi(aggregated, _options.RsiPeriod);
-            mtfConfirmed = (isBullish && mtfRsi > _options.MultiTfRsiMidpoint)
-                || (isBearish && mtfRsi < _options.MultiTfRsiMidpoint);
+            var mtfRsi = ComputeRsi(aggregated, options.RsiPeriod);
+            mtfConfirmed = (isBullish && mtfRsi > options.MultiTfRsiMidpoint)
+                || (isBearish && mtfRsi < options.MultiTfRsiMidpoint);
         }
 
-        var emaFast = ComputeEma(candles, _options.EmaFastPeriod);
-        var emaSlow = ComputeEma(candles, _options.EmaSlowPeriod);
+        var emaFast = ComputeEma(candles, options.EmaFastPeriod);
+        var emaSlow = ComputeEma(candles, options.EmaSlowPeriod);
         var emaConfirmed = isBullish ? emaFast > emaSlow : emaFast < emaSlow;
 
         var priceAboveVwap = foundation.Vwap > 0 && signal.Price > foundation.Vwap;
@@ -69,22 +77,22 @@ public sealed class MomentumStrategyAgent : IStrategyAgent
         if (confirmedFactors < 3)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        float confidence = confirmedFactors * _options.BaseConfidencePerFactor;
-        if (volumeExpanding) confidence += _options.VolumeExpansionBonus;
-        if (strongTrend) confidence += _options.StrongTrendBonus;
+        float confidence = confirmedFactors * options.BaseConfidencePerFactor;
+        if (volumeExpanding) confidence += options.VolumeExpansionBonus;
+        if (strongTrend) confidence += options.StrongTrendBonus;
 
         if (foundation.Vwap > 0)
         {
             var vwapAgreement = isBullish == priceAboveVwap;
-            confidence += vwapAgreement ? _options.VwapAgreementBonus : -_options.VwapDisagreementPenalty;
+            confidence += vwapAgreement ? options.VwapAgreementBonus : -options.VwapDisagreementPenalty;
         }
 
         var reasons = new List<string>
         {
-            $"RSI({_options.RsiPeriod})={rsi:F1}",
+            $"RSI({options.RsiPeriod})={rsi:F1}",
             $"ADX={adx:F1}{(hasTrend ? strongTrend ? " strong" : " trending" : " weak")}",
             $"MTF-RSI {(mtfConfirmed ? "confirmed" : "divergent")}",
-            $"EMA {_options.EmaFastPeriod}/{_options.EmaSlowPeriod} {(emaConfirmed ? "aligned" : "divergent")}"
+            $"EMA {options.EmaFastPeriod}/{options.EmaSlowPeriod} {(emaConfirmed ? "aligned" : "divergent")}"
         };
 
         if (volumeExpanding) reasons.Add("vol expanding");
@@ -205,6 +213,11 @@ public sealed class MomentumStrategyAgent : IStrategyAgent
 
         var recent = candles.TakeLast(3).Average(c => c.Volume);
         var previous = candles.TakeLast(8).Take(5).Average(c => c.Volume);
-        return previous > 0 && recent > previous * (decimal)_options.VolumeExpansionMultiplier;
+        return previous > 0 && recent > previous * (decimal)ResolveOptions().VolumeExpansionMultiplier;
+    }
+
+    private MomentumOptions ResolveOptions()
+    {
+        return _tuningService?.GetMomentumOptions() ?? _options;
     }
 }

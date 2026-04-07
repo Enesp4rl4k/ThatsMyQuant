@@ -50,6 +50,9 @@ public class Trade
     public bool HasTakenPartialProfit { get; set; }
     public decimal TrailingStopPrice { get; set; }
     public decimal OptimalPriceSinceEntry { get; set; }
+    public decimal WorstPriceSinceEntry { get; set; }
+    public decimal MaxFavorableExcursionPercent { get; set; }
+    public decimal MaxAdverseExcursionPercent { get; set; }
     public decimal MarkPrice { get; set; }
     public int BarsHeld { get; set; }
     public int MaxHoldingBars { get; set; }

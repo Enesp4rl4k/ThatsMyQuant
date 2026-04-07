@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
@@ -11,14 +12,19 @@ public sealed class BreakoutStrategyAgent : IStrategyAgent
 {
     private readonly ILogger<BreakoutStrategyAgent> _logger;
     private readonly BreakoutOptions _options;
+    private readonly StrategyTuningService? _tuningService;
 
     public string StrategyTag => "Breakout";
-    public int SwarmWeight => _options.SwarmWeight;
+    public int SwarmWeight => ResolveOptions().SwarmWeight;
 
-    public BreakoutStrategyAgent(ILogger<BreakoutStrategyAgent> logger, IOptions<BreakoutOptions>? options = null)
+    public BreakoutStrategyAgent(
+        ILogger<BreakoutStrategyAgent> logger,
+        IOptions<BreakoutOptions>? options = null,
+        StrategyTuningService? tuningService = null)
     {
         _logger = logger;
         _options = options?.Value ?? new BreakoutOptions();
+        _tuningService = tuningService;
     }
 
     public bool CanHandle(Signal signal, MarketRegime regime)
@@ -31,18 +37,20 @@ public sealed class BreakoutStrategyAgent : IStrategyAgent
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
-        if (candles.Count < _options.LookbackBars + 3)
+        var options = ResolveOptions();
+
+        if (candles.Count < options.LookbackBars + 3)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var window = candles.TakeLast(_options.LookbackBars).ToList();
+        var window = candles.TakeLast(options.LookbackBars).ToList();
         var swingHigh = window.Max(c => c.High);
         var swingLow = window.Min(c => c.Low);
         var range = swingHigh - swingLow;
         if (range <= 0)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var fibBull = swingLow + range * (decimal)_options.FibBullLevel;
-        var fibBear = swingLow + range * (decimal)_options.FibBearLevel;
+        var fibBull = swingLow + range * (decimal)options.FibBullLevel;
+        var fibBear = swingLow + range * (decimal)options.FibBearLevel;
         var isBullish = signal.Side != TradeSide.Sell;
         var breakoutLevel = isBullish ? fibBull : fibBear;
         var priceBrokeOut = isBullish ? signal.Price > breakoutLevel : signal.Price < breakoutLevel;
@@ -50,12 +58,12 @@ public sealed class BreakoutStrategyAgent : IStrategyAgent
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
         var staleBars = CountBarsFromSwingExtreme(window, isBullish ? swingHigh : swingLow, isBullish);
-        if (staleBars > _options.MaxSwingStaleBars)
+        if (staleBars > options.MaxSwingStaleBars)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var avgVol = window.TakeLast(_options.VolumeAvgBars).Average(c => c.Volume);
+        var avgVol = window.TakeLast(options.VolumeAvgBars).Average(c => c.Volume);
         var lastCandle = candles[^1];
-        var volumeSurge = avgVol > 0 && lastCandle.Volume > avgVol * (decimal)_options.VolumeSurgeMultiple;
+        var volumeSurge = avgVol > 0 && lastCandle.Volume > avgVol * (decimal)options.VolumeSurgeMultiple;
         if (!volumeSurge)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
@@ -65,19 +73,19 @@ public sealed class BreakoutStrategyAgent : IStrategyAgent
         if (!flowConfirmed)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var (baseDuration, baseQuality) = MeasureBase(window, swingHigh, swingLow, (decimal)_options.RangeThresholdPercent);
-        var retestConfirmed = CheckRetest(candles, breakoutLevel, isBullish, (decimal)_options.RetestProximityPercent, _options.RetestLookbackBars);
-        var thinAir = CheckThinAir(window, swingLow, range, isBullish, _options.VolumeProfileBins, (decimal)_options.ThinAirThreshold);
+        var (baseDuration, baseQuality) = MeasureBase(window, swingHigh, swingLow, (decimal)options.RangeThresholdPercent);
+        var retestConfirmed = CheckRetest(candles, breakoutLevel, isBullish, (decimal)options.RetestProximityPercent, options.RetestLookbackBars);
+        var thinAir = CheckThinAir(window, swingLow, range, isBullish, options.VolumeProfileBins, (decimal)options.ThinAirThreshold);
 
         var confirmedFactors = 2;
         var reasons = new List<string>
         {
-            isBullish ? $"price > fib {_options.FibBullLevel:F3}" : $"price < fib {_options.FibBearLevel:F3}",
+            isBullish ? $"price > fib {options.FibBullLevel:F3}" : $"price < fib {options.FibBearLevel:F3}",
             $"vol surge {lastCandle.Volume / avgVol:F1}x",
             $"OFI={foundation.BidAskImbalance:F2}"
         };
 
-        if (baseDuration >= _options.MinConsolidationBars)
+        if (baseDuration >= options.MinConsolidationBars)
         {
             confirmedFactors++;
             reasons.Add($"base {baseDuration} bars");
@@ -98,16 +106,21 @@ public sealed class BreakoutStrategyAgent : IStrategyAgent
         if (confirmedFactors < 3)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        float confidence = confirmedFactors * _options.BaseConfidencePerFactor;
-        if (baseDuration >= _options.LongBase) confidence += _options.LongBaseDurationBonus;
-        else if (baseDuration >= _options.MediumBase) confidence += _options.MediumBaseDurationBonus;
-        if (thinAir) confidence += _options.ThinAirBonus;
-        if (baseQuality > (decimal)_options.TightConsolidationQuality) confidence += _options.TightConsolidationBonus;
+        float confidence = confirmedFactors * options.BaseConfidencePerFactor;
+        if (baseDuration >= options.LongBase) confidence += options.LongBaseDurationBonus;
+        else if (baseDuration >= options.MediumBase) confidence += options.MediumBaseDurationBonus;
+        if (thinAir) confidence += options.ThinAirBonus;
+        if (baseQuality > (decimal)options.TightConsolidationQuality) confidence += options.TightConsolidationBonus;
 
         var reasoning = string.Join(" | ", reasons);
         return Task.FromResult(isBullish
             ? StrategyVote.Approve(StrategyTag, confidence, $"Breakout ({confirmedFactors}/5 factors): {reasoning}")
             : StrategyVote.Reject(StrategyTag, confidence, $"Breakdown ({confirmedFactors}/5 factors): {reasoning}"));
+    }
+
+    private BreakoutOptions ResolveOptions()
+    {
+        return _tuningService?.GetBreakoutOptions() ?? _options;
     }
 
     private static int CountBarsFromSwingExtreme(IReadOnlyList<Candle> window, decimal swingExtreme, bool bullish)

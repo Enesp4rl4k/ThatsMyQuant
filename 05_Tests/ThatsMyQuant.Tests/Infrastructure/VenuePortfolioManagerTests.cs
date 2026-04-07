@@ -5,11 +5,11 @@ using Xunit;
 
 namespace ThatsMyQuant.Tests.Infrastructure;
 
-public sealed class MemoryPortfolioManagerTests
+public sealed class VenuePortfolioManagerTests
 {
-    private readonly MemoryPortfolioManager _portfolio = MemoryPortfolioManager.Instance;
+    private readonly VenuePortfolioManager _portfolio = VenuePortfolioManager.Instance;
 
-    public MemoryPortfolioManagerTests()
+    public VenuePortfolioManagerTests()
     {
         _portfolio.Clear();
     }

@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terminal Chart</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0b0e13;
+      font-family: "Segoe UI", sans-serif;
+    }
+
+    #surface {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      background:
+        linear-gradient(180deg, rgba(18, 24, 38, 0.72), rgba(11, 14, 19, 0.98)),
+        radial-gradient(circle at 20% 12%, rgba(16, 183, 255, 0.11), transparent 32%);
+    }
+
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    #toolBadge {
+      position: absolute;
+      top: 10px;
+      left: 12px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: rgba(18, 24, 38, 0.92);
+      border: 1px solid rgba(122, 136, 152, 0.28);
+      color: #d6e2f0;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      pointer-events: none;
+    }
+
+    #toolHint {
+      position: absolute;
+      bottom: 10px;
+      left: 12px;
+      padding: 5px 9px;
+      border-radius: 8px;
+      background: rgba(12, 16, 24, 0.88);
+      border: 1px solid rgba(122, 136, 152, 0.22);
+      color: #7a8898;
+      font-size: 10px;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="surface">
+    <canvas id="chart"></canvas>
+    <div id="toolBadge">Tool: Pan</div>
+    <div id="toolHint">Wheel: zoom · Drag: pan · Right click or Reset: default view</div>
+  </div>
+  <script>
+    const canvas = document.getElementById("chart");
+    const surface = document.getElementById("surface");
+    const badge = document.getElementById("toolBadge");
+    const ctx = canvas.getContext("2d");
+
+    const state = {
+      candles: [],
+      overlays: [],
+      backtestMarkers: [],
+      theme: {
+        background: "#0B0E13",
+        panel: "#0F131B",
+        grid: "#171D26",
+        text: "#D6E2F0",
+        muted: "#7A8898",
+        bullish: "#00FFBB",
+        bearish: "#FF3366",
+        accent: "#10B7FF"
+      },
+      viewport: {
+        offset: 0,
+        zoom: 1
+      },
+      tool: "pan",
+      pointer: null,
+      drawings: []
+    };
+
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartOffset = 0;
+    let drawingStart = null;
+
+    function resizeCanvas() {
+      const rect = surface.getBoundingClientRect();
+      canvas.width = Math.max(320, Math.floor(rect.width * window.devicePixelRatio));
+      canvas.height = Math.max(240, Math.floor(rect.height * window.devicePixelRatio));
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      draw();
+    }
+
+    function visibleCandleCount() {
+      const minVisible = 28;
+      const total = state.candles.length;
+      if (!total) return 0;
+      return Math.max(minVisible, Math.floor(total / state.viewport.zoom));
+    }
+
+    function viewportSlice() {
+      const total = state.candles.length;
+      if (!total) return { items: [], start: 0, count: 0 };
+
+      const count = Math.min(total, visibleCandleCount());
+      const maxOffset = Math.max(0, total - count);
+      state.viewport.offset = Math.max(0, Math.min(maxOffset, state.viewport.offset));
+      const start = Math.max(0, total - count - state.viewport.offset);
+      return {
+        items: state.candles.slice(start, start + count),
+        start,
+        count
+      };
+    }
+
+    function draw() {
+      const width = surface.clientWidth;
+      const height = surface.clientHeight;
+
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = state.theme.background;
+      ctx.fillRect(0, 0, width, height);
+
+      const padding = { left: 16, right: 18, top: 18, bottom: 28 };
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+      if (plotWidth <= 0 || plotHeight <= 0) return;
+
+      const { items, start } = viewportSlice();
+      if (!items.length) {
+        ctx.fillStyle = state.theme.muted;
+        ctx.font = "13px Segoe UI";
+        ctx.fillText("Waiting for exchange candles...", padding.left, padding.top + 20);
+        return;
+      }
+
+      const highs = items.map(c => c.high);
+      const lows = items.map(c => c.low);
+      let max = Math.max(...highs);
+      let min = Math.min(...lows);
+      if (max <= min) max = min + 1;
+      const pad = Math.max((max - min) * 0.08, 0.01);
+      max += pad;
+      min -= pad;
+      const range = max - min;
+
+      const candleGap = Math.max(1, plotWidth / Math.max(items.length, 1));
+      const candleBodyWidth = Math.max(3, candleGap * 0.65);
+
+      drawGrid(padding, plotWidth, plotHeight);
+      drawOverlays(padding, plotWidth, plotHeight);
+      drawCandles(items, padding, plotWidth, plotHeight, min, range, candleBodyWidth, candleGap);
+      drawMarkers(padding, plotWidth, plotHeight);
+      drawDrawings(padding, plotWidth, plotHeight);
+      drawCrosshair(items, start, padding, plotWidth, plotHeight, min, range);
+    }
+
+    function drawGrid(padding, plotWidth, plotHeight) {
+      ctx.save();
+      ctx.strokeStyle = state.theme.grid;
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.9;
+      for (let i = 0; i < 6; i++) {
+        const y = padding.top + (plotHeight / 5) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + plotWidth, y);
+        ctx.stroke();
+      }
+      for (let i = 0; i < 7; i++) {
+        const x = padding.left + (plotWidth / 6) * i;
+        ctx.beginPath();
+        ctx.moveTo(x, padding.top);
+        ctx.lineTo(x, padding.top + plotHeight);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function drawCandles(items, padding, plotWidth, plotHeight, min, range, candleBodyWidth, candleGap) {
+      items.forEach((candle, index) => {
+        const x = padding.left + (index * candleGap) + (candleGap * 0.5);
+        const openY = padding.top + plotHeight - ((candle.open - min) / range) * plotHeight;
+        const closeY = padding.top + plotHeight - ((candle.close - min) / range) * plotHeight;
+        const highY = padding.top + plotHeight - ((candle.high - min) / range) * plotHeight;
+        const lowY = padding.top + plotHeight - ((candle.low - min) / range) * plotHeight;
+        const bullish = candle.close >= candle.open;
+        const color = bullish ? state.theme.bullish : state.theme.bearish;
+
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x, highY);
+        ctx.lineTo(x, lowY);
+        ctx.stroke();
+
+        const bodyTop = Math.min(openY, closeY);
+        const bodyHeight = Math.max(2, Math.abs(closeY - openY));
+        ctx.fillRect(x - candleBodyWidth / 2, bodyTop, candleBodyWidth, bodyHeight);
+      });
+    }
+
+    function drawOverlays(padding, plotWidth, plotHeight) {
+      state.overlays.forEach(overlay => {
+        const x = padding.left + overlay.x * plotWidth;
+        const y = padding.top + overlay.y * plotHeight;
+        const width = overlay.width * plotWidth;
+        const height = overlay.height * plotHeight;
+
+        ctx.save();
+        ctx.fillStyle = overlay.fill || "rgba(255,255,255,0.1)";
+        ctx.strokeStyle = overlay.stroke || "#ffffff";
+        ctx.lineWidth = 1;
+        roundRect(ctx, x, y, width, height, 4, true, true);
+
+        ctx.fillStyle = overlay.textColor || "#ffffff";
+        ctx.font = "700 11px Segoe UI";
+        ctx.fillText(overlay.title || "", x + 8, y + 18);
+        ctx.restore();
+      });
+    }
+
+    function drawMarkers(padding, plotWidth, plotHeight) {
+      state.backtestMarkers.forEach(marker => {
+        const x = padding.left + marker.x * plotWidth;
+        const y = padding.top + marker.y * plotHeight;
+        ctx.save();
+        ctx.fillStyle = marker.color || state.theme.accent;
+        ctx.beginPath();
+        ctx.arc(x, y, 4.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
+    function drawDrawings(padding, plotWidth, plotHeight) {
+      state.drawings.forEach(item => {
+        ctx.save();
+        ctx.strokeStyle = item.color || state.theme.accent;
+        ctx.lineWidth = 1.2;
+        ctx.setLineDash(item.type === "vertical" || item.type === "horizontal" ? [5, 4] : []);
+
+        if (item.type === "trendline") {
+          ctx.beginPath();
+          ctx.moveTo(padding.left + item.x1 * plotWidth, padding.top + item.y1 * plotHeight);
+          ctx.lineTo(padding.left + item.x2 * plotWidth, padding.top + item.y2 * plotHeight);
+          ctx.stroke();
+        } else if (item.type === "horizontal") {
+          const y = padding.top + item.y1 * plotHeight;
+          ctx.beginPath();
+          ctx.moveTo(padding.left, y);
+          ctx.lineTo(padding.left + plotWidth, y);
+          ctx.stroke();
+        } else if (item.type === "vertical") {
+          const x = padding.left + item.x1 * plotWidth;
+          ctx.beginPath();
+          ctx.moveTo(x, padding.top);
+          ctx.lineTo(x, padding.top + plotHeight);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      });
+    }
+
+    function drawCrosshair(items, start, padding, plotWidth, plotHeight, min, range) {
+      if (!state.pointer) return;
+      if (state.tool === "pan" || state.tool === "crosshair" || state.tool === "trendline" || state.tool === "horizontal" || state.tool === "vertical") {
+        const { x, y } = state.pointer;
+        if (x < padding.left || x > padding.left + plotWidth || y < padding.top || y > padding.top + plotHeight) return;
+
+        ctx.save();
+        ctx.strokeStyle = state.theme.accent;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(x, padding.top);
+        ctx.lineTo(x, padding.top + plotHeight);
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + plotWidth, y);
+        ctx.stroke();
+        ctx.restore();
+
+        const relativeX = (x - padding.left) / plotWidth;
+        const index = Math.max(0, Math.min(items.length - 1, Math.round(relativeX * (items.length - 1))));
+        const candle = items[index];
+        if (window.chrome && chrome.webview) {
+          chrome.webview.postMessage({ type: "hover", index: start + index });
+        }
+
+        const price = maxNumber(min, range, y, padding, plotHeight);
+        ctx.save();
+        ctx.fillStyle = "#111824";
+        ctx.strokeStyle = "rgba(122,136,152,0.35)";
+        ctx.lineWidth = 1;
+        roundRect(ctx, x + 10, padding.top + 10, 132, 46, 6, true, true);
+        ctx.fillStyle = state.theme.text;
+        ctx.font = "700 11px Segoe UI";
+        ctx.fillText(candle ? `${formatDate(candle.time)}` : "", x + 18, padding.top + 28);
+        ctx.fillStyle = state.theme.muted;
+        ctx.font = "11px Segoe UI";
+        ctx.fillText(`Price ${price.toFixed(2)}`, x + 18, padding.top + 44);
+        ctx.restore();
+      }
+    }
+
+    function maxNumber(min, range, y, padding, plotHeight) {
+      const normalized = 1 - ((y - padding.top) / plotHeight);
+      return min + normalized * range;
+    }
+
+    function roundRect(ctx, x, y, width, height, radius, fill, stroke) {
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+    }
+
+    function formatDate(value) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString("tr-TR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+    }
+
+    function pointToNormalized(event) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (event.clientX - rect.left) / rect.width,
+        y: (event.clientY - rect.top) / rect.height
+      };
+    }
+
+    function onPointerDown(event) {
+      const point = pointToNormalized(event);
+      if (state.tool === "pan" || state.tool === "crosshair") {
+        isDragging = true;
+        dragStartX = event.clientX;
+        dragStartOffset = state.viewport.offset;
+        return;
+      }
+
+      if (state.tool === "trendline") {
+        drawingStart = point;
+      } else if (state.tool === "horizontal") {
+        state.drawings.push({ type: "horizontal", y1: point.y, color: state.theme.accent });
+        draw();
+      } else if (state.tool === "vertical") {
+        state.drawings.push({ type: "vertical", x1: point.x, color: state.theme.accent });
+        draw();
+      }
+    }
+
+    function onPointerMove(event) {
+      const rect = canvas.getBoundingClientRect();
+      state.pointer = {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
+      };
+
+      if (isDragging) {
+        const deltaPx = event.clientX - dragStartX;
+        const total = state.candles.length;
+        const count = visibleCandleCount();
+        const maxOffset = Math.max(0, total - count);
+        const dragCandles = Math.round(deltaPx / 8);
+        state.viewport.offset = Math.max(0, Math.min(maxOffset, dragStartOffset - dragCandles));
+      }
+
+      draw();
+    }
+
+    function onPointerUp(event) {
+      if (state.tool === "trendline" && drawingStart) {
+        const point = pointToNormalized(event);
+        state.drawings.push({
+          type: "trendline",
+          x1: drawingStart.x,
+          y1: drawingStart.y,
+          x2: point.x,
+          y2: point.y,
+          color: state.theme.accent
+        });
+        drawingStart = null;
+      }
+
+      isDragging = false;
+      draw();
+    }
+
+    function onWheel(event) {
+      event.preventDefault();
+      const factor = event.deltaY < 0 ? 1.15 : 0.87;
+      state.viewport.zoom = Math.max(1, Math.min(12, state.viewport.zoom * factor));
+      draw();
+    }
+
+    function resetView() {
+      state.viewport.offset = 0;
+      state.viewport.zoom = 1;
+      state.pointer = null;
+      state.drawings = [];
+      draw();
+    }
+
+    function handleMessage(raw) {
+      if (!raw || !raw.type) return;
+
+      if (raw.type === "state") {
+        state.candles = raw.candles || [];
+        state.overlays = raw.overlays || [];
+        state.backtestMarkers = raw.backtestMarkers || [];
+        state.theme = Object.assign({}, state.theme, raw.theme || {});
+        draw();
+      } else if (raw.type === "tool") {
+        state.tool = raw.tool || "pan";
+        badge.textContent = `Tool: ${state.tool}`;
+        draw();
+      } else if (raw.type === "reset") {
+        resetView();
+      }
+    }
+
+    canvas.addEventListener("mousedown", onPointerDown);
+    canvas.addEventListener("mousemove", onPointerMove);
+    canvas.addEventListener("mouseup", onPointerUp);
+    canvas.addEventListener("mouseleave", () => {
+      state.pointer = null;
+      isDragging = false;
+      drawingStart = null;
+      draw();
+      if (window.chrome && chrome.webview) {
+        chrome.webview.postMessage({ type: "leave" });
+      }
+    });
+    canvas.addEventListener("contextmenu", event => {
+      event.preventDefault();
+      resetView();
+    });
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+
+    window.addEventListener("resize", resizeCanvas);
+
+    if (window.chrome && chrome.webview) {
+      chrome.webview.addEventListener("message", event => handleMessage(event.data));
+    }
+
+    resizeCanvas();
+  </script>
+</body>
+</html>

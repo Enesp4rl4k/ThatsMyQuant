@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using ThatsMyQuant.Application.Strategy;
+using ThatsMyQuant.Contracts.Interfaces;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Strategy;
@@ -13,8 +14,8 @@ public class CircuitBreakerServiceTests
     [Fact]
     public void CheckOrderAllowed_ShouldBlockWhenManuallyHalted()
     {
-        var portfolio = new MemoryPortfolioManager();
-        portfolio.SetBalance("USDT", 100_000m);
+        var portfolio = Substitute.For<IPortfolioManager>();
+        portfolio.GetDrawdownPercent().Returns(0m);
         var service = new CircuitBreakerService(_logger, portfolio);
 
         service.Halt("Operator halt");
@@ -29,6 +30,7 @@ public class CircuitBreakerServiceTests
     [Fact]
     public void CheckOrderAllowed_ShouldHaltWhenDrawdownThresholdBreached()
     {
+        // Uses a real MemoryPortfolioManager to exercise actual drawdown calculation
         var portfolio = new MemoryPortfolioManager();
         portfolio.SetBalance("USDT", 100_000m);
         portfolio.SetBalance("USDT", 94_000m);
@@ -44,8 +46,8 @@ public class CircuitBreakerServiceTests
     [Fact]
     public void RecordError_ShouldTriggerErrorCascadeHalt()
     {
-        var portfolio = new MemoryPortfolioManager();
-        portfolio.SetBalance("USDT", 100_000m);
+        var portfolio = Substitute.For<IPortfolioManager>();
+        portfolio.GetDrawdownPercent().Returns(0m);
         var service = new CircuitBreakerService(_logger, portfolio, maxConsecutiveErrors: 3);
 
         service.RecordError(new InvalidOperationException("first"));
@@ -60,8 +62,8 @@ public class CircuitBreakerServiceTests
     [Fact]
     public void CheckOrderAllowed_ShouldRateLimitAfterConfiguredThreshold()
     {
-        var portfolio = new MemoryPortfolioManager();
-        portfolio.SetBalance("USDT", 100_000m);
+        var portfolio = Substitute.For<IPortfolioManager>();
+        portfolio.GetDrawdownPercent().Returns(0m);
         var service = new CircuitBreakerService(_logger, portfolio, maxOrdersPerSecond: 2);
 
         service.CheckOrderAllowed().Allowed.Should().BeTrue();

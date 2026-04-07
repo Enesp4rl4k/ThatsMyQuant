@@ -12,6 +12,7 @@
         WindowStartupLocation="CenterScreen"
         xmlns:controls="clr-namespace:ThatsMyQuant.Dashboard.Controls"
     xmlns:converters="clr-namespace:ThatsMyQuant.Dashboard.Converters"
+    xmlns:views="clr-namespace:ThatsMyQuant.Dashboard.Views"
     xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework">
     <WindowChrome.WindowChrome>
         <WindowChrome CaptionHeight="40" GlassFrameThickness="0" CornerRadius="0" ResizeBorderThickness="8" />
@@ -81,10 +82,13 @@
                                     </Setter.Value>
                                 </Setter>
                             </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Condition Binding="{Binding IsSelected, RelativeSource={RelativeSource Self}}" Value="False" />
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions>
+                                    <Condition Property="IsMouseOver" Value="True" />
+                                    <Condition Property="IsSelected" Value="False" />
+                                </MultiTrigger.Conditions>
                                 <Setter TargetName="Blade" Property="Background" Value="#1AFFFFFF" />
-                            </Trigger>
+                            </MultiTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -184,6 +188,7 @@
                     <ColumnDefinition Width="Auto" />   <!-- Session PnL -->
                     <ColumnDefinition Width="Auto" />   <!-- Mode Indicator -->
                     <ColumnDefinition Width="Auto" />   <!-- Zen Toggle -->
+                    <ColumnDefinition Width="Auto" />   <!-- Logout -->
                 </Grid.ColumnDefinitions>
                 <!-- 1. Logo Section -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal">
@@ -269,6 +274,13 @@
                         <DropShadowEffect Color="#00BFFF" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
                     </Button.Effect>
                     <TextBlock Text="ZEN MODE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
+                </Button>
+
+                <Button Grid.Column="6" Command="{Binding LogoutCommand}" Background="#0B1630" BorderBrush="{StaticResource Accent}" BorderThickness="1" Padding="12,4" Margin="8,0,0,0">
+                    <Button.Effect>
+                        <DropShadowEffect Color="#00BFFF" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
+                    </Button.Effect>
+                    <TextBlock Text="LOGOUT" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
                 </Button>
             </Grid>
         </Border>
@@ -363,7 +375,7 @@
                                 </StackPanel>
                                 <UniformGrid Grid.Column="2" Columns="2">
                                     <Button Style="{StaticResource DeckActionButtonAccentStyle}" Command="{Binding RefreshAnalysisCommand}" Content="RUN SCAN" Margin="0,0,6,6" Padding="0,8" />
-                                    <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding StartTradingCommand}" Content="START LOOP" Margin="6,0,0,6" Padding="0,8" />
+                                    <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding StartTradingCommand}" IsEnabled="{Binding CanExecuteTrades}" Content="START LOOP" Margin="6,0,0,6" Padding="0,8" />
                                     <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding RunBacktestCommand}" Content="BACKTEST" Margin="0,0,6,0" Padding="0,8" />
                                     <Button Style="{StaticResource DeckActionButtonStyle}" Command="{Binding ToggleTradingModeCommand}" Content="TOGGLE MODE" Margin="6,0,0,0" Padding="0,8" />
                                 </UniformGrid>
@@ -381,11 +393,6 @@
                                 <DockPanel Grid.Row="0" Margin="0,0,0,8">
                                     <DockPanel.Style>
                                         <Style TargetType="DockPanel">
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding MarketOverview.IsTradingViewActive}" Value="True">
-                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
                                         </Style>
                                     </DockPanel.Style>
                                     <TextBlock Text="{Binding MarketOverview.ChartHeaderTitle}" Foreground="{StaticResource TextMain}" FontSize="14" FontWeight="Black" DockPanel.Dock="Left" VerticalAlignment="Center" />
@@ -507,12 +514,6 @@
                                             <Setter Property="Background" Value="Transparent" />
                                             <Setter Property="BorderThickness" Value="0" />
                                             <Setter Property="Padding" Value="8,4" />
-                                        </Style>
-                                        <Style TargetType="DataGridRow">
-                                            <Setter Property="Background" Value="{StaticResource AppBg}" />
-                                            <Setter Property="Foreground" Value="{StaticResource TextMain}" />
-                                            <Setter Property="BorderBrush" Value="{StaticResource BorderColor}" />
-                                            <Setter Property="BorderThickness" Value="0,0,0,1" />
                                         </Style>
                                     </DataGrid.Resources>
                                     <DataGrid.Columns>
@@ -790,6 +791,7 @@
 
                                 <Button Content="LAUNCH INSTITUTIONAL BOT"
                                         Command="{Binding StartTradingCommand}"
+                                        IsEnabled="{Binding CanExecuteTrades}"
                                         Style="{StaticResource InstitutionalActionButton}"
                                         Padding="0,14"
                                         FontSize="15"
@@ -1224,15 +1226,40 @@
                             <StackPanel>
                                 <TextBlock Text="INFRASTRUCTURE &amp; SECURITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,16" />
                                 
-                                <TextBlock Text="EXCHANGE API KEYS" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" Margin="0,0,0,8" />
+                                <TextBlock Text="EXCHANGE RUNTIME" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" Margin="0,0,0,8" />
                                 <Border Background="{StaticResource AppBg}" Padding="16" CornerRadius="4" Margin="0,0,0,20">
                                     <StackPanel>
-                                        <TextBlock Text="PUBLIC KEY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <TextBox Text="{Binding Studio.ApiPublicKey}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
-                                        
-                                        <TextBlock Text="PRIVATE SECRET (ENCRYPTED)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
-                                        <PasswordBox Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
-                                        
+                                        <TextBlock Text="ACTIVE EXCHANGE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                        <ComboBox ItemsSource="{Binding ExchangeSettings.AvailableExchangeModes}"
+                                                  SelectedItem="{Binding ExchangeSettings.SelectedExchangeMode}"
+                                                  Background="{StaticResource SurfaceBg}"
+                                                  Foreground="White"
+                                                  BorderBrush="{StaticResource BorderColor}"
+                                                  Padding="10"
+                                                  Margin="0,6,0,12" />
+
+                                        <TextBlock Text="BINANCE API KEY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                        <TextBox Text="{Binding ExchangeSettings.BinanceApiKey}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
+
+                                        <TextBlock Text="BINANCE API SECRET" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                        <TextBox Text="{Binding ExchangeSettings.BinanceApiSecret}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
+
+                                        <TextBlock Text="OKX API KEY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                        <TextBox Text="{Binding ExchangeSettings.OkxApiKey}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
+
+                                        <TextBlock Text="OKX SECRET KEY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                        <TextBox Text="{Binding ExchangeSettings.OkxSecretKey}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
+
+                                        <TextBlock Text="OKX PASSPHRASE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                        <TextBox Text="{Binding ExchangeSettings.OkxPassphrase}" FontFamily="{StaticResource MonoFont}" Background="{StaticResource SurfaceBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Padding="10" Margin="0,6,0,12" />
+
+                                        <CheckBox Content="OKX Demo Mode"
+                                                  IsChecked="{Binding ExchangeSettings.IsDemoMode}"
+                                                  Foreground="{StaticResource TextMain}"
+                                                  Margin="0,0,0,12" />
+
+                                        <TextBlock Text="{Binding ExchangeSettings.SaveStatus}" Foreground="{StaticResource BuyColor}" FontSize="10" FontWeight="Bold" Margin="0,0,0,12" />
+
                                         <Button Content="VERIFY CONNECTION" Command="{Binding VerifyConnectionCommand}" Background="{StaticResource SurfaceBg}" Foreground="{StaticResource BuyColor}" BorderBrush="{StaticResource BuyColor}" BorderThickness="1" FontSize="10" FontWeight="Bold" Padding="0,10" />
                                     </StackPanel>
                                 </Border>
@@ -1278,6 +1305,11 @@
                             </StackPanel>
                         </Border>
                     </Grid>
+                </TabItem>
+
+                <TabItem Header="User Management"
+                         Visibility="{Binding IsAdminUser, Converter={StaticResource BoolToVis}}">
+                    <views:UserManagementTab DataContext="{Binding UserManagement}" />
                 </TabItem>
             </TabControl>
 
@@ -1413,7 +1445,7 @@
 
                         <TextBlock Text="EXECUTION FUNCTIONS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                         <UniformGrid Columns="2" Margin="0,6,0,10">
-                            <Button Style="{StaticResource DeckActionButtonAccentStyle}" Content="INITIALIZE BOT" Command="{Binding StartTradingCommand}" Margin="0,0,6,8" />
+                            <Button Style="{StaticResource DeckActionButtonAccentStyle}" Content="INITIALIZE BOT" Command="{Binding StartTradingCommand}" IsEnabled="{Binding CanExecuteTrades}" Margin="0,0,6,8" />
                             <Button Style="{StaticResource DeckActionButtonStyle}" Content="RUN SCAN" Command="{Binding RefreshAnalysisCommand}" Margin="6,0,0,8" />
                             <Button Style="{StaticResource DeckActionButtonStyle}" Content="LOCAL BACKTEST" Command="{Binding RunBacktestCommand}" Margin="0,0,6,8" />
                             <Button Style="{StaticResource DeckActionButtonStyle}" Content="GLOBAL BACKTEST" Command="{Binding RunGlobalBacktestCommand}" Margin="6,0,0,8" />
@@ -1440,6 +1472,41 @@
 
                         <Button Content="EMERGENCY SHUTDOWN" Command="{Binding EmergencyStopCommand}" Background="Transparent" Foreground="{StaticResource SellColor}" BorderBrush="{StaticResource SellColor}" BorderThickness="1" Padding="0,10" Margin="0,0,0,8" FontSize="11" FontWeight="Black" />
                         <Button Content="RESET KILLSWITCH" Command="{Binding ResetKillSwitchCommand}" Background="Transparent" Foreground="{StaticResource BuyColor}" BorderBrush="{StaticResource BuyColor}" BorderThickness="1" Padding="0,10" FontSize="11" FontWeight="Black" />
+
+                        <!-- WATCHLIST section -->
+                        <Border Style="{StaticResource TerminalCardStyle}" Margin="0,8,0,8" Padding="12,10">
+                            <StackPanel>
+                                <TextBlock Text="WATCHLIST" Foreground="{StaticResource TextMuted}"
+                                           FontSize="9" FontWeight="Bold" Margin="0,0,0,8"/>
+                                <ItemsControl ItemsSource="{Binding WatchlistItems}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,0,0,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" Text="{Binding Symbol}"
+                                                           FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding Price, StringFormat={}{0:F2}}"
+                                                           FontFamily="{StaticResource MonoFont}" FontSize="10" Margin="8,0"/>
+                                                <TextBlock Grid.Column="2" Text="{Binding ChangeText}"
+                                                           Foreground="{Binding Color}" FontSize="9"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Button Content="SYNC EXCHANGES"
+                                        Command="{Binding SyncWatchlistCommand}"
+                                        IsEnabled="{Binding IsSyncingWatchlist, Converter={StaticResource InverseBooleanConverter}}"
+                                        Style="{StaticResource DeckActionButtonAccentStyle}"
+                                        Margin="0,8,0,4"/>
+                                <TextBlock Text="{Binding SyncStatusMessage}"
+                                           Foreground="{StaticResource TextSoft}"
+                                           FontSize="9" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
                     </StackPanel>
             </Border>
         </Grid>

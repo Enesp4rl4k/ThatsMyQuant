@@ -160,10 +160,35 @@ public class FeatureEngineeringAgentTests
     [Theory]
     [InlineData(double.NaN, 0.5f, 0.5f)]
     [InlineData(double.PositiveInfinity, 1.0f, 1.0f)]
+    [InlineData(double.NegativeInfinity, 0.5f, 0.5f)]
     [InlineData(42.0, 0.5f, 42.0f)]
     public void SafeFloat_WithFallback_ShouldUseFallbackOnPoison(double input, float fallback, float expected)
     {
         FeatureEngineeringAgent.SafeFloat(input, fallback).Should().Be(expected);
+    }
+
+    [Fact]
+    public void ProcessTickNatively_ConstantPrice_EmaDeviationShouldBePositive()
+    {
+        // After 10 calls with a constant price, EMA converges to that price,
+        // so price/EMA = 1.0f which is > 0f.
+        var agent = new FeatureEngineeringAgent();
+
+        for (int i = 0; i < 10; i++)
+            agent.ProcessTickNatively(100.0);
+
+        agent.CurrentTensor[1].Should().BeGreaterThan(0f, "EMA deviation (price/EMA) must be positive");
+    }
+
+    [Fact]
+    public void ProcessTickNatively_After100Calls_MaBiasShouldBePositive()
+    {
+        var agent = new FeatureEngineeringAgent();
+
+        for (int i = 0; i < 100; i++)
+            agent.ProcessTickNatively(100.0 + i * 0.1);
+
+        agent.CurrentTensor[2].Should().BeGreaterThan(0f, "MA bias (price/MA) must be positive after 100 ticks");
     }
 
     [Fact]

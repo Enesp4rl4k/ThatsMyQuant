@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using System.Globalization;
 using ThatsMyQuant.Contracts.Commands;
 using ThatsMyQuant.Application.Resilience;
+using ThatsMyQuant.Application.Observability;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
@@ -20,6 +21,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
     private readonly IMarketDataService _marketDataService;
     private readonly ISignalValidator[] _validators;
     private readonly IAgentCoordinator _agentCoordinator;
+    private readonly OperationalTelemetry _telemetry;
     private readonly bool _useWorkerHandoff;
 
     public ProcessSignalHandler(
@@ -30,7 +32,8 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         ITechnicalAnalysisService technicalAnalysis,
         IEnumerable<ISignalValidator> validators,
         IAgentCoordinator agentCoordinator,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        OperationalTelemetry? telemetry = null)
     {
         _logger = logger;
         _mediator = mediator;
@@ -39,12 +42,14 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
         _technicalAnalysis = technicalAnalysis;
         _validators = validators.OrderBy(v => v.Order).ToArray();
         _agentCoordinator = agentCoordinator;
+        _telemetry = telemetry ?? new OperationalTelemetry();
         _useWorkerHandoff = bool.TryParse(configuration["Execution:UseWorkerHandoff"], out var useWorkerHandoff)
             && useWorkerHandoff;
     }
 
     public async Task<bool> Handle(ProcessSignalCommand request, CancellationToken cancellationToken)
     {
+        using var logScope = TradingLogScope.Begin(_logger, request.Signal);
         LogSignalStart(request.Signal);
 
         // 0. Persist Signal immediately (audit trail)
@@ -59,6 +64,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
                 request.Signal.Status = TradeStatus.Rejected;
                 request.Signal.Reasoning = failureReason;
                 await _signalRepository.UpdateAsync(request.Signal);
+                _telemetry.RecordSignalRejected(request.Signal.Symbol);
                 _logger.LogWarning("❌ Signal Validation Failed: {Reason}", failureReason);
                 return false;
             }
@@ -144,6 +150,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             signal.Status = TradeStatus.Failed;
             signal.Reasoning = $"Analysis error: {ex.Message}";
             await _signalRepository.UpdateAsync(signal);
+            _telemetry.RecordTradeFailed(signal.Symbol);
             return (null!, false);
         }
     }
@@ -176,6 +183,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             signal.Status = TradeStatus.Rejected;
             signal.Reasoning += $" | Swarm Rejected: {swarmResult.RejectionFlags}";
             await _signalRepository.UpdateAsync(signal);
+            _telemetry.RecordSignalRejected(signal.Symbol);
             _logger.LogWarning("❌ SWARM REJECTED: {Flags}", swarmResult.RejectionFlags);
             _logger.LogInformation("═══════════════════════════════════════════════════════");
             return (decision, false);
@@ -216,6 +224,7 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
             signal.Status = TradeStatus.Queued;
             signal.Reasoning += " | Execution queued for worker.";
             await _signalRepository.UpdateAsync(signal);
+            _telemetry.RecordSignalQueued(signal.Symbol);
             _logger.LogInformation("📥 Trade queued for execution worker: {Symbol} ({Side})", signal.Symbol, signal.Side);
         }
         else
@@ -226,12 +235,17 @@ public class ProcessSignalHandler : IRequestHandler<ProcessSignalCommand, bool>
                 signal.Status = TradeStatus.Failed;
                 signal.Reasoning += executedTrade == null ? " | Execution returned no trade result." : " | Execution failed.";
                 await _signalRepository.UpdateAsync(signal);
+                _telemetry.RecordTradeFailed(signal.Symbol);
                 _logger.LogWarning("Trade execution failed or empty for {Symbol} ({Side})", signal.Symbol, signal.Side);
                 return false;
             }
 
             signal.Status = executedTrade.Status;
             await _signalRepository.UpdateAsync(signal);
+            if (executedTrade.ExecutionLatencyMs > 0)
+            {
+                _telemetry.RecordTradeSucceeded(executedTrade.ExecutionLatencyMs, signal.Symbol);
+            }
             _logger.LogInformation("🚀 Trade dispatched for {Symbol} ({Side})", signal.Symbol, signal.Side);
         }
         _logger.LogInformation("═══════════════════════════════════════════════════════");

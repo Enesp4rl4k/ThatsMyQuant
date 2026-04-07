@@ -549,19 +549,28 @@ public sealed class StrategyPromotionService
     private static StrategyBucketPerformanceSnapshot CreateBacktestBucketSnapshot(string symbol, string strategy, string regime, string session, List<Trade> trades)
     {
         var pnlValues = trades.Select(GetLivePnl).ToList();
+        var percentReturns = trades.Select(t => t.EntryPrice * t.Quantity > 0 ? GetLivePnl(t) / (t.EntryPrice * t.Quantity) * 100m : 0m).ToList();
+        var equityCurve = new List<decimal> { 100_000m };
+        foreach (var pnl in pnlValues) equityCurve.Add(equityCurve.Last() + pnl);
+
         var pass = pnlValues.Count >= 6 && ComputeProfitFactor(pnlValues) >= 1.15 && pnlValues.Average() > 0 && trades.Count(t => GetLivePnl(t) > 0) * 1.0 / Math.Max(1, trades.Count) >= 0.42;
         return new StrategyBucketPerformanceSnapshot
         {
             Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session,
             Trades = pnlValues.Count, WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(v => v > 0) * 100.0 / pnlValues.Count,
             ProfitFactor = ComputeProfitFactor(pnlValues), ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
-            TotalPnL = pnlValues.Sum(), BacktestPass = pass, RecordedAtUtc = DateTime.UtcNow, PromotionReady = pass, PromotionStage = "Backtest"
+            TotalPnL = pnlValues.Sum(), UlcerIndex = ComputeUlcerIndex(equityCurve), SortinoRatio = ComputeSortinoRatio(percentReturns),
+            BacktestPass = pass, RecordedAtUtc = DateTime.UtcNow, PromotionReady = pass, PromotionStage = "Backtest"
         };
     }
 
     private StrategyBucketPerformanceSnapshot CreatePaperBucketSnapshot(string symbol, string strategy, string regime, string session, List<PaperPosition> positions)
     {
-        var pnlValues = positions.Select(GetPaperPnl).ToList();
+        var pnlValues = positions.Select(p => p.RealizedPnL).ToList();
+        var percentReturns = positions.Select(p => p.EntryPrice * p.Quantity > 0 ? p.RealizedPnL / (p.EntryPrice * p.Quantity) * 100m : 0m).ToList();
+        var equityCurve = new List<decimal> { 100_000m };
+        foreach (var pnl in pnlValues) equityCurve.Add(equityCurve.Last() + pnl);
+
         var backtestMatch = FindBestBucketMatch(_state.BacktestBuckets, symbol, strategy, regime, session).Bucket;
         var backtestPass = backtestMatch?.BacktestPass == true;
         var paperPass = backtestPass && pnlValues.Count >= 8 && ComputeProfitFactor(pnlValues) >= 1.20 && pnlValues.Average() > 0 && pnlValues.Count(v => v > 0) * 1.0 / pnlValues.Count >= 0.45;
@@ -570,7 +579,8 @@ public sealed class StrategyPromotionService
             Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session,
             Trades = pnlValues.Count, WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(v => v > 0) * 100.0 / pnlValues.Count,
             ProfitFactor = ComputeProfitFactor(pnlValues), ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
-            TotalPnL = pnlValues.Sum(), BacktestPass = backtestPass, PaperPass = paperPass,
+            TotalPnL = pnlValues.Sum(), UlcerIndex = ComputeUlcerIndex(equityCurve), SortinoRatio = ComputeSortinoRatio(percentReturns),
+            BacktestPass = backtestPass, PaperPass = paperPass,
             PromotionReady = paperPass, PromotionStage = paperPass ? "Paper" : "Backtest", RecordedAtUtc = DateTime.UtcNow
         };
     }
@@ -684,6 +694,8 @@ public sealed class StrategyPromotionService
             ProfitFactor = ComputeProfitFactor(pnlValues),
             ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
             TotalPnL = pnlValues.Sum(),
+            UlcerIndex = ComputeUlcerIndex(CreateEquityCurve(pnlValues)),
+            SortinoRatio = ComputeSortinoRatio(trades.Select(t => t.EntryPrice * t.Quantity > 0 ? GetLivePnl(t) / (t.EntryPrice * t.Quantity) * 100m : 0m)),
             AverageEdgeScore = edgeMetrics.AverageEdgeScore,
             HighEdgeTrades = edgeMetrics.HighEdgeTrades,
             HighEdgeWinRate = edgeMetrics.HighEdgeWinRate,
@@ -802,6 +814,9 @@ public sealed class StrategyPromotionService
 
     private ExitPolicyPerformanceSnapshot CreateExitPolicySnapshot(string symbol, string strategyTag, string regimeTag, string sessionTag, string policy, string mode, List<Trade> trades)
     {
+        var pnlValues = trades.Select(GetLivePnl).ToList();
+        var percentReturns = trades.Select(t => t.EntryPrice * t.Quantity > 0 ? GetLivePnl(t) / (t.EntryPrice * t.Quantity) * 100m : 0m).ToList();
+        
         return new ExitPolicyPerformanceSnapshot
         {
             Symbol = symbol,
@@ -812,11 +827,24 @@ public sealed class StrategyPromotionService
             ExecutionMode = mode,
             Trades = trades.Count,
             WinRate = trades.Count == 0 ? 0 : trades.Count(t => GetLivePnl(t) > 0) * 100.0 / trades.Count,
-            ProfitFactor = ComputeProfitFactor(trades.Select(GetLivePnl)),
+            ProfitFactor = ComputeProfitFactor(pnlValues),
             ExpectedValue = trades.Any() ? trades.Average(GetLivePnl) : 0m,
-            TotalPnL = trades.Sum(GetLivePnl),
+            TotalPnL = pnlValues.Sum(),
+            UlcerIndex = ComputeUlcerIndex(CreateEquityCurve(pnlValues)),
+            SortinoRatio = ComputeSortinoRatio(percentReturns),
             RecordedAtUtc = DateTime.UtcNow
         };
+    }
+
+    private static IEnumerable<decimal> CreateEquityCurve(IEnumerable<decimal> pnls)
+    {
+        decimal equity = 100_000m;
+        yield return equity;
+        foreach (var pnl in pnls)
+        {
+            equity += pnl;
+            yield return equity;
+        }
     }
 
     public async Task RecordLiveState(IEnumerable<Trade> closedTrades)

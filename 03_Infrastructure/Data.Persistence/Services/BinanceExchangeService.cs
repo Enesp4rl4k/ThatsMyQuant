@@ -68,8 +68,17 @@ public class BinanceExchangeService : IExchangeService
             // 4. Parse Execution Result
             using var doc = JsonDocument.Parse(content);
             var root = doc.RootElement;
-            decimal execPrice = decimal.Parse(root.GetProperty("fills")[0].GetProperty("price").GetString()!);
-            decimal execQty = decimal.Parse(root.GetProperty("executedQty").GetString()!);
+            var now = DateTime.UtcNow;
+            decimal execPrice = root.TryGetProperty("fills", out var fills) && fills.GetArrayLength() > 0
+                ? decimal.Parse(fills[0].GetProperty("price").GetString()!, System.Globalization.CultureInfo.InvariantCulture)
+                : signal.Price;
+            decimal execQty = decimal.Parse(root.GetProperty("executedQty").GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+            decimal origQty = root.TryGetProperty("origQty", out var origQtyElement)
+                ? decimal.Parse(origQtyElement.GetString()!, System.Globalization.CultureInfo.InvariantCulture)
+                : execQty;
+            var orderStatus = root.TryGetProperty("status", out var statusElement)
+                ? statusElement.GetString()
+                : null;
 
             _logger.LogInformation("✅ Trade EXECUTED on Binance. OrderId: {OrderId}. Price: {Price}", 
                 root.GetProperty("orderId").GetInt64(), execPrice);
@@ -82,8 +91,16 @@ public class BinanceExchangeService : IExchangeService
                 Side = signal.Side,
                 EntryPrice = execPrice,
                 Quantity = execQty,
-                Status = TradeStatus.Executed,
-                EntryTime = DateTime.UtcNow
+                FilledQuantity = execQty,
+                RequestedQuantity = origQty,
+                RemainingQuantity = Math.Max(0m, origQty - execQty),
+                Status = execQty > 0m ? TradeStatus.Executed : TradeStatus.Pending,
+                LifecycleStatus = MapBinanceLifecycle(orderStatus, execQty, origQty),
+                EntryTime = now,
+                SubmittedTime = now,
+                LastUpdatedTime = now,
+                MarkPrice = execPrice,
+                ExecutionMode = "REAL"
             };
         }
         catch (Exception ex)
@@ -97,6 +114,61 @@ public class BinanceExchangeService : IExchangeService
     {
         // For the cold-signed HSM service, queue tracking is handled via a secondary telemetry stream.
         return await Task.FromResult(0m);
+    }
+
+    public Task<List<string>> GetFavoritesAsync() => Task.FromResult(new List<string>());
+
+    public async Task<int> CancelAllOrdersAsync(CancellationToken cancellationToken = default)
+    {
+        int cancelledCount = 0;
+
+        try
+        {
+            var timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var queryParams = $"timestamp={timestamp}";
+            var signature = await _hsm.SignPayloadAsync("BINANCE", queryParams);
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/api/v3/openOrders?{queryParams}&signature={signature}");
+            request.Headers.Add("X-MBX-APIKEY", _apiKey);
+
+            var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync(cancellationToken);
+                _logger.LogError("Failed to fetch Binance open orders for emergency cancel: {Error}", error);
+                return 0;
+            }
+
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
+            foreach (var order in doc.RootElement.EnumerateArray())
+            {
+                var symbol = order.GetProperty("symbol").GetString() ?? string.Empty;
+                var orderId = order.GetProperty("orderId").GetInt64();
+                var cancelTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var cancelQuery = $"symbol={symbol}&orderId={orderId}&timestamp={cancelTimestamp}";
+                var cancelSignature = await _hsm.SignPayloadAsync("BINANCE", cancelQuery);
+
+                using var cancelRequest = new HttpRequestMessage(HttpMethod.Delete, $"{BaseUrl}/api/v3/order?{cancelQuery}&signature={cancelSignature}");
+                cancelRequest.Headers.Add("X-MBX-APIKEY", _apiKey);
+
+                var cancelResponse = await _httpClient.SendAsync(cancelRequest, cancellationToken);
+                if (cancelResponse.IsSuccessStatusCode)
+                {
+                    cancelledCount++;
+                }
+                else
+                {
+                    var cancelError = await cancelResponse.Content.ReadAsStringAsync(cancellationToken);
+                    _logger.LogError("Failed to cancel Binance order {OrderId}: {Error}", orderId, cancelError);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Emergency CancelAllOrdersAsync failed on BinanceExchangeService.");
+        }
+
+        return cancelledCount;
     }
 
     public async Task<Account> GetAccountStatusAsync()
@@ -136,6 +208,22 @@ public class BinanceExchangeService : IExchangeService
             Provider = "Binance",
             Balance = totalUsdt,
             Equity = totalUsdt // Simplified for mock replacement
+        };
+    }
+
+    private static TradeLifecycleStatus MapBinanceLifecycle(string? status, decimal executedQty, decimal requestedQty)
+    {
+        return status?.ToUpperInvariant() switch
+        {
+            "NEW" => TradeLifecycleStatus.Accepted,
+            "PARTIALLY_FILLED" => TradeLifecycleStatus.PartiallyFilled,
+            "FILLED" => executedQty + 0.00000001m < requestedQty ? TradeLifecycleStatus.PartiallyFilled : TradeLifecycleStatus.Active,
+            "CANCELED" => TradeLifecycleStatus.Cancelled,
+            "REJECTED" => TradeLifecycleStatus.Rejected,
+            "EXPIRED" => TradeLifecycleStatus.Failed,
+            _ when executedQty <= 0m => TradeLifecycleStatus.Accepted,
+            _ when requestedQty > 0m && executedQty + 0.00000001m < requestedQty => TradeLifecycleStatus.PartiallyFilled,
+            _ => TradeLifecycleStatus.Active
         };
     }
 }

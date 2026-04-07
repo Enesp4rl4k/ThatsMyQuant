@@ -1,3 +1,4 @@
+using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
@@ -8,12 +9,17 @@ namespace ThatsMyQuant.Application.Strategy;
 public class MicrosecondPredictionEngine : IDisposable
 {
     private readonly ILogger<MicrosecondPredictionEngine> _logger;
+    private readonly IMediator? _mediator;
     private readonly InferenceSession? _session;
     private readonly string _inputName;
 
-    public MicrosecondPredictionEngine(string modelPath, ILogger<MicrosecondPredictionEngine> logger)
+    private readonly Queue<float> _vpinHistory = new();
+    private const int MaxVpinHistory = 1000;
+
+    public MicrosecondPredictionEngine(string modelPath, ILogger<MicrosecondPredictionEngine> logger, IMediator? mediator = null)
     {
         _logger = logger;
+        _mediator = mediator;
         
         try
         {
@@ -49,6 +55,7 @@ public class MicrosecondPredictionEngine : IDisposable
         float[] features = new float[8];
         
         CalculateFeatures(orderBook, features);
+        EvaluateVpinToxicity(orderBook.Symbol, features[7]);
 
         try
         {
@@ -107,6 +114,38 @@ public class MicrosecondPredictionEngine : IDisposable
         }
 
         return (totalBidVol, totalAskVol);
+    }
+
+    private void EvaluateVpinToxicity(string symbol, float currentVpin)
+    {
+        if (_mediator == null) return;
+        
+        lock (_vpinHistory)
+        {
+            if (_vpinHistory.Count >= MaxVpinHistory)
+                _vpinHistory.Dequeue();
+            _vpinHistory.Enqueue(currentVpin);
+
+            if (_vpinHistory.Count < 50) return; // Need minimum sample size
+
+            var mean = _vpinHistory.Average();
+            var sumOfSquaresOfDifferences = _vpinHistory.Select(val => (val - mean) * (val - mean)).Sum();
+            var standardDeviation = Math.Sqrt(sumOfSquaresOfDifferences / _vpinHistory.Count);
+
+            if (standardDeviation > 1e-9)
+            {
+                var zScore = (currentVpin - mean) / standardDeviation;
+                
+                // > 2.0 Z-Score indicates statistical extreme anomaly (~95th percentile)
+                if (zScore > 2.0)
+                {
+                    _logger.LogWarning("Toxic order flow detected for {Symbol}. VPIN Z-Score: {ZScore:F2}", symbol, zScore);
+                    
+                    // Fire-and-forget notification to prevent blocking the HFT execution thread
+                    _ = _mediator.Publish(new VpinToxicityAlert(symbol, zScore, DateTime.UtcNow));
+                }
+            }
+        }
     }
 
     public void Dispose()

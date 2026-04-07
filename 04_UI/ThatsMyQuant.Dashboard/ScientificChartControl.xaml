@@ -9,25 +9,23 @@
              d:DesignWidth="1040">
     <Grid Background="{StaticResource AppBg}"
           SizeChanged="RootGrid_SizeChanged">
-        <Border x:Name="DashboardBorder"
-                Background="#0B0E13"
+        <Border Background="#0B0E13"
                 BorderBrush="{StaticResource BorderColor}"
                 BorderThickness="1"
                 CornerRadius="8">
-            <Grid x:Name="MainControlGrid">
+            <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="44" />
                     <RowDefinition Height="*" />
                     <RowDefinition Height="34" />
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="52" />
+                    <ColumnDefinition Width="60" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="82" />
                 </Grid.ColumnDefinitions>
 
-                <Border x:Name="WpfHeaderLayer"
-                        Grid.Row="0"
+                <Border Grid.Row="0"
                         Grid.Column="0"
                         Grid.ColumnSpan="3"
                         Background="#0F131B"
@@ -81,279 +79,71 @@
                     </Grid>
                 </Border>
 
-                <Border x:Name="WpfSidebarLayer"
-                        Grid.Row="1"
+                <Border Grid.Row="1"
                         Grid.Column="0"
                         Background="#0F131B"
                         BorderBrush="{StaticResource BorderColor}"
                         BorderThickness="0,0,1,0">
                     <StackPanel Margin="0,10,0,10"
                                 VerticalAlignment="Stretch">
-                        <Button Content="+"
+                        <Button Content="Pan"
+                                Click="PanTool_Click"
                                 Style="{StaticResource InstitutionalGlassButton}"
-                                Width="34"
+                                Width="40"
                                 Height="34"
-                                Margin="9,0,9,10"
-                                FontSize="18"
-                                FontWeight="Light" />
-                        <Button Content="⌖"
+                                Margin="10,0,10,10"
+                                FontSize="11"
+                                FontWeight="Bold" />
+                        <Button Content="Cross"
+                                Click="CrosshairTool_Click"
                                 Style="{StaticResource InstitutionalGlassButton}"
-                                Width="34"
+                                Width="40"
                                 Height="34"
-                                Margin="9,0,9,10"
-                                FontSize="15" />
-                        <Button Content="╱"
+                                Margin="10,0,10,10"
+                                FontSize="9"
+                                FontWeight="Bold" />
+                        <Button Content="Trend"
+                                Click="TrendTool_Click"
                                 Style="{StaticResource InstitutionalGlassButton}"
-                                Width="34"
+                                Width="40"
                                 Height="34"
-                                Margin="9,0,9,10"
-                                FontSize="17" />
-                        <Button Content="T"
+                                Margin="10,0,10,10"
+                                FontSize="9"
+                                FontWeight="Bold" />
+                        <Button Content="HLine"
+                                Click="HorizontalLineTool_Click"
                                 Style="{StaticResource InstitutionalGlassButton}"
-                                Width="34"
+                                Width="40"
                                 Height="34"
-                                Margin="9,0,9,10"
-                                FontSize="16"
-                                FontWeight="SemiBold" />
-                        <Button Content="⊙"
+                                Margin="10,0,10,10"
+                                FontSize="8"
+                                FontWeight="Bold" />
+                        <Button Content="VLine"
+                                Click="VerticalLineTool_Click"
                                 Style="{StaticResource InstitutionalGlassButton}"
-                                Width="34"
+                                Width="40"
                                 Height="34"
-                                Margin="9,0,9,10"
-                                FontSize="16" />
-                        <Button Content="⌗"
+                                Margin="10,0,10,10"
+                                FontSize="8"
+                                FontWeight="Bold" />
+                        <Button Content="Reset"
+                                Click="ResetView_Click"
                                 Style="{StaticResource InstitutionalGlassButton}"
-                                Width="34"
+                                Width="40"
                                 Height="34"
-                                Margin="9,0,9,0"
-                                FontSize="16" />
+                                Margin="10,0,10,0"
+                                FontSize="9"
+                                FontWeight="Bold" />
                     </StackPanel>
                 </Border>
 
                 <Grid Grid.Row="1"
                       Grid.Column="1"
                       Background="#0B0E13">
-                    <Grid x:Name="FallbackChartLayer">
-                        <ItemsControl ItemsSource="{Binding PriceScaleLabels}">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <Canvas />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Canvas.Left="{Binding X}"
-                                            Canvas.Top="{Binding Y}"
-                                            Background="#151A22"
-                                            CornerRadius="2"
-                                            Padding="4,1">
-                                        <TextBlock Text="{Binding Text}"
-                                                   Foreground="{StaticResource TextSoft}"
-                                                   FontFamily="{StaticResource MonoFont}"
-                                                   FontSize="10" />
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-
-                        <ItemsControl ItemsSource="{Binding TimeScaleLabels}">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <Canvas />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Border Canvas.Left="{Binding X}"
-                                            Canvas.Top="{Binding Y}"
-                                            Background="#10151D"
-                                            CornerRadius="2"
-                                            Padding="4,1">
-                                        <TextBlock Text="{Binding Text}"
-                                                   Foreground="{StaticResource TextMuted}"
-                                                   FontFamily="{StaticResource MonoFont}"
-                                                   FontSize="9" />
-                                    </Border>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-
-                        <Canvas x:Name="MainDrawingCanvas"
-                                Width="{Binding ChartCanvasWidth}"
-                                Height="{Binding ChartCanvasHeight}"
-                                Margin="14,12,8,8"
-                                HorizontalAlignment="Left"
-                                VerticalAlignment="Top">
-                            <ItemsControl ItemsSource="{Binding HorizontalGridLines}">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <Canvas />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Line X1="{Binding X1}"
-                                              Y1="{Binding Y1}"
-                                              X2="{Binding X2}"
-                                              Y2="{Binding Y2}"
-                                              Stroke="#171D26"
-                                              StrokeThickness="0.7" />
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <ItemsControl ItemsSource="{Binding VerticalGridLines}">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <Canvas />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Line X1="{Binding X1}"
-                                              Y1="{Binding Y1}"
-                                              X2="{Binding X2}"
-                                              Y2="{Binding Y2}"
-                                              Stroke="#171D26"
-                                              StrokeThickness="0.7" />
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <ItemsControl ItemsSource="{Binding ReasoningOverlays}">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <Canvas />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Canvas>
-                                            <Border Canvas.Left="{Binding X}"
-                                                    Canvas.Top="{Binding Y}"
-                                                    Width="{Binding Width}"
-                                                    Height="{Binding Height}"
-                                                    Background="{Binding Fill}"
-                                                    BorderBrush="{Binding Stroke}"
-                                                    BorderThickness="0.8"
-                                                    CornerRadius="3"
-                                                    Opacity="0.16" />
-                                            <Border Canvas.Left="{Binding X}"
-                                                    Canvas.Top="{Binding Y}"
-                                                    Background="#162233"
-                                                    BorderBrush="{Binding Stroke}"
-                                                    BorderThickness="1,0,0,0"
-                                                    Padding="6,2"
-                                                    Margin="5,5,0,0">
-                                                <TextBlock Text="{Binding Title}"
-                                                           Foreground="{Binding TextColor}"
-                                                           FontSize="9"
-                                                           FontWeight="Black" />
-                                            </Border>
-                                        </Canvas>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <Polyline Points="{Binding ChartPoints}"
-                                      Stroke="{StaticResource Accent}"
-                                      StrokeThickness="0.6"
-                                      Opacity="0.8">
-                                <Polyline.Effect>
-                                    <DropShadowEffect Color="#00BFFF" BlurRadius="15" ShadowDepth="0" />
-                                </Polyline.Effect>
-                            </Polyline>
-
-                            <ItemsControl ItemsSource="{Binding ChartCandles}">
-                                <ItemsControl.CacheMode>
-                                    <BitmapCache RenderAtScale="1" SnapsToDevicePixels="True" />
-                                </ItemsControl.CacheMode>
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <Canvas />
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Canvas>
-                                            <Line X1="{Binding WickX}"
-                                                  Y1="{Binding WickY1}"
-                                                  X2="{Binding WickX}"
-                                                  Y2="{Binding WickY2}"
-                                                  Stroke="{Binding Color}"
-                                                  StrokeThickness="1.2" />
-                                            <Rectangle Canvas.Left="{Binding X}"
-                                                       Canvas.Top="{Binding BodyY}"
-                                                       Width="{Binding Width}"
-                                                       Height="{Binding BodyHeight}"
-                                                       Fill="{Binding Color}" />
-                                        </Canvas>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <Line X1="0"
-                                  Y1="{Binding CurrentPriceMarkerY}"
-                                  X2="{Binding ChartCanvasWidth}"
-                                  Y2="{Binding CurrentPriceMarkerY}"
-                                  Stroke="{StaticResource BuyColor}"
-                                  StrokeThickness="0.7"
-                                  StrokeDashArray="2,2"
-                                  Opacity="0.45" />
-
-                            <Canvas x:Name="ChartCanvas"
-                                    Width="{Binding ChartCanvasWidth}"
-                                    Height="{Binding ChartCanvasHeight}"
-                                    Background="Transparent"
-                                    MouseWheel="ChartCanvas_MouseWheel"
-                                    MouseLeftButtonDown="ChartCanvas_MouseLeftButtonDown"
-                                    MouseLeftButtonUp="ChartCanvas_MouseLeftButtonUp"
-                                    MouseMove="ChartCanvas_MouseMove"
-                                    MouseLeave="ChartCanvas_MouseLeave"
-                                    MouseRightButtonUp="ChartCanvas_MouseRightButtonUp">
-                                <Canvas.RenderTransform>
-                                    <TransformGroup>
-                                        <ScaleTransform x:Name="ChartScaleTransform"
-                                                        ScaleX="1"
-                                                        ScaleY="1" />
-                                        <TranslateTransform x:Name="ChartTranslateTransform"
-                                                            X="0"
-                                                            Y="0" />
-                                    </TransformGroup>
-                                </Canvas.RenderTransform>
-                            </Canvas>
-
-                            <Canvas x:Name="ChartOverlay"
-                                    Width="{Binding ChartCanvasWidth}"
-                                    Height="{Binding ChartCanvasHeight}"
-                                    IsHitTestVisible="False">
-                                <Line x:Name="CrosshairVertical"
-                                      Stroke="{StaticResource Accent}"
-                                      StrokeThickness="0.7"
-                                      StrokeDashArray="4,4"
-                                      Visibility="Collapsed" />
-                                <Line x:Name="CrosshairHorizontal"
-                                      Stroke="{StaticResource Accent}"
-                                      StrokeThickness="0.7"
-                                      StrokeDashArray="4,4"
-                                      Visibility="Collapsed" />
-                            </Canvas>
-                        </Canvas>
-                    </Grid>
-
-                    <Border HorizontalAlignment="Left"
-                            VerticalAlignment="Top"
-                            Margin="14,10,0,0"
-                            Background="#171D26"
-                            CornerRadius="3"
-                            Padding="6,2"
-                            IsHitTestVisible="False">
-                        <TextBlock Text="{Binding CurrentDate}"
-                                   Foreground="{StaticResource TextMuted}"
-                                   FontFamily="{StaticResource MonoFont}"
-                                   FontSize="9"
-                                   FontWeight="Bold" />
-                    </Border>
+                    <wv2:WebView2 x:Name="ChartWebView"
+                                  Margin="8,8,8,8"
+                                  DefaultBackgroundColor="Transparent"
+                                  NavigationCompleted="ChartWebView_NavigationCompleted" />
                 </Grid>
 
                 <Border Grid.Row="1"
@@ -389,40 +179,22 @@
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="TRADINGVIEW LAYER"
+                        <TextBlock Text="EXCHANGE TERMINAL"
                                    Foreground="{StaticResource TextMuted}"
                                    FontFamily="{StaticResource MonoFont}"
                                    FontSize="10"
                                    FontWeight="Black"
                                    VerticalAlignment="Center" />
-                        <ItemsControl Grid.Column="1"
-                                      ItemsSource="{Binding TimeframeConfluences}"
-                                      Margin="16,0,0,0"
-                                      VerticalAlignment="Center">
-                            <ItemsControl.ItemsPanel>
-                                <ItemsPanelTemplate>
-                                    <UniformGrid Columns="5" />
-                                </ItemsPanelTemplate>
-                            </ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <StackPanel Orientation="Horizontal"
-                                                HorizontalAlignment="Center">
-                                        <TextBlock Text="{Binding Name}"
-                                                   Foreground="{StaticResource TextMuted}"
-                                                   FontSize="9"
-                                                   FontWeight="Black"
-                                                   Margin="0,0,6,0" />
-                                        <TextBlock Text="{Binding Status}"
-                                                   Foreground="{Binding Color}"
-                                                   FontSize="9"
-                                                   FontWeight="Bold" />
-                                    </StackPanel>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding ChartFocusSummary}"
+                                   Foreground="{StaticResource TextMuted}"
+                                   FontSize="9"
+                                   FontWeight="SemiBold"
+                                   Margin="16,0,0,0"
+                                   VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
                         <TextBlock Grid.Column="2"
-                                   Text="Live chart host"
+                                   Text="WebView2 Chart Engine"
                                    Foreground="{StaticResource TextMuted}"
                                    FontSize="9"
                                    FontWeight="SemiBold"
@@ -431,17 +203,5 @@
                 </Border>
             </Grid>
         </Border>
-
-        <!-- WebView2 MOVED HERE AS DIRECT CHILD OF OUTER GRID -->
-        <wv2:WebView2 x:Name="TradingViewBrowser"
-                      Grid.Row="0"
-                      Grid.RowSpan="3"
-                      Grid.Column="0"
-                      Grid.ColumnSpan="3"
-                      Margin="0"
-                      DefaultBackgroundColor="#0B0E13"
-                      HorizontalAlignment="Stretch"
-                      VerticalAlignment="Stretch"
-                      Visibility="Collapsed" />
     </Grid>
 </UserControl>

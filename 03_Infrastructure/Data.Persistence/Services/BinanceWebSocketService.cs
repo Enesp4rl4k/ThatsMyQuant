@@ -4,63 +4,119 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Application.Resilience;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
-public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDisposable
+public class BinanceWebSocketService : IStreamingMarketDataService, IAsyncDisposable
 {
     private const int DepthLevelsCapacity = 20;
     private readonly ILogger<BinanceWebSocketService> _logger;
+    private readonly IAlertingService? _alertingService;
+    private readonly int _maxReconnectAttempts;
     private ClientWebSocket? _webSocket;
     private CancellationTokenSource? _cts;
     private readonly HashSet<string> _activeSymbols = new();
     private readonly OrderBookLevel[] _bidScratch = new OrderBookLevel[DepthLevelsCapacity];
     private readonly OrderBookLevel[] _askScratch = new OrderBookLevel[DepthLevelsCapacity];
     private int _requestId = 0;
-    
+    private int _reconnectAttempt = 0;
+
     // HFT Optimization: Markers as static readonly Spans
     private static readonly byte[] AggTradeMarker = Encoding.UTF8.GetBytes("aggTrade");
 
     public event Action<MarketTick>? OnTickReceived;
     public event Action<OrderBookSnapshot>? OnOrderBookUpdated;
 
-    public BinanceWebSocketService(ILogger<BinanceWebSocketService> logger) => _logger = logger;
+    public BinanceWebSocketService(
+        ILogger<BinanceWebSocketService> logger,
+        IAlertingService? alertingService = null,
+        int maxReconnectAttempts = 10)
+    {
+        _logger = logger;
+        _alertingService = alertingService;
+        _maxReconnectAttempts = maxReconnectAttempts;
+    }
 
     public async Task ConnectAsync(string[] symbols, CancellationToken cancellationToken)
     {
         if (symbols == null || symbols.Length == 0) return;
 
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        foreach (var s in symbols) _activeSymbols.Add(s);
+
+        _ = RunWithReconnectAsync(_cts.Token);
+
+        await Task.CompletedTask;
+    }
+
+    private async Task RunWithReconnectAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                await ConnectCoreAsync(token);
+                _reconnectAttempt = 0; // reset on success
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                var delay = BackoffCalculator.Compute(_reconnectAttempt);
+                _logger.LogWarning(
+                    "WS reconnect attempt {Attempt} failed. Retrying in {Delay:F1}s. Error: {Message}",
+                    _reconnectAttempt, delay.TotalSeconds, ex.Message);
+
+                if (_reconnectAttempt >= _maxReconnectAttempts && _alertingService != null)
+                {
+                    await _alertingService.SendTradeAlertAsync(
+                        "BINANCE_WS",
+                        new TradeDecision { ShouldTrade = false, Reasoning = $"BinanceWebSocket unrecoverable after {_reconnectAttempt} attempts." },
+                        new IndicatorSnapshot(),
+                        new AlertAuditContext { ExecutionMode = "WebSocketReconnect", Reasoning = $"Exhausted {_reconnectAttempt} reconnect attempts." });
+                }
+
+                _reconnectAttempt++;
+
+                try
+                {
+                    await DelayAsync(delay, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
+    }
+
+    protected virtual Task DelayAsync(TimeSpan delay, CancellationToken token)
+        => Task.Delay(delay, token);
+
+    protected virtual async Task ConnectCoreAsync(CancellationToken token)
+    {
+        _webSocket?.Dispose();
         _webSocket = new ClientWebSocket();
 
-        try
+        var streamParams = string.Join("/", _activeSymbols.Select(s =>
         {
-            foreach (var s in symbols) _activeSymbols.Add(s);
+            var f = s.Replace("-", "").ToLowerInvariant();
+            return $"{f}@aggTrade/{f}@depth20@100ms";
+        }));
 
-            var streamParams = string.Join("/", _activeSymbols.Select(s => 
-            {
-                var f = s.Replace("-", "").ToLowerInvariant();
-                return $"{f}@aggTrade/{f}@depth20@100ms";
-            }));
-            
-            var uri = new Uri($"wss://stream.binance.com:9443/stream?streams={streamParams}");
-            await _webSocket.ConnectAsync(uri, _cts.Token);
-            _logger.LogInformation("Connected to Binance WebSocket with {Count} symbols.", _activeSymbols.Count);
+        var uri = new Uri($"wss://stream.binance.com:9443/stream?streams={streamParams}");
+        await _webSocket.ConnectAsync(uri, token);
+        _logger.LogInformation("Connected to Binance WebSocket with {Count} symbols.", _activeSymbols.Count);
 
-            _ = ReceiveLoopAsync(_cts.Token);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "WS Connection failed.");
-        }
+        await ReceiveLoopAsync(token);
     }
 
     public async Task SubscribeAsync(string symbol)
     {
         if (string.IsNullOrWhiteSpace(symbol) || _activeSymbols.Contains(symbol)) return;
-        
+
         _activeSymbols.Add(symbol);
         if (_webSocket?.State == WebSocketState.Open)
         {
@@ -103,7 +159,7 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
     {
         // SonarQube Fix: ArrayPool kullanarak bellek yönetimini optimize ediyoruz
         byte[] buffer = ArrayPool<byte>.Shared.Rent(65536); // 64KB Buffer for safety
-        
+
         try
         {
             while (_webSocket?.State == WebSocketState.Open && !token.IsCancellationRequested)
@@ -122,6 +178,7 @@ public sealed class BinanceWebSocketService : IStreamingMarketDataService, IAsyn
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogError(ex, "WS Loop Error.");
+            throw; // rethrow so RunWithReconnectAsync can handle reconnect
         }
         finally
         {

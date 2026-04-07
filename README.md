@@ -1,4 +1,4 @@
-# Thats My Quant 🚀
+# Thats My Quant 
 
 Advanced Agentic Trading Bot with Microservices Architecture, Borsa-MCP Integration, and AI Reasoning.
 
@@ -10,7 +10,7 @@ Advanced Agentic Trading Bot with Microservices Architecture, Borsa-MCP Integrat
 
 ---
 
-## 🚀 Quick Start: Running the App
+## Quick Start: Running the App
 
 **CRITICAL**: You must be in the project root directory to run these commands.
 ```powershell
@@ -49,7 +49,7 @@ Once the `Listener.Api` is running, you can send a mock signal using PowerShell:
 
 ```powershell
  $body = '{"Symbol":"THYAO","Side":"Buy","Price":285.50,"Source":"TradingView"}'
- $secret = "change-me-in-production-use-user-secrets"
+ $secret = $env:TMQ_WEBHOOK_SECRET   # Set this via user-secrets or environment variables
  $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
  $nonce = [Guid]::NewGuid().ToString()
  $idempotency = [Guid]::NewGuid().ToString()

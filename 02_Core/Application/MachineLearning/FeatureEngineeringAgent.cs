@@ -1,6 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
+using System.Threading;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Application.Strategy;
 
@@ -17,18 +17,18 @@ namespace ThatsMyQuant.Application.MachineLearning;
 /// </summary>
 public class FeatureEngineeringAgent
 {
-    // The exact structural native pointer continuously updated entirely outside GC.
-    public float[] CurrentTensor { get; } // Readonly array reference
+    // Publish-then-forget: writers allocate a fresh array and atomically swap the reference
+    // via Volatile.Write. Readers use Volatile.Read. No lock required.
+    private float[] _currentTensor = new float[5];
+
+    public float[] CurrentTensor => _currentTensor;
 
     private readonly OnlineMathHelper _rsi14;
     private readonly OnlineMathHelper _emaFast;
     private readonly TickRingBuffer _movingAverageBuffer;
-    private readonly object _syncLock = new();
 
     public FeatureEngineeringAgent()
     {
-        CurrentTensor = new float[5];
-
         _rsi14 = new OnlineMathHelper(14);
         _emaFast = new OnlineMathHelper(9);
         _movingAverageBuffer = new TickRingBuffer(100);
@@ -44,7 +44,7 @@ public class FeatureEngineeringAgent
 
     /// <summary>
     /// Extremely rapid native execution sequentially triggered upon structural Price modifications.
-    /// Maps specific physics algorithms structurally mapping onto the static float[] Tensor without generating managed array signatures.
+    /// Allocates a fresh tensor, computes all features, then atomically publishes via Volatile.Write.
     /// All tensor writes are guarded against NaN/Infinity propagation.
     /// </summary>
     public void ProcessTickNatively(double price)
@@ -53,25 +53,32 @@ public class FeatureEngineeringAgent
         _emaFast.UpdateEma(price);
         _movingAverageBuffer.Add(price);
 
-        lock (_syncLock)
-        {
-            // Map mathematical properties linearly — all guarded
-            CurrentTensor[0] = SafeFloat(rsi / 100.0);       // Normalize RSI to 0-1
-            CurrentTensor[1] = _emaFast.Ema > 0
-                ? SafeFloat(price / _emaFast.Ema, 1.0f)      // EMA deviation, centered at 1.0
-                : 1.0f;
-            CurrentTensor[2] = _movingAverageBuffer.MovingAverage > 0
-                ? SafeFloat(price / _movingAverageBuffer.MovingAverage, 1.0f) // MA bias
-                : 1.0f;
+        var tensor = new float[5];
 
-            // Feature[3] is populated by ApplyOrderFlowImbalance or ApplyFoundationData
-            // Feature[4] fallback: momentum from buffer if no foundation data available
-            double oldestPrice = _movingAverageBuffer.OldestValue;
-            if (Math.Abs(CurrentTensor[4]) < 1e-6f && oldestPrice > 0)
-            {
-                CurrentTensor[4] = SafeFloat(price / oldestPrice, 1.0f);
-            }
+        // Preserve OFI and foundation data from the previous snapshot
+        var prev = _currentTensor;
+        tensor[3] = prev[3];
+        tensor[4] = prev[4];
+
+        // Map mathematical properties linearly — all guarded
+        tensor[0] = SafeFloat(rsi / 100.0);       // Normalize RSI to 0-1
+        tensor[1] = _emaFast.Ema > 0
+            ? SafeFloat(price / _emaFast.Ema, 1.0f)      // EMA deviation, centered at 1.0
+            : 1.0f;
+        tensor[2] = _movingAverageBuffer.MovingAverage > 0
+            ? SafeFloat(price / _movingAverageBuffer.MovingAverage, 1.0f) // MA bias
+            : 1.0f;
+
+        // Feature[3] is populated by ApplyOrderFlowImbalance or ApplyFoundationData
+        // Feature[4] fallback: momentum from buffer if no foundation data available
+        double oldestPrice = _movingAverageBuffer.OldestValue;
+        if (Math.Abs(tensor[4]) < 1e-6f && oldestPrice > 0)
+        {
+            tensor[4] = SafeFloat(price / oldestPrice, 1.0f);
         }
+
+        // Atomically publish the new tensor — no lock needed
+        Volatile.Write(ref _currentTensor, tensor);
     }
 
     /// <summary>
@@ -81,11 +88,12 @@ public class FeatureEngineeringAgent
     /// </summary>
     public void ApplyFoundationData(FoundationSnapshot snapshot)
     {
-        lock (_syncLock)
-        {
-            CurrentTensor[3] = SafeFloat(snapshot.BidAskImbalance);
-            CurrentTensor[4] = SafeFloat(snapshot.TickDirectionRatio, 0.5f);
-        }
+        var tensor = new float[5];
+        var prev = _currentTensor;
+        Array.Copy(prev, tensor, 5);
+        tensor[3] = SafeFloat(snapshot.BidAskImbalance);
+        tensor[4] = SafeFloat(snapshot.TickDirectionRatio, 0.5f);
+        Volatile.Write(ref _currentTensor, tensor);
     }
 
     /// <summary>
@@ -96,30 +104,24 @@ public class FeatureEngineeringAgent
     {
         if (destination.Length < 5) throw new ArgumentException("Destination span must be at least 5 elements long.");
 
-        lock (_syncLock)
-        {
-            CurrentTensor.AsSpan().CopyTo(destination);
-        }
+        Volatile.Read(ref _currentTensor).AsSpan().CopyTo(destination);
     }
 
     [Obsolete("Use CopyTo(Span<float>) to avoid allocations.")]
     public float[] GetSnapshot()
     {
         var snapshot = new float[5];
-        lock (_syncLock)
-        {
-            Array.Copy(CurrentTensor, snapshot, 5);
-        }
+        Array.Copy(Volatile.Read(ref _currentTensor), snapshot, 5);
         return snapshot;
     }
 
     public void ApplyOrderFlowImbalance(double imbalance)
     {
-        lock (_syncLock)
-        {
-            // Hard-map structural OrderFlow Imbalance (Between -1.0 and 1.0) directly onto Dimension 3.
-            CurrentTensor[3] = SafeFloat(imbalance);
-        }
+        var tensor = new float[5];
+        var prev = _currentTensor;
+        Array.Copy(prev, tensor, 5);
+        // Hard-map structural OrderFlow Imbalance (Between -1.0 and 1.0) directly onto Dimension 3.
+        tensor[3] = SafeFloat(imbalance);
+        Volatile.Write(ref _currentTensor, tensor);
     }
 }
-

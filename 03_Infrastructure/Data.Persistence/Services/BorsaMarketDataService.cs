@@ -1,141 +1,88 @@
 using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
 public class BorsaMarketDataService : IMarketDataService
 {
     private readonly ILogger<BorsaMarketDataService> _logger;
+    private readonly IBistMarketGateway _gateway;
 
-    public BorsaMarketDataService(ILogger<BorsaMarketDataService> logger)
+    public BorsaMarketDataService(
+        ILogger<BorsaMarketDataService> logger,
+        IBistMarketGateway gateway)
     {
         _logger = logger;
+        _gateway = gateway;
     }
 
     public Task<decimal> GetLivePriceAsync(string symbol, string market = "BIST")
     {
-        _logger.LogInformation("Fetching Live Price for {Symbol} in {Market} via Borsa-MCP...", symbol, market);
-        return Task.FromResult(market == "BIST" ? 125.50m : 64000m);
+        if (market.Equals("BIST", StringComparison.OrdinalIgnoreCase))
+        {
+            return _gateway.GetLivePriceAsync(symbol);
+        }
+
+        _logger.LogInformation("Fetching live price for {Symbol} in {Market} via fallback market service.", symbol, market);
+        return Task.FromResult(64000m);
     }
 
     public Task<Dictionary<string, string>> GetTechnicalAnalysisAsync(string symbol, string market = "BIST")
     {
-        _logger.LogInformation("Fetching Technical Analysis for {Symbol} via Borsa-MCP...", symbol);
+        if (market.Equals("BIST", StringComparison.OrdinalIgnoreCase))
+        {
+            return _gateway.GetTechnicalAnalysisAsync(symbol);
+        }
+
+        _logger.LogInformation("Fetching technical analysis for {Symbol} in {Market} via fallback market service.", symbol, market);
         return Task.FromResult(new Dictionary<string, string>
         {
-            { "RSI", "62.5" },
-            { "MACD", "Bullish" },
-            { "Trend", "Strong Up" }
+            ["RSI"] = "58.4",
+            ["MACD"] = "Bullish",
+            ["Trend"] = "Constructive"
         });
     }
 
     public Task<List<string>> GetLatestNewsAsync(string symbol)
-    {
-        _logger.LogInformation("Fetching News for {Symbol} via Borsa-MCP (KAP)...", symbol);
-        return Task.FromResult(new List<string>
-        {
-            "KAP: Şirket yeni bir yatırım kararı aldı.",
-            "Analist: Hedef fiyat yükseltildi."
-        });
-    }
+        => _gateway.GetLatestNewsAsync(symbol);
 
-    /// <summary>
-    /// Generate realistic simulated BIST candle data using a random walk model.
-    /// This produces realistic price patterns with trend, volatility, and volume spikes.
-    /// Replace this method with a real Borsa API call in production.
-    /// </summary>
     public Task<List<Candle>> GetCandlesAsync(string symbol, int count = 100, string market = "BIST", string timeframe = "1d")
     {
-        _logger.LogInformation("Generating {Count} simulated {Timeframe} candles for {Symbol} ({Market})...", count, timeframe, symbol, market);
-
-        var candles = new List<Candle>();
-        // Using Random.Shared for improved performance and to satisfy basic security scanners.
-        var random = Random.Shared; 
-
-
-        // Base price based on market and symbol
-        decimal basePrice = market.ToUpper() switch
+        if (market.Equals("BIST", StringComparison.OrdinalIgnoreCase))
         {
-            "CRYPTO" => symbol.ToUpper().Split('-')[0] switch
-            {
-                "BTC" => 64000m,
-                "ETH" => 3500m,
-                "SOL" => 145m,
-                "XRP" => 0.62m,
-                _ => 100m
-            },
-            "FOREX" => symbol.ToUpper().Split('=')[0] switch
-            {
-                "USDTRY" => 32.25m,
-                "EURTRY" => 35.10m,
-                "EURUSD" => 1.085m,
-                "GBPUSD" => 1.265m,
-                _ => 1.0m
-            },
-            _ => symbol.ToUpper() switch // BIST
-            {
-                "THYAO" => 280m,
-                "GARAN" => 50m,
-                "AKBNK" => 42m,
-                "SISE" => 55m,
-                "EREGL" => 48m,
-                "KCHOL" => 160m,
-                "TUPRS" => 180m,
-                "BIMAS" => 340m,
-                "ASELS" => 45m,
-                "SAHOL" => 65m,
-                _ => 100m
-            }
-        };
+            return _gateway.GetCandlesAsync(symbol, count, timeframe);
+        }
 
-        decimal price = basePrice;
-        decimal avgVolume = market.ToUpper() == "BIST" ? 5_000_000m : 50_000m; 
-        var startTime = DateTime.UtcNow.AddDays(-count);
+        _logger.LogInformation("Generating fallback {Count} simulated {Timeframe} candles for {Symbol} ({Market}).", count, timeframe, symbol, market);
 
-        // Create a slight trend bias (simulates trending markets)
-        double trendBias = (random.NextDouble() - 0.45) * 0.002; // Slight bullish bias
+        var candles = new List<Candle>(count);
+        var random = Random.Shared;
+        var price = market.Equals("Crypto", StringComparison.OrdinalIgnoreCase) ? 64000m : 1.12m;
+        var step = timeframe.Equals("1h", StringComparison.OrdinalIgnoreCase) ? TimeSpan.FromHours(1) : TimeSpan.FromDays(1);
+        var cursor = DateTime.UtcNow - TimeSpan.FromTicks(step.Ticks * count);
 
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
-            // Volatility: 1-3% daily range (typical for BIST)
-            decimal volatility = price * (decimal)(0.01 + random.NextDouble() * 0.02);
-
-            // Random walk with trend
-            decimal change = (decimal)((random.NextDouble() - 0.5 + trendBias) * 2) * volatility;
-
-            decimal open = price;
-            decimal close = price + change;
-
-            // Ensure close stays positive
-            if (close <= 0) close = open * 0.99m;
-
-            decimal high = Math.Max(open, close) + (decimal)(random.NextDouble() * 0.5) * volatility;
-            decimal low = Math.Min(open, close) - (decimal)(random.NextDouble() * 0.5) * volatility;
-            if (low <= 0) low = Math.Min(open, close) * 0.995m;
-
-            // Volume: random with occasional spikes (news/earnings)
-            decimal volumeMultiplier = 1m;
-            if (random.NextDouble() > 0.9) volumeMultiplier = 2.5m; // 10% chance of volume spike
-            decimal volume = avgVolume * ((decimal)(0.6 + random.NextDouble() * 0.8)) * volumeMultiplier;
+            var change = (decimal)((random.NextDouble() - 0.48d) * 0.03d);
+            var open = price;
+            var close = Math.Max(0.0001m, open * (1m + change));
+            var high = Math.Max(open, close) * (1m + (decimal)random.NextDouble() * 0.01m);
+            var low = Math.Min(open, close) * (1m - (decimal)random.NextDouble() * 0.01m);
 
             candles.Add(new Candle
             {
-                Timestamp = startTime.AddDays(i),
-                Open = Math.Round(open, 2),
-                High = Math.Round(high, 2),
-                Low = Math.Round(low, 2),
-                Close = Math.Round(close, 2),
-                Volume = Math.Round(volume, 0)
+                Timestamp = cursor,
+                Open = Math.Round(open, 4),
+                High = Math.Round(high, 4),
+                Low = Math.Round(low, 4),
+                Close = Math.Round(close, 4),
+                Volume = Math.Round(100_000m * (decimal)(0.8d + random.NextDouble() * 0.4d), 0)
             });
 
-            price = close; // Next candle opens at previous close
+            price = close;
+            cursor += step;
         }
-
-        _logger.LogInformation("Generated {Count} candles for {Symbol}. Price range: {Low:F2} - {High:F2}",
-            candles.Count, symbol,
-            candles.Min(c => c.Low),
-            candles.Max(c => c.High));
 
         return Task.FromResult(candles);
     }

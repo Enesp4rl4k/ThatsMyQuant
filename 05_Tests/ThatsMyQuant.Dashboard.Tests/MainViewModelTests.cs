@@ -430,7 +430,9 @@ public class MainViewModelTests
     [Fact]
     public void ToggleTradingModeCommand_ShouldSwitchBetweenPaperAndLive()
     {
-        var viewModel = CreateViewModel();
+        var prompts = Substitute.For<IUserPromptService>();
+        prompts.Confirm(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        var viewModel = CreateViewModel(userPromptService: prompts);
 
         viewModel.IsPaperMode.Should().BeTrue();
         viewModel.TradingModeLabel.Should().Be("PAPER");
@@ -439,6 +441,136 @@ public class MainViewModelTests
 
         viewModel.IsPaperMode.Should().BeFalse();
         viewModel.TradingModeLabel.Should().Be("LIVE");
+    }
+
+    [Fact]
+    public void ToggleTradingModeCommand_ShouldStayInPaperMode_WhenLiveConfirmationDeclined()
+    {
+        var prompts = Substitute.For<IUserPromptService>();
+        prompts.Confirm(Arg.Any<string>(), Arg.Any<string>()).Returns(false);
+        var viewModel = CreateViewModel(userPromptService: prompts);
+
+        viewModel.ToggleTradingModeCommand.Execute(null);
+
+        viewModel.IsPaperMode.Should().BeTrue();
+        viewModel.TradingModeLabel.Should().Be("PAPER");
+    }
+
+    [Fact]
+    public void ClosePositionCommand_ShouldUpdateBothCollections_WhenConfirmed()
+    {
+        var prompts = Substitute.For<IUserPromptService>();
+        prompts.Confirm(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        var viewModel = CreateViewModel(userPromptService: prompts);
+        var position = new PositionViewModel
+        {
+            Symbol = "BTC-USD",
+            Side = "LONG",
+            Size = 1.5m,
+            RemainingQuantity = 1.5m,
+            MarkPrice = 105000m
+        };
+        viewModel.ActivePositions.Add(position);
+        viewModel.PortfolioView.ActivePositions.Add(position);
+
+        viewModel.ClosePositionCommand.Execute(position);
+
+        viewModel.ActivePositions.Should().BeEmpty();
+        viewModel.PortfolioView.ActivePositions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void SetBreakEvenCommand_ShouldMoveStopLossToEntryPrice()
+    {
+        var viewModel = CreateViewModel();
+        var position = new PositionViewModel { Symbol = "ETH-USD", EntryPrice = 3200m, StopLoss = 3000m };
+
+        viewModel.SetBreakEvenCommand.Execute(position);
+
+        position.StopLoss.Should().Be(3200m);
+    }
+
+    [Fact]
+    public void CloseAllPositionsCommand_ShouldClearBothCollections_WhenConfirmed()
+    {
+        var prompts = Substitute.For<IUserPromptService>();
+        prompts.Confirm(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        var viewModel = CreateViewModel(userPromptService: prompts);
+        var position = new PositionViewModel
+        {
+            Symbol = "SOL-USD",
+            Side = "SHORT",
+            Size = 2m,
+            RemainingQuantity = 2m,
+            MarkPrice = 150m
+        };
+        viewModel.ActivePositions.Add(position);
+        viewModel.PortfolioView.ActivePositions.Add(position);
+
+        viewModel.CloseAllPositionsCommand.Execute(null);
+
+        viewModel.ActivePositions.Should().BeEmpty();
+        viewModel.PortfolioView.ActivePositions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RefreshStrategyLeaderboardAsync_ShouldExposeRiskGovernorTelemetry()
+    {
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade
+            {
+                Symbol = "THYAO",
+                Side = TradeSide.Buy,
+                EntryPrice = 100m,
+                Quantity = 1m,
+                PositionSizePercent = 0.09m,
+                Status = TradeStatus.Executed,
+                LifecycleStatus = TradeLifecycleStatus.Active,
+                EntryTime = DateTime.UtcNow.AddMinutes(-15),
+                MarkPrice = 104m
+            },
+            new Trade
+            {
+                Symbol = "THYAO",
+                Side = TradeSide.Buy,
+                EntryPrice = 95m,
+                ExitPrice = 103m,
+                Quantity = 1m,
+                ClosedQuantity = 1m,
+                Status = TradeStatus.Executed,
+                LifecycleStatus = TradeLifecycleStatus.Closed,
+                EntryTime = DateTime.UtcNow.AddHours(-6),
+                ExitTime = DateTime.UtcNow.AddHours(-1)
+            }
+        });
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository);
+        viewModel.SelectedSymbol = "THYAO";
+
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.RiskGovernorStatus.Should().Be("CLEAR");
+        viewModel.RiskGuardStatus.Should().Be("CLEAR");
+        viewModel.RiskGovernorHeatSummary.Should().Contain("Portfolio");
+        viewModel.RiskGovernorHeatSummary.Should().Contain("THYAO");
+        viewModel.RiskGovernorExecutionSummary.Should().Contain("Execution health");
+        viewModel.RiskGovernorCompressionSummary.Should().Contain("Execution");
+    }
+
+    [Fact]
+    public void CreateViewModel_ShouldExposeArmedRiskGovernorState()
+    {
+        var riskAgent = new RiskAgent(Substitute.For<ILogger<RiskAgent>>());
+        riskAgent.ArmKillSwitch("Daily loss limit breached (5.20%).");
+
+        var viewModel = CreateViewModel(riskAgent: riskAgent);
+
+        viewModel.RiskGovernorStatus.Should().Be("LOCKED");
+        viewModel.RiskGuardStatus.Should().Be("ARMED");
+        viewModel.RiskGovernorReason.Should().Contain("Daily loss limit");
+        viewModel.RiskGovernorKillSwitchSummary.Should().Contain("Daily loss limit");
     }
 
     [Fact]
@@ -561,6 +693,81 @@ public class MainViewModelTests
         viewModel.BotProductivityScore.Should().Contain("Setup score");
         viewModel.BotSetupVelocity.Should().NotBeNullOrWhiteSpace();
         viewModel.BotWorkflowAdvice.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Fact]
+    public async Task StageTuningCandidateCommand_ShouldRefreshProjectionAndCandidateSummary()
+    {
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        tradeRepository.GetAllAsync(Arg.Any<int>()).Returns(new[]
+        {
+            new Trade { Symbol = "THYAO", StrategyTag = "Momentum", RegimeTag = "Trending", PromotionStage = "LiveProbe", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 108m, Quantity = 1, ExitTime = DateTime.UtcNow.AddHours(-3) },
+            new Trade { Symbol = "THYAO", StrategyTag = "Momentum", RegimeTag = "Trending", PromotionStage = "LiveProbe", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 106m, Quantity = 1, ExitTime = DateTime.UtcNow.AddHours(-2) },
+            new Trade { Symbol = "THYAO", StrategyTag = "Momentum", RegimeTag = "Trending", PromotionStage = "LiveProbe", Status = TradeStatus.Executed, Side = TradeSide.Buy, EntryPrice = 100m, ExitPrice = 104m, Quantity = 1, ExitTime = DateTime.UtcNow.AddHours(-1) }
+        });
+
+        var viewModel = CreateViewModel(tradeRepository: tradeRepository);
+        await viewModel.RefreshStrategyLeaderboardAsync();
+
+        viewModel.SelectedTuningStrategy = "Momentum";
+        viewModel.TuningPrimaryValue = 64m;
+        viewModel.TuningSecondaryValue = 24m;
+        viewModel.TuningTertiaryValue = 1.25m;
+        viewModel.TuningSwarmWeight = 26;
+        viewModel.TuningNote = "Tighten momentum confirmations.";
+
+        await viewModel.StageTuningCandidateCommand.ExecuteAsync(null);
+        viewModel.EvaluateTuningCandidateCommand.Execute(null);
+
+        viewModel.CandidateProfileSummary.Should().Contain("64");
+        viewModel.CandidateProfileSummary.Should().Contain("weight 26");
+        viewModel.TuningProjectionSummary.Should().Contain("Projection:");
+        viewModel.TuningProjectionSummary.Should().Contain("bucket-based projection");
+    }
+
+    [Fact]
+    public async Task PromoteTuningCandidateCommand_ShouldUpdateActiveProfileSummary()
+    {
+        var userPromptService = Substitute.For<IUserPromptService>();
+        userPromptService.Confirm(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        var viewModel = CreateViewModel(userPromptService: userPromptService);
+
+        viewModel.SelectedTuningStrategy = "Momentum";
+        viewModel.TuningPrimaryValue = 66m;
+        viewModel.TuningSecondaryValue = 26m;
+        viewModel.TuningTertiaryValue = 1.30m;
+        viewModel.TuningSwarmWeight = 29;
+        viewModel.TuningNote = "Promote stricter momentum filter.";
+
+        await viewModel.PromoteTuningCandidateCommand.ExecuteAsync(null);
+
+        viewModel.ActiveProfileSummary.Should().Contain("66");
+        viewModel.ActiveProfileSummary.Should().Contain("weight 29");
+        viewModel.TuningPromotionSummary.Should().Contain("promoted");
+        userPromptService.Received().Confirm(Arg.Any<string>(), Arg.Any<string>());
+    }
+
+    [Fact]
+    public async Task RollbackTuningPromotionCommand_ShouldRestorePreviousProfile()
+    {
+        var userPromptService = Substitute.For<IUserPromptService>();
+        userPromptService.Confirm(Arg.Any<string>(), Arg.Any<string>()).Returns(true);
+        var viewModel = CreateViewModel(userPromptService: userPromptService);
+
+        viewModel.SelectedTuningStrategy = "Momentum";
+        viewModel.TuningPrimaryValue = 66m;
+        viewModel.TuningSecondaryValue = 26m;
+        viewModel.TuningTertiaryValue = 1.30m;
+        viewModel.TuningSwarmWeight = 29;
+
+        await viewModel.PromoteTuningCandidateCommand.ExecuteAsync(null);
+        viewModel.ActiveProfileSummary.Should().Contain("66");
+
+        await viewModel.RollbackTuningPromotionCommand.ExecuteAsync(null);
+
+        viewModel.ActiveProfileSummary.Should().Contain("60");
+        viewModel.ActiveProfileSummary.Should().Contain("20");
+        viewModel.TuningRollbackSummary.Should().Contain("rolled back");
     }
 
     [Fact]
@@ -1493,7 +1700,10 @@ public class MainViewModelTests
         IAiAnalystService? aiAnalyst = null,
         ITradeRepository? tradeRepository = null,
         IStrategyHealthStore? strategyHealthStore = null,
-        ISignalRepository? signalRepository = null)
+        ISignalRepository? signalRepository = null,
+        IUserPromptService? userPromptService = null,
+        RiskAgent? riskAgent = null,
+        StrategyTuningService? strategyTuningService = null)
     {
         if (marketDataService == null)
         {
@@ -1552,6 +1762,7 @@ public class MainViewModelTests
 
         strategyHealthStore ??= Substitute.For<IStrategyHealthStore>();
         strategyHealthStore.LoadAsync().Returns(Task.FromResult<IReadOnlyList<StrategyHealthSnapshot>>(Array.Empty<StrategyHealthSnapshot>()));
+        strategyTuningService ??= new StrategyTuningService(new InMemoryStrategyTuningStateStore());
 
         // Moved up for BacktestEngineApp dependency
         // var agentCoordinator = ...;
@@ -1562,16 +1773,31 @@ public class MainViewModelTests
             aiAnalyst,
             Array.Empty<IAlertingService>(),
             backtestEngine,
-            new RiskAgent(Substitute.For<ILogger<RiskAgent>>()),
+            riskAgent ?? new RiskAgent(Substitute.For<ILogger<RiskAgent>>()),
             signalRepository,
             tradeRepository,
             new TradingLoopService(Substitute.For<ILogger<TradingLoopService>>()),
             strategyHealthStore,
+            strategyTuningService,
             agentCoordinator,
             new FocusedBacktestViewModel(agentCoordinator, marketDataService),
             Substitute.For<IWebVitalsService>(),
             enableBackgroundTimers: false,
-            enableAutomaticAnalysis: false);
+            enableAutomaticAnalysis: false,
+            userPromptService: userPromptService);
+    }
+
+    private sealed class InMemoryStrategyTuningStateStore : IStrategyTuningStateStore
+    {
+        private StrategyTuningState _state = StrategyTuningState.CreateDefault();
+
+        public Task<StrategyTuningState> LoadAsync() => Task.FromResult(_state.Clone());
+
+        public Task SaveAsync(StrategyTuningState state)
+        {
+            _state = state.Clone();
+            return Task.CompletedTask;
+        }
     }
 
     private static List<Candle> CreateCandles()

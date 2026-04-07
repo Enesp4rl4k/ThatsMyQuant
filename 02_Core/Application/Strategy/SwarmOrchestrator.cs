@@ -155,7 +155,7 @@ public class SwarmOrchestrator : IRequestHandler<SwarmNegotiationRequest, SwarmC
         
         // In a real HFT system, this would also call a 'CancelAllOrders' command to the exchange.
         // For now, we arm the RiskAgent's kill switch as a secondary safety layer.
-        _riskAgent.ArmKillSwitch("Global Orchestration Failure Threshold Reached (3 Strikes).");
+        _riskAgent.ArmSoftPause("Global Orchestration Failure Threshold Reached (3 Strikes).");
     }
 
     private RiskParameters ResolveRegimeAdjustedRisk(RiskParameters current, MarketRegimeDetector.RegimeResult regime)

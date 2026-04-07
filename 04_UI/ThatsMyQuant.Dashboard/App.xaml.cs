@@ -1,75 +1,157 @@
+using System.IO;
+using System.Net.Http;
 using System.Windows;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using ThatsMyQuant.Dashboard.ViewModels;
-using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
-using ThatsMyQuant.Contracts.Interfaces;
-using ThatsMyQuant.Infrastructure.Services;
-using ThatsMyQuant.Infrastructure.Ai;
+using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
-using MediatR;
-using ThatsMyQuant.Contracts.Commands;
-
-using Microsoft.Extensions.Logging;
-using ThatsMyQuant.Application.Strategy;
 using Microsoft.SemanticKernel.Connectors.Google;
-using Microsoft.EntityFrameworkCore;
-using ThatsMyQuant.Application.Security;
-using ThatsMyQuant.Dashboard.Services;
 using ThatsMyQuant.Application.Common;
+using ThatsMyQuant.Application.Security;
+using ThatsMyQuant.Application.Strategy;
+using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Dashboard.Auth;
+using ThatsMyQuant.Dashboard.Services;
+using ThatsMyQuant.Dashboard.ViewModels;
+using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
 using ThatsMyQuant.Infrastructure;
+using ThatsMyQuant.Infrastructure.Ai;
+using ThatsMyQuant.Infrastructure.Persistence;
+using ThatsMyQuant.Infrastructure.Services;
 
 namespace ThatsMyQuant.Dashboard;
 
 public partial class App : System.Windows.Application
 {
     public static IServiceProvider? ServiceProvider { get; private set; }
+    private static readonly string CrashLogPath = Path.Combine(AppContext.BaseDirectory, "dashboard-crash.log");
+
+    private static IConfiguration BuildRuntimeConfiguration()
+        => new ConfigurationBuilder()
+            .AddJsonFile("appsettings.json", optional: true)
+            .AddEnvironmentVariables()
+            .Build();
 
     protected override async void OnStartup(StartupEventArgs e)
     {
-        ShutdownMode = ShutdownMode.OnExplicitShutdown;
-        var services = new ServiceCollection();
-        ConfigureServices(services);
-        ServiceProvider = services.BuildServiceProvider();
-        await EnsureDatabaseReadyAsync();
-
-        var loginWindow = new LoginWindow();
-        if (loginWindow.ShowDialog() == true)
+        try
         {
-            var mainWindow = ServiceProvider.GetRequiredService<MainWindow>();
+            RegisterGlobalExceptionHandlers();
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+
+            var services = new ServiceCollection();
+            ConfigureServices(services);
+            ServiceProvider = services.BuildServiceProvider();
+            await EnsureDatabaseReadyAsync();
+
+            var loggedIn = await RunLoginFlowAsync();
+            if (!loggedIn)
+            {
+                Shutdown();
+                return;
+            }
+
+            var config = BuildRuntimeConfiguration();
+            var auditLogger = ServiceProvider.GetRequiredService<IAuditLogger>();
+            Func<Task<bool>> reLoginCallback = RunLoginFlowAsync;
+            var idleTimeoutService = IdleTimeoutService.FromConfiguration(config, auditLogger, reLoginCallback);
+
+            var mainViewModel = ServiceProvider.GetRequiredService<MainViewModel>();
+            idleTimeoutService.Attach(mainViewModel);
+
+            var mainWindow = new MainWindow(mainViewModel, idleTimeoutService);
             MainWindow = mainWindow;
+
+            mainViewModel.LogoutRequested += async (_, _) =>
+            {
+                mainWindow.Hide();
+                var reLoggedIn = await RunLoginFlowAsync();
+                if (reLoggedIn)
+                {
+                    mainWindow.Show();
+                }
+                else
+                {
+                    Shutdown();
+                }
+            };
+
             ShutdownMode = ShutdownMode.OnMainWindowClose;
             mainWindow.Show();
+            base.OnStartup(e);
         }
-        else
+        catch (Exception ex)
         {
+            WriteCrashLog("Startup failure", ex);
+            MessageBox.Show(
+                $"Dashboard startup failed.\n\n{ex.Message}\n\nDetails were written to:\n{CrashLogPath}",
+                "ThatsMyQuant Dashboard",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
             Shutdown();
         }
+    }
 
-        base.OnStartup(e);
+    private async Task<bool> RunLoginFlowAsync()
+    {
+        var result = false;
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            var loginWindow = new LoginWindow();
+            result = loginWindow.ShowDialog() == true;
+        });
+        return result;
     }
 
     private async Task EnsureDatabaseReadyAsync()
     {
-        using var scope = ServiceProvider?.CreateScope();
-        var db = scope?.ServiceProvider.GetService<ThatsMyQuant.Infrastructure.Persistence.QuantDbContext>();
-        if (db != null)
+        if (ServiceProvider is null)
         {
-            await db.Database.EnsureCreatedAsync();
-            
-            var portfolioCache = scope?.ServiceProvider.GetService<IPortfolioStateCache>();
-            if (portfolioCache != null) await portfolioCache.InitializeAsync();
+            return;
+        }
+
+        using var scope = ServiceProvider.CreateScope();
+        var db = scope.ServiceProvider.GetService<QuantDbContext>();
+        if (db is null)
+        {
+            return;
+        }
+
+        var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+        var startupLogger = loggerFactory.CreateLogger("Dashboard.Startup");
+        await SqliteCompatibilityBootstrapper.EnsureCompatibleSchemaAsync(db, BuildRuntimeConfiguration(), startupLogger);
+
+        var authService = scope.ServiceProvider.GetService<IUserAuthService>();
+        if (authService is not null)
+        {
+            await authService.SeedAsync();
+        }
+
+        var portfolioCache = scope.ServiceProvider.GetService<IPortfolioStateCache>();
+        if (portfolioCache is not null)
+        {
+            await portfolioCache.InitializeAsync();
+        }
+
+        var strategyTuning = scope.ServiceProvider.GetService<StrategyTuningService>();
+        if (strategyTuning is not null)
+        {
+            await strategyTuning.InitializeAsync();
         }
     }
 
     private void ConfigureServices(IServiceCollection services)
     {
         var geminiApiKey = Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY");
+        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Mock";
+        var runtimeConfiguration = BuildRuntimeConfiguration();
 
-        // Core Microservice Logic
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
 
-        // HttpClient for Yahoo Finance
         services.AddHttpClient("Yahoo", client =>
         {
             client.DefaultRequestHeaders.Add("User-Agent",
@@ -81,18 +163,20 @@ public partial class App : System.Windows.Application
         {
             client.Timeout = TimeSpan.FromSeconds(15);
         });
+        services.AddHttpClient("OKX", client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(15);
+        });
 
-        // BorsaMarketDataService is the automatic fallback when Yahoo is unavailable
         services.AddSingleton<BorsaMarketDataService>();
-        services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
+        services.AddSingleton<YahooFinanceMarketDataService>();
+        services.AddSingleton<IMarketDataService, ExchangeRoutedMarketDataService>();
         services.AddHttpClient<IAlertingService, TelegramAlertService>();
         services.AddHttpClient<IAlertingService, WebhookAlertService>();
         services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
         services.AddScoped<IAiAnalystService, AiAnalystService>();
-        // Exchange Service Integration
-        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Mock";
-        
-        if (exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) || 
+
+        if (exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
             exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase))
         {
             var binanceApiKey = Environment.GetEnvironmentVariable("TMQ_BINANCE_API_KEY");
@@ -100,13 +184,12 @@ public partial class App : System.Windows.Application
 
             if (!string.IsNullOrEmpty(binanceApiKey) && !string.IsNullOrEmpty(binanceApiSecret))
             {
-                // Institutional Grade: Vault keys in HSM immediately
                 var vault = new ApiVault();
                 vault.SecureInboundKey(binanceApiSecret);
-                
+
                 services.AddSingleton(vault);
                 services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
-                
+
                 var baseUrl = exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)
                     ? "https://testnet.binance.vision"
                     : "https://api.binance.com";
@@ -115,16 +198,41 @@ public partial class App : System.Windows.Application
                 {
                     client.BaseAddress = new Uri(baseUrl);
                     client.Timeout = TimeSpan.FromSeconds(15);
-                }).AddTypedClient<IExchangeService>((client, sp) => 
+                }).AddTypedClient<IExchangeService>((client, sp) =>
                     new BinanceExchangeService(
-                        client, 
-                        sp.GetRequiredService<IHardwareSecurityModule>(), 
-                        sp.GetRequiredService<ILogger<BinanceExchangeService>>(), 
+                        client,
+                        sp.GetRequiredService<IHardwareSecurityModule>(),
+                        sp.GetRequiredService<ILogger<BinanceExchangeService>>(),
                         binanceApiKey));
             }
             else
             {
-                // Fallback to Mock if keys are missing but mode is set
+                services.AddSingleton<IExchangeService, MockBrokerService>();
+            }
+        }
+        else if (exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase))
+        {
+            var okxApiKey = Environment.GetEnvironmentVariable("OKX__ApiKey") ?? Environment.GetEnvironmentVariable("OKX:ApiKey");
+            var okxPassphrase = Environment.GetEnvironmentVariable("OKX__Passphrase") ?? Environment.GetEnvironmentVariable("OKX:Passphrase");
+            var okxSecret = Environment.GetEnvironmentVariable("OKX__SecretKey") ?? Environment.GetEnvironmentVariable("OKX:SecretKey");
+
+            if (!string.IsNullOrWhiteSpace(okxApiKey) &&
+                !string.IsNullOrWhiteSpace(okxPassphrase) &&
+                !string.IsNullOrWhiteSpace(okxSecret))
+            {
+                var vault = new ApiVault();
+                vault.SecureInboundKey(okxSecret);
+                services.AddSingleton(vault);
+                services.AddSingleton<IExchangeService>(sp =>
+                    new OkxExecutionService(
+                        sp.GetRequiredService<ILogger<OkxExecutionService>>(),
+                        sp.GetRequiredService<IHttpClientFactory>().CreateClient("OKX"),
+                        runtimeConfiguration,
+                        sp.GetService<ISharedPortfolioStateManager>(),
+                        sp.GetRequiredService<ApiVault>()));
+            }
+            else
+            {
                 services.AddSingleton<IExchangeService, MockBrokerService>();
             }
         }
@@ -132,49 +240,46 @@ public partial class App : System.Windows.Application
         {
             services.AddSingleton<IExchangeService, MockBrokerService>();
         }
+
         services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
-        services.AddTransient<ThatsMyQuant.Application.Strategy.BacktestEngineApp>();
-        
-        // Database & Repositories
-        services.AddDbContext<ThatsMyQuant.Infrastructure.Persistence.QuantDbContext>(options =>
+        services.AddTransient<BacktestEngineApp>();
+
+        services.AddDbContext<QuantDbContext>(options =>
         {
             options.UseLazyLoadingProxies();
-            options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared");
+            options.UseConfiguredQuantDatabase(runtimeConfiguration);
         });
-        services.AddScoped<ISignalRepository, ThatsMyQuant.Infrastructure.Repositories.SignalRepository>();
+        services.AddScoped<ISignalRepository, Infrastructure.Repositories.SignalRepository>();
         services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
-        services.AddScoped<ITradeRepository, ThatsMyQuant.Infrastructure.Repositories.TradeRepository>();
+        services.AddScoped<ITradeRepository, Infrastructure.Repositories.TradeRepository>();
 
-        // Swarm Intelligence & 5-Tier Agent Hierarchy
         services.AddThatsMyQuantApplication();
         services.AddThatsMyQuantInfrastructure();
-        
+
         services.AddSingleton<NewsFeedSim>();
         services.AddScoped<ISentimentService, GeminiSentimentService>();
-        
-        // Dashboard Infrastructure
+
         services.AddSingleton<ITradingLoopService, TradingLoopService>();
         services.AddSingleton<IStrategyHealthStore, JsonStrategyHealthStore>();
         services.AddSingleton<BinanceExchangeInfoProvider>();
         services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
         services.AddSingleton<IWebVitalsService, WebVitalsService>();
+        services.AddSingleton<IUserPromptService, MessageBoxUserPromptService>();
+        services.AddSingleton<IAuditLogger, ConsoleAuditLogger>();
 
-        // Phase 8: HFT & Quantitative Foundation
         services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
-        services.AddSingleton<ThatsMyQuant.Application.Strategy.TickPipeline>();
-        services.AddSingleton(sp => new ThatsMyQuant.Application.Strategy.MicrosecondPredictionEngine(
-            "models/price_prediction.onnx", // Placeholder path
-            sp.GetRequiredService<ILogger<ThatsMyQuant.Application.Strategy.MicrosecondPredictionEngine>>()));
+        services.AddSingleton<TickPipeline>();
+        services.AddSingleton(sp => new MicrosecondPredictionEngine(
+            "models/price_prediction.onnx",
+            sp.GetRequiredService<ILogger<MicrosecondPredictionEngine>>()));
 
-        // FOCUSED BACKTEST (UI Flow)
         services.AddSingleton<FocusedBacktestViewModel>();
         services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<SentimentAgent>());
 
-        // AI (The Brain)
         if (!string.IsNullOrWhiteSpace(geminiApiKey))
         {
             services.AddKernel()
-                    .AddGoogleAIGeminiChatCompletion("gemini-pro", geminiApiKey);
+                .AddGoogleAIGeminiChatCompletion("gemini-pro", geminiApiKey);
         }
         else
         {
@@ -182,10 +287,49 @@ public partial class App : System.Windows.Application
             services.AddSingleton<IChatCompletionService, MockChatCompletionService>();
         }
 
-        // UI
-        services.AddTransient<MainWindow>();
         services.AddTransient<MainViewModel>();
-        
+        services.AddScoped<IUserAuthService, UserAuthService>();
         services.AddLogging();
+    }
+
+    private void RegisterGlobalExceptionHandlers()
+    {
+        DispatcherUnhandledException += (_, args) =>
+        {
+            WriteCrashLog("DispatcherUnhandledException", args.Exception);
+            MessageBox.Show(
+                $"Dashboard hit an unexpected error.\n\n{args.Exception.Message}\n\nDetails were written to:\n{CrashLogPath}",
+                "ThatsMyQuant Dashboard",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            args.Handled = true;
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            if (args.ExceptionObject is Exception ex)
+            {
+                WriteCrashLog("AppDomainUnhandledException", ex);
+            }
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            WriteCrashLog("UnobservedTaskException", args.Exception);
+            args.SetObserved();
+        };
+    }
+
+    private static void WriteCrashLog(string source, Exception ex)
+    {
+        try
+        {
+            var lines =
+                $"[{DateTime.UtcNow:O}] {source}{Environment.NewLine}{ex}{Environment.NewLine}{new string('-', 80)}{Environment.NewLine}";
+            File.AppendAllText(CrashLogPath, lines);
+        }
+        catch
+        {
+        }
     }
 }

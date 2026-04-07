@@ -9,7 +9,6 @@
              Background="#0B0E13">
     <Grid>
         <wv2:WebView2 Name="ReactWebView" 
-                      Source="http://localhost:5173" 
                       DefaultBackgroundColor="#0B0E13"/>
         
         <!-- Loading Overlay -->
@@ -68,6 +67,34 @@
                            FontWeight="Bold"
                            Margin="0,8,0,0"
                            HorizontalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+
+        <Border Name="FallbackOverlay" Background="#05070A" Visibility="Collapsed">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="440">
+                <TextBlock Text="ANALYTICS PANEL OFFLINE" Foreground="#F85149" FontSize="16" FontWeight="Black" HorizontalAlignment="Center" />
+                <TextBlock Name="FallbackMessageText"
+                           Text="The embedded analytics surface could not be reached."
+                           Foreground="{StaticResource TextMain}"
+                           FontSize="11"
+                           Margin="0,10,0,6"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap" />
+                <TextBlock Name="FallbackSourceText"
+                           Text="Set TMQ_MARKET_ANALYTICS_URL or publish the web bundle before launching the dashboard."
+                           Foreground="{StaticResource TextMuted}"
+                           FontSize="10"
+                           Margin="0,0,0,16"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap" />
+                <Button Content="RETRY ANALYTICS PANE"
+                        Click="RetryButton_Click"
+                        Background="{StaticResource Accent}"
+                        Foreground="White"
+                        BorderThickness="0"
+                        Padding="18,10"
+                        FontSize="10"
+                        FontWeight="Black" />
             </StackPanel>
         </Border>
     </Grid>

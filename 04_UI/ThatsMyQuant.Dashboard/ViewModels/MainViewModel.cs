@@ -4,6 +4,7 @@ using System.IO;
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Windows.Media;
 using ThatsMyQuant.Dashboard.Services;
@@ -14,6 +15,7 @@ using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Application.MachineLearning;
+using ThatsMyQuant.Dashboard.Auth;
 
 namespace ThatsMyQuant.Dashboard.ViewModels;
 
@@ -30,8 +32,11 @@ public partial class MainViewModel : ObservableObject
     private readonly ITradeRepository _tradeRepository;
     private readonly ITradingLoopService _tradingLoopService;
     private readonly IStrategyHealthStore _strategyHealthStore;
+    private readonly StrategyTuningService _strategyTuningService;
     private readonly IAgentCoordinator _agentCoordinator;
+    private readonly IUserPromptService _userPromptService;
     private readonly bool _enableAutomaticAnalysis;
+    private readonly IAuditLogger? _auditLogger;
 
     // --- Sub-ViewModels ---
     [ObservableProperty] private MarketOverviewViewModel _marketOverview = new();
@@ -40,6 +45,12 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private PortfolioViewModel _portfolioView = new();
     [ObservableProperty] private StrategyStudioViewModel _studio = new();
     [ObservableProperty] private FocusedBacktestViewModel _focusBacktest;
+    [ObservableProperty] private ExchangeSettingsViewModel _exchangeSettings = new();
+
+    // --- Auth / Role ---
+    public bool IsAdminUser => CurrentSession.Current?.Role == Role.Admin;
+    public bool CanExecuteTrades => CurrentSession.Current?.Role is Role.Operator or Role.Admin;
+    public UserManagementViewModel? UserManagement { get; private set; }
 
     // --- KPI Cards ---
     [ObservableProperty] private string _status = "READY";
@@ -104,6 +115,14 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private decimal _riskRewardRatio = 0;
     [ObservableProperty] private bool _isKillSwitchArmed = false;
     [ObservableProperty] private string _riskGuardStatus = "Armed: No";
+    [ObservableProperty] private string _riskGovernorStatus = "Governor idle";
+    [ObservableProperty] private Brush _riskGovernorStatusColor = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
+    [ObservableProperty] private string _riskGovernorReason = "Risk telemetry is waiting for the next portfolio refresh.";
+    [ObservableProperty] private string _riskGovernorKillSwitchSummary = "Soft pause clear.";
+    [ObservableProperty] private string _riskGovernorHeatSummary = "Heat telemetry unavailable.";
+    [ObservableProperty] private string _riskGovernorDrawdownSummary = "Drawdown telemetry unavailable.";
+    [ObservableProperty] private string _riskGovernorExecutionSummary = "Execution telemetry unavailable.";
+    [ObservableProperty] private string _riskGovernorCompressionSummary = "Adaptive sizing is neutral.";
     [ObservableProperty] private string _listenerHealth = "Unknown";
     [ObservableProperty] private string _marketDataHealth = "Unknown";
     [ObservableProperty] private string _aiServiceHealth = "Unknown";
@@ -128,25 +147,31 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty] private string _currentTime = DateTime.Now.ToString("HH:mm:ss");
     [ObservableProperty] private string _currentDate = DateTime.Now.ToString("dd MMMM, dddd");
-    
+
+    // --- Watchlist Sync State (Requirements: 3.2, 3.6) ---
+    [ObservableProperty] private bool _isSyncingWatchlist = false;
+    [ObservableProperty] private string _syncStatusMessage = string.Empty;
+
     // --- Collections ---
     public ObservableCollection<WatchlistItemViewModel> WatchlistItems { get; } = new();
 
     // --- collections ---
 
-    // --- Charting ---
-    [ObservableProperty] private System.Windows.Media.PointCollection _chartPoints = new();
-    public ObservableCollection<CandleViewModel> ChartCandles { get; } = new();
-    public ObservableCollection<BacktestMarker> BacktestMarkers { get; } = new();
-    public ObservableCollection<ReasoningOverlayViewModel> ReasoningOverlays { get; } = new();
-    public ObservableCollection<ChartAxisLabel> PriceScaleLabels { get; } = new();
-    public ObservableCollection<ChartAxisLabel> TimeScaleLabels { get; } = new();
-    public ObservableCollection<ChartGridLineViewModel> HorizontalGridLines { get; } = new();
-    public ObservableCollection<ChartGridLineViewModel> VerticalGridLines { get; } = new();
+    // --- Charting Proxies (Redirecting to MarketOverview) ---
+    public ObservableCollection<CandleViewModel> ChartCandles => MarketOverview.ChartCandles;
+    public ObservableCollection<BacktestMarker> BacktestMarkers => MarketOverview.BacktestMarkers;
+    public ObservableCollection<ReasoningOverlayViewModel> ReasoningOverlays => MarketOverview.ReasoningOverlays;
+    public ObservableCollection<SubViewModels.ChartAxisLabel> PriceScaleLabels => MarketOverview.PriceScaleLabels;
+    public ObservableCollection<SubViewModels.ChartAxisLabel> TimeScaleLabels => MarketOverview.TimeScaleLabels;
+    public ObservableCollection<ChartGridLineViewModel> HorizontalGridLines => MarketOverview.HorizontalGridLines;
+    public ObservableCollection<ChartGridLineViewModel> VerticalGridLines => MarketOverview.VerticalGridLines;
+    public PointCollection ChartPoints { get => MarketOverview.ChartPoints; set => MarketOverview.ChartPoints = value; }
+
     public ObservableCollection<ChartAxisLabel> PortfolioXAxisLabels { get; } = new();
     public ObservableCollection<ChartAxisLabel> PortfolioYAxisLabels { get; } = new();
 
     public ObservableCollection<IndicatorDetailViewModel> IndicatorDetails { get; } = new();
+
     public ObservableCollection<LogicTreeNode> LogicTree { get; } = new();
     public ObservableCollection<ChecklistItemViewModel> TimeframeConfluences { get; } = new();
     public ObservableCollection<ChecklistItemViewModel> DeploymentChecklist { get; } = new();
@@ -209,6 +234,24 @@ public partial class MainViewModel : ObservableObject
     public string HftWorkspaceHeadline { get => Telemetry.HftWorkspaceHeadline; set => Telemetry.HftWorkspaceHeadline = value; }
     public string TradeReadiness { get => AiAnalystView.TradeReadiness; set => AiAnalystView.TradeReadiness = value; }
     public string BotStatusSummary { get => MarketOverview.BotStatusSummary; set => MarketOverview.BotStatusSummary = value; }
+    public Brush ListenerHealthColor => ResolveServiceHealthBrush(ListenerHealth);
+    public Brush MarketDataHealthColor => ResolveServiceHealthBrush(MarketDataHealth);
+    public Brush AiServiceHealthColor => ResolveServiceHealthBrush(AiServiceHealth);
+    public Brush QueueHealthColor => ResolveQueueHealthBrush(QueueHealth);
+    public bool IsSoftPauseArmed
+    {
+        get => IsKillSwitchArmed;
+        set => IsKillSwitchArmed = value;
+    }
+
+    public string RiskGovernorSoftPauseSummary
+    {
+        get => RiskGovernorKillSwitchSummary;
+        set => RiskGovernorKillSwitchSummary = value;
+    }
+
+    public IRelayCommand ResetSoftPauseCommand => ResetKillSwitchCommand;
+    public Brush RiskGuardStatusColor => IsSoftPauseArmed ? RedBrush : GreenBrush;
     
     public string SelectedSymbol
     {
@@ -217,6 +260,7 @@ public partial class MainViewModel : ObservableObject
         {
             MarketOverview.SelectedSymbol = value;
             UpdatePlainEnglishTranslation();
+            RefreshRiskPanel();
         }
     }
 
@@ -248,9 +292,32 @@ public partial class MainViewModel : ObservableObject
             Studio.SelectedRiskProfile = value;
             UpdatePlainEnglishTranslation();
             UpdateBotLaunchSummary();
+            RefreshRiskPanel();
         }
     }
     public string StrategyPrompt { get => Studio.StrategyPrompt; set => Studio.StrategyPrompt = value; }
+    public string SelectedTuningStrategy
+    {
+        get => Studio.SelectedTuningStrategy;
+        set
+        {
+            Studio.SelectedTuningStrategy = value;
+            RefreshStrategyTuningStudio();
+        }
+    }
+    public string TuningStageSummary { get => Studio.TuningStageSummary; set => Studio.TuningStageSummary = value; }
+    public string TuningHealthSummary { get => Studio.TuningHealthSummary; set => Studio.TuningHealthSummary = value; }
+    public string TuningProjectionSummary { get => Studio.TuningProjectionSummary; set => Studio.TuningProjectionSummary = value; }
+    public string TuningPromotionSummary { get => Studio.TuningPromotionSummary; set => Studio.TuningPromotionSummary = value; }
+    public string TuningRollbackSummary { get => Studio.TuningRollbackSummary; set => Studio.TuningRollbackSummary = value; }
+    public string ActiveProfileSummary { get => Studio.ActiveProfileSummary; set => Studio.ActiveProfileSummary = value; }
+    public string CandidateProfileSummary { get => Studio.CandidateProfileSummary; set => Studio.CandidateProfileSummary = value; }
+    public decimal TuningPrimaryValue { get => Studio.TuningPrimaryValue; set => Studio.TuningPrimaryValue = value; }
+    public decimal TuningSecondaryValue { get => Studio.TuningSecondaryValue; set => Studio.TuningSecondaryValue = value; }
+    public decimal TuningTertiaryValue { get => Studio.TuningTertiaryValue; set => Studio.TuningTertiaryValue = value; }
+    public int TuningSwarmWeight { get => Studio.TuningSwarmWeight; set => Studio.TuningSwarmWeight = value; }
+    public string TuningNote { get => Studio.TuningNote; set => Studio.TuningNote = value; }
+    public bool CanRollbackTuning { get => Studio.CanRollbackTuning; set => Studio.CanRollbackTuning = value; }
     
     public string ConfigValidationStatus { get => MarketOverview.ConfigValidationStatus; set => MarketOverview.ConfigValidationStatus = value; }
     public string ConfigValidationSummary { get => MarketOverview.ConfigValidationSummary; set => MarketOverview.ConfigValidationSummary = value; }
@@ -261,6 +328,8 @@ public partial class MainViewModel : ObservableObject
         set
         {
             Studio.SelectedBotStrategy = value;
+            Studio.SelectedTuningStrategy = ResolveTuningStrategyKey(value);
+            RefreshStrategyTuningStudio();
             UpdateBotLaunchSummary();
         }
     }
@@ -370,6 +439,11 @@ public partial class MainViewModel : ObservableObject
     private readonly List<Trade> _tradeCache = new();
     private readonly List<Signal> _signalCache = new();
     private readonly List<StrategyHealthSnapshot> _persistedStrategyHealth = new();
+
+    // Background timers — promoted to fields so StopBackgroundTimers() can reach them (Task 5 / Req 5.2)
+    private System.Windows.Threading.DispatcherTimer? _clockTimer;
+    private System.Windows.Threading.DispatcherTimer? _queueTimer;
+    private string _lastTuningStrategyKey = string.Empty;
     private readonly ModelGovernanceService _modelGovernance = new();
 
     // Zen Mode
@@ -384,6 +458,50 @@ public partial class MainViewModel : ObservableObject
         AddSystemLog($"UI: Zen Mode {(IsZenMode ? "Activated" : "Deactivated")}");
     }
 
+    /// <summary>
+    /// Stops the clock and queue background timers and the trading loop service.
+    /// Called by <see cref="Services.IdleTimeoutService"/> during idle-logout and
+    /// by <c>LogoutCommand</c> during explicit logout.
+    /// Requirements: 5.2, 1.3
+    /// </summary>
+    public void StopBackgroundTimers()
+    {
+        _clockTimer?.Stop();
+        _queueTimer?.Stop();
+        _tradingLoopService.Stop();
+    }
+
+    /// <summary>
+    /// Raised after <see cref="CurrentSession.Clear()"/> so <c>App.xaml.cs</c> can show
+    /// <c>LoginWindow</c>. Requirements: 1.4
+    /// </summary>
+    public event EventHandler? LogoutRequested;
+
+    /// <summary>
+    /// Explicit logout command. Writes audit log, stops timers, clears session, raises
+    /// <see cref="LogoutRequested"/>. Guard: no-op when session is already null (Req 7.7).
+    /// Requirements: 1.1, 1.2, 1.3, 6.1, 6.3, 7.1, 7.7
+    /// </summary>
+    [RelayCommand]
+    private async Task Logout()
+    {
+        var user = CurrentSession.Current;
+        if (user is null)
+            return;
+
+        // Capture username/role BEFORE clearing (Req 6.1)
+        var username  = user.Username ?? "Unknown";
+        var role      = user.Role.ToString();
+        var timestamp = DateTime.UtcNow.ToString("o");
+
+        if (_auditLogger is not null)
+            await _auditLogger.LogSecurityEventAsync(username, role, "ExplicitLogout", timestamp);
+
+        StopBackgroundTimers();          // Req 1.3
+        CurrentSession.Clear();          // Req 1.2
+        LogoutRequested?.Invoke(this, EventArgs.Empty); // Req 1.4
+    }
+
     public MainViewModel(
         IMarketDataService marketDataService, 
         ITechnicalAnalysisService technicalAnalysis,
@@ -395,11 +513,14 @@ public partial class MainViewModel : ObservableObject
         ITradeRepository tradeRepository,
         ITradingLoopService tradingLoopService,
         IStrategyHealthStore strategyHealthStore,
+        StrategyTuningService strategyTuningService,
         IAgentCoordinator agentCoordinator,
         FocusedBacktestViewModel focusBacktest,
         IWebVitalsService webVitalsService, // New
         bool enableBackgroundTimers = true,
-        bool enableAutomaticAnalysis = true)
+        bool enableAutomaticAnalysis = true,
+        IUserPromptService? userPromptService = null,
+        IAuditLogger? auditLogger = null)
     {
         _marketDataService = marketDataService;
         _technicalAnalysis = technicalAnalysis;
@@ -411,9 +532,20 @@ public partial class MainViewModel : ObservableObject
         _tradeRepository = tradeRepository;
         _tradingLoopService = tradingLoopService;
         _strategyHealthStore = strategyHealthStore;
+        _strategyTuningService = strategyTuningService;
         _agentCoordinator = agentCoordinator;
+        _userPromptService = userPromptService ?? new MessageBoxUserPromptService();
         _focusBacktest = focusBacktest;
         _enableAutomaticAnalysis = enableAutomaticAnalysis;
+        _auditLogger = auditLogger;
+
+        // Resolve UserManagementViewModel via App.ServiceProvider if available
+        if (App.ServiceProvider != null)
+        {
+            var authSvc = App.ServiceProvider.GetService(typeof(IUserAuthService)) as IUserAuthService;
+            if (authSvc != null)
+                UserManagement = new UserManagementViewModel(authSvc);
+        }
 
         // Start Web Vitals Synchronization
         _ = Task.Run(async () => {
@@ -448,25 +580,26 @@ public partial class MainViewModel : ObservableObject
         UpdateBotLaunchSummary();
         UpdatePortfolioGrowth();
         UpdateHftWorkspace();
+        RefreshStrategyTuningStudio(syncCandidateFields: true);
 
         if (enableBackgroundTimers)
         {
-            var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
-            timer.Tick += (s, e) =>
+            _clockTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+            _clockTimer.Tick += (s, e) =>
             {
                 CurrentTime = DateTime.Now.ToString("HH:mm:ss");
                 CurrentDate = DateTime.Now.ToString("d MMMM, dddd");
                 UpdateSessionContext();
             };
-            timer.Start();
+            _clockTimer.Start();
 
-            var queueTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
-            queueTimer.Tick += async (s, e) =>
+            _queueTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            _queueTimer.Tick += async (s, e) =>
             {
                 await RefreshQueueStats();
                 await RefreshStrategyLeaderboard();
             };
-            queueTimer.Start();
+            _queueTimer.Start();
         }
 
         UpdatePlainEnglishTranslation();
@@ -495,6 +628,11 @@ public partial class MainViewModel : ObservableObject
                 UpdateBotLaunchSummary();
                 EvaluateStrategyThrottle();
             }
+
+            if (e.PropertyName == nameof(Studio.SelectedTuningStrategy))
+            {
+                RefreshStrategyTuningStudio();
+            }
         };
 
         PortfolioView.PropertyChanged += (s, e) =>
@@ -510,6 +648,7 @@ public partial class MainViewModel : ObservableObject
     {
         try
         {
+            await _strategyTuningService.InitializeAsync();
             var snapshots = await _strategyHealthStore.LoadAsync();
             InvokeOnUi(() =>
             {
@@ -517,6 +656,7 @@ public partial class MainViewModel : ObservableObject
                 _persistedStrategyHealth.AddRange(snapshots);
                 RefreshDisabledStrategiesFromHealth();
                 RefreshCapitalAllocation();
+                RefreshStrategyTuningStudio();
                 AddSystemLog("Persistence: Strategy health snapshots restored.");
                 RefreshHeatmap();
             });
@@ -525,220 +665,6 @@ public partial class MainViewModel : ObservableObject
         {
             AddSystemLog($"Persistence Error: {ex.Message}");
         }
-    }
-
-    private async Task RefreshQueueStats()
-    {
-        try
-        {
-            var counts = await _signalRepository.GetStatusCountsAsync();
-            
-            InvokeOnUi(() => 
-            {
-                QueuedCount = counts.GetValueOrDefault(TradeStatus.Queued, 0);
-                ExecutedCount = counts.GetValueOrDefault(TradeStatus.Executed, 0);
-                FailedCount = counts.GetValueOrDefault(TradeStatus.Failed, 0);
-                DeadLetterCount = counts.GetValueOrDefault(TradeStatus.DeadLetter, 0);
-
-                if (DeadLetterCount > 0) QueueHealth = "Critical (Dead-Letter)";
-                else if (QueuedCount > 5) QueueHealth = "Congested";
-                else QueueHealth = "Optimal";
-
-                UpdateHftWorkspace();
-            });
-        }
-        catch (Exception ex)
-        {
-            AddSystemLog($"Queue Telemetry Error: {ex.Message}");
-        }
-    }
-
-    private async Task RefreshStrategyLeaderboard()
-    {
-        try
-        {
-            var recentTrades = await _tradeRepository.GetAllAsync(250);
-            var recentSignals = await _signalRepository.GetRecentAsync(250);
-            
-            InvokeOnUi(() => 
-            {
-                StrategyLeaderboard.Clear();
-
-                var tradeRows = recentTrades
-                    .Where(t => t.Status == TradeStatus.Executed || t.Status == TradeStatus.Failed)
-                    .ToList();
-
-                if (tradeRows.Count == 0)
-                {
-                    HandleEmptyLeaderboard();
-                    return;
-                }
-
-                _tradeCache.Clear();
-                _tradeCache.AddRange(recentTrades);
-                _signalCache.Clear();
-                _signalCache.AddRange(recentSignals);
-                RefreshTradeJournalFromTrades(recentTrades);
-                RefreshOpenPositionsFromTrades(recentTrades);
-                UpdatePortfolioGrowth();
-
-                var rows = tradeRows
-                    .GroupBy(t => new StrategyBucketKey(
-                        string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                        string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                        string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                        ResolveSessionBucketForTrade(t)))
-                    .Select(g => ProjectLeaderboardRow(g))
-                    .OrderByDescending(r => r.ProfitFactor)
-                    .ThenByDescending(r => r.TotalPnL)
-                    .Take(6)
-                    .ToList();
-
-                foreach (var row in rows) StrategyLeaderboard.Add(row);
-
-                UpdateStrategyHealthSnapshots(rows);
-                
-                _ = PersistStrategyHealth();
-
-                RefreshSessionPerformance(tradeRows);
-                RefreshEdgeAnalytics(tradeRows);
-                RefreshModelGovernanceAnalytics();
-                RefreshCapitalAllocation();
-
-                UpdateLeaderboardOverallStatus(rows, tradeRows);
-                EvaluateStrategyThrottle();
-                UpdateBotLaunchSummary();
-                UpdateSessionSummary();
-            });
-        }
-        catch (Exception ex)
-        {
-            HandleLeaderboardError(ex);
-        }
-    }
-
-    private void HandleEmptyLeaderboard()
-    {
-        StrategyLeaderboardStatus = "No executed trades yet.";
-        _tradeCache.Clear();
-        _signalCache.Clear();
-        RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
-        UpdatePortfolioGrowth();
-        RefreshEdgeAnalytics(Array.Empty<Trade>());
-        RefreshModelGovernanceAnalytics();
-        StrategyThrottleStatus = "Unrated";
-        StrategyThrottleReason = "No strategy bucket has enough trade history yet.";
-        StrategyThrottleColor = GrayBrush;
-        RefreshCapitalAllocation();
-    }
-
-    private void HandleLeaderboardError(Exception ex)
-    {
-        InvokeOnUi(() => 
-        {
-            StrategyLeaderboardStatus = "Strategy analytics unavailable.";
-            RefreshOpenPositionsFromTrades(Array.Empty<Trade>());
-            UpdatePortfolioGrowth();
-            RefreshSessionPerformance(Array.Empty<Trade>());
-            RefreshEdgeAnalytics(Array.Empty<Trade>());
-            RefreshModelGovernanceAnalytics();
-            RefreshDisabledStrategiesFromHealth();
-            RefreshCapitalAllocation();
-            StrategyThrottleStatus = "Unavailable";
-            StrategyThrottleReason = "Strategy throttling is waiting for analytics to recover.";
-            StrategyThrottleColor = OrangeBrush;
-            UpdateBotLaunchSummary();
-            AddSystemLog($"Strategy analytics error: {ex.Message}");
-        });
-    }
-
-    private StrategyLeaderboardRow ProjectLeaderboardRow(IGrouping<StrategyBucketKey, Trade> group)
-    {
-        var pnls = group.Select(CalculateTradePnL).ToList();
-        var wins = pnls.Count(p => p > 0);
-        var grossProfit = pnls.Where(p => p > 0).Sum();
-        var grossLoss = Math.Abs(pnls.Where(p => p < 0).Sum());
-        var (averageVenueBias, venueImpact, venueSummary, venueImpactColor) = BuildStrategyVenueImpact(group);
-        var (exactBucketImpact, exactBucketSummary, exactBucketImpactColor) = BuildExactBucketPressureDisplay(group);
-        var (concordanceImpact, concordanceSummary, concordanceImpactColor) = BuildConcordanceDisplay(exactBucketImpact, exactBucketSummary, averageVenueBias, venueSummary);
-
-        return new StrategyLeaderboardRow
-        {
-            StrategyTag = group.Key.StrategyTag, RegimeTag = group.Key.RegimeTag,
-            ExecutionMode = ResolveExecutionModeScope(group), PromotionStage = ResolvePromotionStageScope(group),
-            Trades = group.Count(), WinRate = group.Count() > 0 ? wins * 100.0 / group.Count() : 0,
-            TotalPnL = pnls.Sum(), ProfitFactor = (double)CalculateProfitFactor(grossProfit, grossLoss),
-            AverageVenueExecutionBias = averageVenueBias, VenuePromotionImpact = venueImpact, VenueExecutionSummary = venueSummary,
-            ExactBucketPromotionImpact = exactBucketImpact, ExactBucketSummary = exactBucketSummary,
-            ConcordanceImpact = concordanceImpact, ConcordanceSummary = concordanceSummary,
-            ExactBucketPromotionImpactColor = exactBucketImpactColor, VenuePromotionImpactColor = venueImpactColor,
-            ConcordanceImpactColor = concordanceImpactColor, PnlColor = pnls.Sum() >= 0 ? GreenBrush : RedBrush
-        };
-    }
-
-    private void UpdateStrategyHealthSnapshots(List<StrategyLeaderboardRow> rows)
-    {
-        var strategyOverrides = _persistedStrategyHealth
-            .GroupBy(snapshot => NormalizeStrategyKey(snapshot.StrategyTag))
-            .ToDictionary(group => group.Key, group => new { ManualDisabled = group.Any(item => item.ManuallyDisabled), ForceEnabled = group.Any(item => item.ForceEnabled) });
-
-        _persistedStrategyHealth.Clear();
-        foreach (var row in rows)
-        {
-            strategyOverrides.TryGetValue(NormalizeStrategyKey(row.StrategyTag), out var flags);
-            _persistedStrategyHealth.Add(new StrategyHealthSnapshot
-            {
-                StrategyTag = row.StrategyTag, RegimeTag = row.RegimeTag, Trades = row.Trades, WinRate = row.WinRate, ProfitFactor = row.ProfitFactor, TotalPnL = row.TotalPnL,
-                ManuallyDisabled = flags?.ManualDisabled ?? false, ForceEnabled = flags?.ForceEnabled ?? false, RecordedAtUtc = DateTime.UtcNow
-            });
-        }
-
-        foreach (var manualOnly in strategyOverrides.Where(pair => pair.Value.ManualDisabled || pair.Value.ForceEnabled).Where(pair => _persistedStrategyHealth.All(s => NormalizeStrategyKey(s.StrategyTag) != pair.Key)))
-        {
-            _persistedStrategyHealth.Add(new StrategyHealthSnapshot { StrategyTag = manualOnly.Key, RegimeTag = "ManualOverride", ManuallyDisabled = manualOnly.Value.ManualDisabled, ForceEnabled = manualOnly.Value.ForceEnabled, RecordedAtUtc = DateTime.UtcNow });
-        }
-    }
-
-    private void UpdateLeaderboardOverallStatus(List<StrategyLeaderboardRow> rows, List<Trade> tradeRows)
-    {
-        var dominantStage = rows.GroupBy(row => string.IsNullOrWhiteSpace(row.PromotionStage) ? "UNKNOWN" : row.PromotionStage).OrderByDescending(group => group.Count()).Select(group => group.Key).FirstOrDefault() ?? "UNKNOWN";
-        StrategyLeaderboardStatus = $"Tracking {rows.Count} strategy buckets from {tradeRows.Count} trades. Dominant ladder stage: {dominantStage}. {ResolveStoredPromotionStageContext(tradeRows, dominantStage)}. {MlRetrainingTriggerSummary}";
-    }
-
-    private void RefreshModelGovernanceAnalytics()
-    {
-        ModelPerformanceRows.Clear();
-
-        var snapshots = _modelGovernance.Analyze(_signalCache, _tradeCache);
-        foreach (var snapshot in snapshots.Take(6))
-        {
-            ModelPerformanceRows.Add(new ModelPerformanceRow
-            {
-                ModelVersion = snapshot.ModelVersion,
-                Signals = snapshot.SignalCount,
-                ClosedTrades = snapshot.ClosedTrades,
-                WinRate = snapshot.WinRate,
-                ExpectedValue = snapshot.ExpectedValue,
-                DriftRate = snapshot.DriftRate,
-                VetoRate = snapshot.VetoRate,
-                SizeTrimRate = snapshot.SizeTrimRate,
-                Summary = $"Signals {snapshot.SignalCount}, closed trades {snapshot.ClosedTrades}, drift {snapshot.DriftRate:F1}%, veto {snapshot.VetoRate:F1}%, size trim {snapshot.SizeTrimRate:F1}%, EV {snapshot.ExpectedValue:F2}.",
-                StatusColor = snapshot.VetoRate >= 15 || snapshot.DriftRate >= 35 ? RedBrush : snapshot.SizeTrimRate >= 15 ? OrangeBrush : GreenBrush
-            });
-        }
-
-        if (ModelPerformanceRows.Count == 0)
-        {
-            MlModelAnalyticsSummary = "Model governance is waiting for versioned signals.";
-            MlRetrainingTriggerSummary = "Retraining triggers are quiet because no model-version history exists yet.";
-            return;
-        }
-
-        var lead = ModelPerformanceRows[0];
-        MlModelAnalyticsSummary = $"Per-model analytics are tracking {ModelPerformanceRows.Count} versions. Lead model {lead.ModelVersion} shows WR {lead.WinRate:F1}%, EV {lead.ExpectedValue:F2}, drift {lead.DriftRate:F1}%, veto {lead.VetoRate:F1}% and size trim {lead.SizeTrimRate:F1}%.";
-
-        var trigger = _modelGovernance.EvaluateRetrainingNeed(_signalCache, _tradeCache);
-        MlRetrainingTriggerSummary = trigger.Summary;
     }
 
     private void RefreshSessionPerformance(IEnumerable<Trade> trades)
@@ -997,11 +923,7 @@ public partial class MainViewModel : ObservableObject
     private void PopulateEdgeOpportunities(IReadOnlyList<Trade> closedTrades)
     {
         var rows = closedTrades
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateSessionBucketKey)
             .Select(group =>
             {
                 var pnls = group.Select(CalculateTradePnL).ToList();
@@ -1096,11 +1018,7 @@ public partial class MainViewModel : ObservableObject
     private IEnumerable<Trade> ResolveWeakBucketDriftTrades(IReadOnlyList<Trade> closedTrades)
     {
         return closedTrades
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateCrossSessionBucketKey)
             .Where(g => IsWeakBucket(g))
             .SelectMany(g => g);
     }
@@ -1124,11 +1042,7 @@ public partial class MainViewModel : ObservableObject
     {
         var winners = closedTrades
             .Where(trade => !string.IsNullOrWhiteSpace(trade.ExitPolicyTag))
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateSessionBucketKey)
             .Select(bucket => ProjectWinningExitPolicyRow(bucket))
             .Where(row => row is not null && (row.TotalPnL > 0 || row.ProfitFactor >= 1.1))
             .Cast<ExitPolicyWinnerRow>()
@@ -1220,11 +1134,7 @@ public partial class MainViewModel : ObservableObject
     {
         var rows = closedTrades
             .Where(trade => !string.IsNullOrWhiteSpace(trade.ExitPolicyTag))
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateCrossSessionBucketKey)
             .SelectMany(group => group.GroupBy(t => t.ExitPolicyTag ?? "Default").Select(CalculateExitPolicyDrift))
             .Where(row => row is not null && row.DriftScore >= 0.25)
             .Cast<ExitPolicyDriftRow>()
@@ -1398,14 +1308,7 @@ public partial class MainViewModel : ObservableObject
     {
         var rows = closedTrades
             .Where(trade => trade.FinalAllocatorBias > 0m)
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t),
-                string.IsNullOrWhiteSpace(t.FinalAllocatorScope) ? "unknown scope" : t.FinalAllocatorScope,
-                NormalizeExecutionMode(t.ExecutionMode),
-                string.IsNullOrWhiteSpace(t.PromotionStage) ? "UNKNOWN" : t.PromotionStage))
+            .GroupBy(CreateScopedSessionBucketKey)
             .Select(CreateFinalAllocatorBiasRow)
             .OrderByDescending(row => Math.Abs(row.AverageBias - 1.0m))
             .ThenByDescending(row => Math.Abs(row.TotalPnL))
@@ -1454,11 +1357,7 @@ public partial class MainViewModel : ObservableObject
     {
         var rows = closedTrades
             .Where(trade => trade.VenueExecutionBias > 0m)
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateSessionBucketKey)
             .Select(BuildVenueExecutionBiasRow)
             .OrderByDescending(row => row.TotalPnL)
             .ToList();
@@ -1630,13 +1529,9 @@ public partial class MainViewModel : ObservableObject
     private void PopulateExactBucketPromotionPressure(IReadOnlyList<Trade> closedTrades)
     {
         var items = closedTrades
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateSessionBucketKey)
             .Select(BuildExactBucketPromotionSelection)
-            .Where(item => item.Row.Trades >= 3)
+            .Where(item => HasStoredExactBucketPressure(item.Row) ? item.Row.Trades >= 2 : item.Row.Trades >= 3)
             .OrderByDescending(item => item.Rank)
             .ThenByDescending(item => item.Row.ProfitFactor)
             .Take(6)
@@ -1650,6 +1545,11 @@ public partial class MainViewModel : ObservableObject
             UpdateExactBucketSummary();
         });
     }
+
+    private static bool HasStoredExactBucketPressure(ExactBucketPromotionPressureRow row)
+        => !string.IsNullOrWhiteSpace(row.PromotionImpact) &&
+           !string.IsNullOrWhiteSpace(row.Summary) &&
+           !string.Equals(row.PromotionImpact, "Exact bucket pressure is unconfirmed", StringComparison.OrdinalIgnoreCase);
 
     private dynamic BuildExactBucketPromotionSelection(IGrouping<StrategyBucketKey, Trade> group)
     {
@@ -1690,11 +1590,7 @@ public partial class MainViewModel : ObservableObject
     {
         var rows = closedTrades
             .Where(trade => trade.FeatureDriftDetected || !string.IsNullOrWhiteSpace(trade.FeatureDriftImpactLabel) || !string.IsNullOrWhiteSpace(trade.FeatureDriftSummary))
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateSessionBucketKey)
             .Select(CreateMlDriftAnalyticsRow)
             .OrderByDescending(row => row.CriticalTrades)
             .ThenByDescending(row => row.MaxZScore)
@@ -2336,11 +2232,7 @@ public partial class MainViewModel : ObservableObject
     {
         return _tradeCache
             .Where(t => t.Status == TradeStatus.Executed && t.IsClosed && t.ExitTime.HasValue && !DisabledStrategies.Any(d => d.Equals(t.StrategyTag, StringComparison.OrdinalIgnoreCase)))
-            .GroupBy(t => new StrategyBucketKey(
-                string.IsNullOrWhiteSpace(t.Symbol) ? "UNKNOWN" : t.Symbol,
-                string.IsNullOrWhiteSpace(t.StrategyTag) ? "Unlabeled" : t.StrategyTag,
-                string.IsNullOrWhiteSpace(t.RegimeTag) ? "Unknown" : t.RegimeTag,
-                ResolveSessionBucketForTrade(t)))
+            .GroupBy(CreateSessionBucketKey)
             .Select(ProjectCapitalAllocationCandidate)
             .Where(item => item.Score > 0.05 && item.EffectiveStage != "Backtest")
             .OrderByDescending(item => item.Score)
@@ -2574,204 +2466,6 @@ public partial class MainViewModel : ObservableObject
         return GrayBrush;
     }
 
-    private void RefreshTradeJournalFromTrades(IReadOnlyList<Trade> trades)
-    {
-        TradeJournal.Clear();
-        PortfolioView.TradeJournal.Clear();
-
-        var journalRows = trades
-            .Where(trade =>
-                trade.Status == TradeStatus.Executed ||
-                trade.Status == TradeStatus.Failed ||
-                trade.IsPositionOpen ||
-                trade.LifecycleStatus == TradeLifecycleStatus.Submitted ||
-                trade.LifecycleStatus == TradeLifecycleStatus.Accepted)
-            .OrderByDescending(trade => trade.ExitTime ?? trade.EntryTime)
-            .Take(120)
-            .Select(BuildTradeJournalEntryFromTrade)
-            .ToList();
-
-        foreach (var row in journalRows)
-        {
-            TradeJournal.Add(row);
-            PortfolioView.TradeJournal.Add(row);
-        }
-
-        RefreshOperatorAuditAlerts();
-    }
-
-    private TradeJournalEntry BuildTradeJournalEntryFromTrade(Trade trade)
-    {
-        var pnl = CalculateTradePnL(trade);
-        var storedVenueImpact = string.IsNullOrWhiteSpace(trade.VenueImpactLabel)
-            ? ResolveVenueImpactFromTrade(trade)
-            : trade.VenueImpactLabel;
-        var exactBucketPressure = ResolveStoredExactBucketPressure(trade);
-        var allocatorImpact = ResolveAllocatorImpactFromTrade(trade);
-        var concordance = ResolveStoredConcordance(trade, exactBucketPressure, storedVenueImpact);
-        var mlDrift = ResolveStoredMlDrift(trade);
-        var stageExplanation = BuildTradeJournalStageExplanation(trade);
-
-        return new TradeJournalEntry
-        {
-            Time = trade.ExitTime ?? trade.EntryTime,
-            Symbol = trade.Symbol,
-            Side = trade.Side.ToString(),
-            Price = trade.EntryPrice,
-            Confidence = trade.EdgeScore > 0 ? (int)Math.Clamp(decimal.ToDouble(trade.EdgeScore), 0, 100) : 0,
-            Status = ResolveTradeJournalStatus(trade),
-            LifecycleStatus = ResolveLifecycleLabel(trade),
-            ExecutionMode = NormalizeExecutionMode(trade.ExecutionMode),
-            MlModelVersion = trade.MlModelVersion,
-            PromotionStage = string.IsNullOrWhiteSpace(trade.PromotionStage) ? "Backtest" : trade.PromotionStage,
-            StageExplanation = stageExplanation,
-            ExactBucketImpact = exactBucketPressure.Impact,
-            ExactBucketSummary = exactBucketPressure.Summary,
-            EdgeSummary = BuildTradeJournalEdgeSummary(trade),
-            ExitSummary = BuildTradeJournalExitSummary(trade),
-            ExitReason = string.IsNullOrWhiteSpace(trade.ExitReason) ? ResolveLifecycleLabel(trade) : trade.ExitReason,
-            MlDriftImpact = mlDrift.Impact,
-            MlDriftSummary = mlDrift.Summary,
-            VenueImpact = storedVenueImpact,
-            AllocatorImpact = allocatorImpact,
-            ConcordanceImpact = concordance.Impact,
-            ConcordanceSummary = concordance.Summary,
-            MlDriftImpactColor = ResolveMlDriftImpactColorFromTrade(trade),
-            AllocatorImpactColor = ResolveAllocatorImpactColorFromTrade(trade),
-            VenueImpactColor = ResolveVenueImpactColorFromTrade(trade),
-            ExecutionModeColor = ResolveExecutionModeColor(trade.ExecutionMode),
-            SideColor = pnl >= 0 ? GreenBrush : RedBrush,
-            PnL = pnl,
-            Reasoning = BuildTradeJournalReasoning(trade, allocatorImpact, stageExplanation, storedVenueImpact, exactBucketPressure.Impact, concordance.Impact, mlDrift.Impact),
-            OriginalTrade = trade
-        };
-    }
-
-    async partial void OnSelectedTradeJournalEntryChanged(TradeJournalEntry? value)
-    {
-        if (value?.OriginalTrade == null)
-        {
-            SelectedTradeReview = "Choose a closed trade to generate an AI coaching review.";
-            return;
-        }
-
-        SelectedTradeReview = "Generating AI Trade Review... [Institutional Reasoner Active]";
-        AddSystemLog($"AI: Analyzing trade performance for {value.Symbol}...");
-
-        try
-        {
-            var review = await _aiAnalyst.ReviewTradeAsync(value.OriginalTrade);
-            SelectedTradeReview = review;
-            AddSystemLog($"AI: Post-trade coaching completed for {value.Symbol}.");
-        }
-        catch (Exception ex)
-        {
-            SelectedTradeReview = "Failed to generate AI review. Technical error in DeepSeek-R1 reasoning pipeline.";
-            AddSystemLog($"AI ERROR: Trade review failed: {ex.Message}");
-        }
-    }
-
-    private Trade? ResolvePersistedTradeForJournalEntry(TradeJournalEntry entry)
-    {
-        return _tradeCache
-            .Where(trade => trade.Status == TradeStatus.Executed || trade.Status == TradeStatus.Failed)
-            .Where(trade => string.Equals(trade.Symbol, entry.Symbol, StringComparison.OrdinalIgnoreCase))
-            .Where(trade => string.Equals(trade.Side.ToString(), entry.Side, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(trade =>
-            {
-                var timestamp = trade.ExitTime ?? trade.EntryTime;
-                return Math.Abs((timestamp - entry.Time).TotalSeconds);
-            })
-            .FirstOrDefault(trade => Math.Abs(((trade.ExitTime ?? trade.EntryTime) - entry.Time).TotalMinutes) <= 5);
-    }
-
-    private TradeJournalEntry ResolveStoredTruthJournalEntry(TradeJournalEntry entry)
-    {
-        var persistedTrade = ResolvePersistedTradeForJournalEntry(entry);
-        return persistedTrade == null
-            ? entry
-            : BuildTradeJournalEntryFromTrade(persistedTrade);
-    }
-
-    private (string Impact, string Summary) ResolveStoredExactBucketPressure(Trade trade)
-    {
-        if (!string.IsNullOrWhiteSpace(trade.ExactBucketImpactLabel) ||
-            !string.IsNullOrWhiteSpace(trade.ExactBucketSummary))
-        {
-            return (
-                string.IsNullOrWhiteSpace(trade.ExactBucketImpactLabel) ? "Exact bucket pressure unconfirmed" : trade.ExactBucketImpactLabel,
-                string.IsNullOrWhiteSpace(trade.ExactBucketSummary) ? "No exact bucket pressure signal has enough stored depth yet." : trade.ExactBucketSummary);
-        }
-
-        return ResolveExactBucketPressureFromTrade(trade);
-    }
-
-    private (string Impact, string Summary) ResolveStoredConcordance(
-        Trade trade,
-        (string Impact, string Summary) exactBucketPressure,
-        string venueImpact)
-    {
-        if (!string.IsNullOrWhiteSpace(trade.ConcordanceImpactLabel) ||
-            !string.IsNullOrWhiteSpace(trade.ConcordanceSummary))
-        {
-            return (
-                string.IsNullOrWhiteSpace(trade.ConcordanceImpactLabel) ? "Concordance unconfirmed" : trade.ConcordanceImpactLabel,
-                string.IsNullOrWhiteSpace(trade.ConcordanceSummary)
-                    ? $"Stored concordance summary missing. {exactBucketPressure.Summary} {venueImpact}"
-                    : trade.ConcordanceSummary);
-        }
-
-        var venueScope = string.IsNullOrWhiteSpace(trade.VenueExecutionScope) ? "default venue scope" : trade.VenueExecutionScope;
-        var display = BuildConcordanceDisplay(
-            exactBucketPressure.Impact,
-            exactBucketPressure.Summary,
-            trade.VenueExecutionBias,
-            $"{venueImpact}. Scope: {venueScope}.");
-        return (display.Impact, display.Summary);
-    }
-
-    private static (string Impact, string Summary) ResolveStoredMlDrift(Trade trade)
-    {
-        if (!trade.FeatureDriftDetected &&
-            string.IsNullOrWhiteSpace(trade.FeatureDriftImpactLabel) &&
-            string.IsNullOrWhiteSpace(trade.FeatureDriftSummary))
-        {
-            return (string.Empty, string.Empty);
-        }
-
-        var impact = string.IsNullOrWhiteSpace(trade.FeatureDriftImpactLabel)
-            ? trade.FeatureDriftCritical
-                ? "ML drift vetoed setup"
-                : "ML drift trimmed size"
-            : trade.FeatureDriftImpactLabel;
-
-        var summary = string.IsNullOrWhiteSpace(trade.FeatureDriftSummary)
-            ? $"Stored ML drift flagged {trade.DriftedFeatureCount} features with max z-score {trade.FeatureDriftMaxZScore.ToString("F2", CultureInfo.InvariantCulture)}."
-            : trade.FeatureDriftSummary;
-
-        return (impact, summary);
-    }
-
-    private (string Impact, string Summary) ResolveExactBucketPressureFromTrade(Trade trade)
-    {
-        var sessionTag = ResolveSessionBucketForTrade(trade);
-        var exactBucketTrades = _tradeCache
-            .Where(candidate => candidate.Status == TradeStatus.Executed || candidate.Status == TradeStatus.Failed)
-            .Where(candidate => string.Equals(candidate.Symbol, trade.Symbol, StringComparison.OrdinalIgnoreCase))
-            .Where(candidate => string.Equals(candidate.StrategyTag, trade.StrategyTag, StringComparison.OrdinalIgnoreCase))
-            .Where(candidate => string.Equals(candidate.RegimeTag, trade.RegimeTag, StringComparison.OrdinalIgnoreCase))
-            .Where(candidate => string.Equals(ResolveSessionBucketForTrade(candidate), sessionTag, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        if (exactBucketTrades.Count == 0)
-        {
-            return ("Exact bucket pressure unconfirmed", "No exact bucket pressure signal has enough stored depth yet.");
-        }
-
-        var display = BuildExactBucketPressureDisplay(exactBucketTrades);
-        return (display.Impact, display.Summary);
-    }
-
     private async Task PersistStrategyHealth()
     {
         RemoveStaleOverrides();
@@ -2787,327 +2481,6 @@ public partial class MainViewModel : ObservableObject
             !snapshot.ForceEnabled &&
             snapshot.Trades == 0 &&
             snapshot.TotalPnL == 0);
-    }
-
-    private static string ResolveVenueImpactFromTrade(Trade trade)
-    {
-        var biasText = trade.VenueExecutionBias.ToString("F2", CultureInfo.InvariantCulture);
-
-        if (trade.VenueExecutionBias <= 0m)
-        {
-            return "Venue neutral";
-        }
-
-        if (trade.VenueExecutionBias <= 0.93m)
-        {
-            return $"Venue hurt size hard ({biasText}x)";
-        }
-
-        if (trade.VenueExecutionBias <= 0.98m)
-        {
-            return $"Venue capped size ({biasText}x)";
-        }
-
-        if (trade.VenueExecutionBias >= 1.02m)
-        {
-            return $"Venue helped size ({biasText}x)";
-        }
-
-        return "Venue neutral";
-    }
-
-    private Brush ResolveVenueImpactColorFromTrade(Trade trade)
-    {
-        if (trade.VenueExecutionBias <= 0m)
-        {
-            return GrayBrush;
-        }
-
-        if (trade.VenueExecutionBias <= 0.93m)
-        {
-            return RedBrush;
-        }
-
-        if (trade.VenueExecutionBias <= 0.98m)
-        {
-            return OrangeBrush;
-        }
-
-        if (trade.VenueExecutionBias >= 1.02m)
-        {
-            return GreenBrush;
-        }
-
-        return GrayBrush;
-    }
-
-    private Brush ResolveMlDriftImpactColorFromTrade(Trade trade)
-    {
-        if (!trade.FeatureDriftDetected && string.IsNullOrWhiteSpace(trade.FeatureDriftImpactLabel))
-        {
-            return GrayBrush;
-        }
-
-        return trade.FeatureDriftCritical ||
-               trade.FeatureDriftImpactLabel.Contains("veto", StringComparison.OrdinalIgnoreCase)
-            ? RedBrush
-            : OrangeBrush;
-    }
-
-    private static string ResolveAllocatorImpactFromTrade(Trade trade)
-    {
-        var biasText = trade.FinalAllocatorBias.ToString("F2", CultureInfo.InvariantCulture);
-
-        if (trade.FinalAllocatorBias <= 0m)
-        {
-            return "Allocator neutral";
-        }
-
-        if (trade.FinalAllocatorBias <= 0.93m)
-        {
-            return $"Allocator cut size hard ({biasText}x)";
-        }
-
-        if (trade.FinalAllocatorBias <= 0.98m)
-        {
-            return $"Allocator trimmed size ({biasText}x)";
-        }
-
-        if (trade.FinalAllocatorBias >= 1.02m)
-        {
-            return $"Allocator boosted size ({biasText}x)";
-        }
-
-        return "Allocator neutral";
-    }
-
-    private Brush ResolveAllocatorImpactColorFromTrade(Trade trade)
-    {
-        if (trade.FinalAllocatorBias <= 0m)
-        {
-            return GrayBrush;
-        }
-
-        if (trade.FinalAllocatorBias <= 0.93m)
-        {
-            return RedBrush;
-        }
-
-        if (trade.FinalAllocatorBias <= 0.98m)
-        {
-            return OrangeBrush;
-        }
-
-        if (trade.FinalAllocatorBias >= 1.02m)
-        {
-            return GreenBrush;
-        }
-
-        return GrayBrush;
-    }
-
-    private static string BuildTradeJournalEdgeSummary(Trade trade)
-    {
-        if (trade.EdgeScore <= 0m && string.IsNullOrWhiteSpace(trade.EdgeBand))
-        {
-            return "Edge n/a";
-        }
-
-        var edgeScoreText = trade.EdgeScore > 0m
-            ? trade.EdgeScore.ToString("F1", CultureInfo.InvariantCulture)
-            : "--";
-        var edgeBand = string.IsNullOrWhiteSpace(trade.EdgeBand) ? "n/a" : trade.EdgeBand;
-        return $"Edge {edgeScoreText} [{edgeBand}]";
-    }
-
-    private static string BuildTradeJournalExitSummary(Trade trade)
-    {
-        var policy = string.IsNullOrWhiteSpace(trade.ExitPolicyTag)
-            ? "n/a"
-            : trade.ExitPolicyTag;
-        var lifecycle = ResolveLifecycleLabel(trade);
-        var reason = string.IsNullOrWhiteSpace(trade.ExitReason) ? string.Empty : $" | {trade.ExitReason}";
-        var controlLevels = trade.StopLoss > 0m || trade.TakeProfit > 0m
-            ? $" | SL {trade.StopLoss:F2} TP {trade.TakeProfit:F2}"
-            : string.Empty;
-        return $"Exit {policy} | {lifecycle}{reason}{controlLevels}";
-    }
-
-    private Brush ResolveExecutionModeColor(string? executionMode)
-    {
-        return NormalizeExecutionMode(executionMode) switch
-        {
-            "REAL" => RedBrush,
-            "PAPER" => OrangeBrush,
-            "SIMULATED" => GrayBrush,
-            _ => GrayBrush
-        };
-    }
-
-    private static string BuildTradeJournalStageExplanation(Trade trade)
-    {
-        var stage = string.IsNullOrWhiteSpace(trade.PromotionStage) ? "Backtest" : trade.PromotionStage;
-        var scope = string.IsNullOrWhiteSpace(trade.FinalAllocatorScope) ? "default sizing scope" : trade.FinalAllocatorScope;
-        return $"Stage {stage} via {scope}";
-    }
-
-    private static string BuildTradeJournalReasoning(Trade trade, string allocatorImpact, string stageExplanation, string venueImpact, string exactBucketImpact, string concordanceImpact, string mlDriftImpact)
-    {
-        var edgePart = trade.EdgeScore > 0m
-            ? $"Edge {trade.EdgeScore:F1} [{(string.IsNullOrWhiteSpace(trade.EdgeBand) ? "n/a" : trade.EdgeBand)}]"
-            : "Edge n/a";
-        var exitPart = BuildTradeJournalExitSummary(trade);
-        var lifecyclePart = $"Lifecycle {ResolveLifecycleLabel(trade)}";
-
-        return BuildAuditTrail(" | ", edgePart, exitPart, lifecyclePart, mlDriftImpact, exactBucketImpact, concordanceImpact, stageExplanation, allocatorImpact, venueImpact);
-    }
-
-    private static string BuildAuditTrail(string separator, params string[] parts)
-    {
-        return string.Join(separator, parts.Where(part => !string.IsNullOrWhiteSpace(part)));
-    }
-
-    private static string BuildJournalEdgeSummary(TradeDecision decision)
-    {
-        var edgeBand = decision.Confidence switch
-        {
-            >= 85 => "Full",
-            >= 70 => "Reduced",
-            >= 55 => "Probe",
-            _ => "Rejected"
-        };
-
-        return $"Edge {decision.Confidence:F1} [{edgeBand}]";
-    }
-
-    private static string BuildJournalExitSummary(TradeDecision decision)
-    {
-        return string.IsNullOrWhiteSpace(decision.ExitPolicyTag)
-            ? "Exit n/a"
-            : $"Exit {decision.ExitPolicyTag}";
-    }
-
-    private string BuildJournalStageExplanation(string promotionStage)
-    {
-        var scope = StrategyThrottleStatus switch
-        {
-            "Blocked" => "throttle guard",
-            "Reduced" => "reduced-size guard",
-            _ => "live journal approval"
-        };
-
-        return $"Stage {promotionStage} via {scope}";
-    }
-
-    private string BuildJournalAllocatorImpact(TradeDecision decision)
-    {
-        if (StrategyThrottleStatus == "Blocked" || decision.PositionSizePercent <= 0m)
-        {
-            return "Allocator neutral";
-        }
-
-        if (StrategyThrottleStatus == "Reduced" || Studio.BotLaunchGuardStatus is "Reduced" or "Caution")
-        {
-            return "Allocator trimmed size (0.95x)";
-        }
-
-        if (decision.PositionSizePercent >= 0.03m)
-        {
-            return "Allocator boosted size (1.05x)";
-        }
-
-        return "Allocator neutral";
-    }
-
-    private AlertAuditContext BuildAlertAuditContext(string symbol, TradeDecision decision, IndicatorSnapshot indicators)
-    {
-        var promotionStage = ResolveJournalPromotionStage();
-        var exactBucketPressure = ResolveExactBucketPressure(decision.StrategyTag, symbol);
-        return new AlertAuditContext
-        {
-            ExecutionMode = GetCurrentExecutionModeLabel(),
-            PromotionStage = promotionStage,
-            StageExplanation = BuildJournalStageExplanation(promotionStage),
-            ExactBucketImpact = exactBucketPressure?.Impact ?? "Exact bucket pressure unconfirmed",
-            ExactBucketSummary = exactBucketPressure?.Summary ?? "No exact bucket pressure signal has enough stored depth yet.",
-            EdgeSummary = BuildJournalEdgeSummary(decision),
-            ExitSummary = BuildJournalExitSummary(decision),
-            MlDriftImpact = string.Empty,
-            MlDriftSummary = string.Empty,
-            VenueImpact = BuildJournalVenueImpact(decision, indicators),
-            AllocatorImpact = BuildJournalAllocatorImpact(decision),
-            Reasoning = decision.Reasoning
-        };
-    }
-
-    private void RefreshOperatorAuditAlerts()
-    {
-        OperatorAuditAlerts.Clear();
-
-        var rows = TradeJournal
-            .Take(4)
-            .Select(ResolveStoredTruthJournalEntry)
-            .Select(BuildOperatorAuditAlertRow)
-            .ToList();
-
-        foreach (var row in rows)
-        {
-            OperatorAuditAlerts.Add(row);
-        }
-
-        if (OperatorAuditAlerts.Count == 0)
-        {
-            OperatorAuditAlerts.Add(new OperatorAuditAlertRow
-            {
-                Headline = "Audit trail waiting for executions",
-                Detail = "Stored operator alerts will appear after trades are rebuilt from persisted execution context.",
-                AccentColor = GrayBrush
-            });
-        }
-    }
-
-    private OperatorAuditAlertRow BuildOperatorAuditAlertRow(TradeJournalEntry entry)
-    {
-        return new OperatorAuditAlertRow
-        {
-            Headline = $"{entry.ExecutionMode} {entry.Symbol} {entry.Side} | {entry.PromotionStage}",
-            Detail = BuildAuditTrail(" | ", entry.EdgeSummary, entry.ExitSummary, entry.MlDriftImpact, entry.ExactBucketImpact, entry.ConcordanceImpact, entry.AllocatorImpact, entry.VenueImpact),
-            AccentColor = ResolveOperatorAuditAlertColor(entry)
-        };
-    }
-
-    private Brush ResolveOperatorAuditAlertColor(TradeJournalEntry entry)
-    {
-        if (!string.IsNullOrWhiteSpace(entry.MlDriftImpact))
-        {
-            return entry.MlDriftImpact.Contains("veto", StringComparison.OrdinalIgnoreCase)
-                ? RedBrush
-                : OrangeBrush;
-        }
-
-        if (!string.IsNullOrWhiteSpace(entry.VenueImpact) &&
-            entry.VenueImpact.Contains("capped", StringComparison.OrdinalIgnoreCase))
-        {
-            return OrangeBrush;
-        }
-
-        if (!string.IsNullOrWhiteSpace(entry.AllocatorImpact) &&
-            entry.AllocatorImpact.Contains("trimmed", StringComparison.OrdinalIgnoreCase))
-        {
-            return OrangeBrush;
-        }
-
-        if (string.Equals(entry.PromotionStage, "ScaledLive", StringComparison.OrdinalIgnoreCase))
-        {
-            return GreenBrush;
-        }
-
-        if (string.Equals(entry.PromotionStage, "LiveProbe", StringComparison.OrdinalIgnoreCase))
-        {
-            return BuyColorBrush;
-        }
-
-        return GrayBrush;
     }
 
     private static string NormalizeStrategyKey(string strategy)
@@ -3220,6 +2593,106 @@ public partial class MainViewModel : ObservableObject
         };
     }
 
+    partial void OnListenerHealthChanged(string value) => OnPropertyChanged(nameof(ListenerHealthColor));
+    partial void OnMarketDataHealthChanged(string value) => OnPropertyChanged(nameof(MarketDataHealthColor));
+    partial void OnAiServiceHealthChanged(string value) => OnPropertyChanged(nameof(AiServiceHealthColor));
+    partial void OnQueueHealthChanged(string value) => OnPropertyChanged(nameof(QueueHealthColor));
+    partial void OnIsKillSwitchArmedChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsSoftPauseArmed));
+        OnPropertyChanged(nameof(RiskGuardStatusColor));
+    }
+
+    partial void OnRiskGovernorKillSwitchSummaryChanged(string value)
+        => OnPropertyChanged(nameof(RiskGovernorSoftPauseSummary));
+
+    private static Brush ResolveServiceHealthBrush(string status)
+    {
+        if (string.Equals(status, "Online", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Healthy", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Optimal", StringComparison.OrdinalIgnoreCase))
+        {
+            return GreenBrush;
+        }
+
+        if (string.Equals(status, "Warning", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Degraded", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Congested", StringComparison.OrdinalIgnoreCase))
+        {
+            return OrangeBrush;
+        }
+
+        if (status.Contains("Critical", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(status, "Offline", StringComparison.OrdinalIgnoreCase))
+        {
+            return RedBrush;
+        }
+
+        return GrayBrush;
+    }
+
+    private static Brush ResolveQueueHealthBrush(string status)
+    {
+        if (string.Equals(status, "Optimal", StringComparison.OrdinalIgnoreCase))
+        {
+            return GreenBrush;
+        }
+
+        if (string.Equals(status, "Congested", StringComparison.OrdinalIgnoreCase))
+        {
+            return OrangeBrush;
+        }
+
+        if (status.Contains("Critical", StringComparison.OrdinalIgnoreCase))
+        {
+            return RedBrush;
+        }
+
+        return GrayBrush;
+    }
+
+    private static (string Status, string Reason, Brush Color) ResolveRiskGovernorPresentation(RiskGovernorDashboardSnapshot snapshot)
+    {
+        if (snapshot.IsSoftPauseArmed)
+        {
+            return ("LOCKED", snapshot.SoftPauseReason, RedBrush);
+        }
+
+        if (snapshot.DrawdownPercent >= snapshot.HardDrawdownPercent)
+        {
+            return ("HARD LIMIT", $"Drawdown breaker is active at {snapshot.DrawdownPercent:F2}%.", RedBrush);
+        }
+
+        if (snapshot.DailyLossPercent >= snapshot.MaxDailyLossPercent)
+        {
+            return ("HARD LIMIT", $"Daily loss guard is active at {snapshot.DailyLossPercent:F2}% of {snapshot.MaxDailyLossPercent:F1}%.", RedBrush);
+        }
+
+        if (snapshot.ExecutionHealth < snapshot.MinimumExecutionHealth)
+        {
+            return ("BLOCKED", $"Execution quality is below the trading floor ({snapshot.ExecutionHealth:P0} < {snapshot.MinimumExecutionHealth:P0}).", RedBrush);
+        }
+
+        if (snapshot.OpenHeat >= snapshot.MaxPortfolioHeat ||
+            snapshot.SymbolHeat >= snapshot.MaxSymbolExposure ||
+            snapshot.CorrelatedHeat >= snapshot.MaxCorrelatedExposure)
+        {
+            return ("BLOCKED", "Exposure caps are fully consumed. New risk should be blocked until heat declines.", RedBrush);
+        }
+
+        if (snapshot.DrawdownPercent >= snapshot.SoftDrawdownPercent ||
+            snapshot.ExecutionMultiplier < 0.95m ||
+            snapshot.PerformanceMultiplier < 0.95m ||
+            snapshot.DrawdownMultiplier < 0.95m ||
+            snapshot.OpenHeat >= snapshot.MaxPortfolioHeat * 0.70m ||
+            snapshot.CorrelatedHeat >= snapshot.MaxCorrelatedExposure * 0.75m)
+        {
+            return ("COMPRESSED", "Governor is trimming size because drawdown, exposure, or execution pressure is elevated.", OrangeBrush);
+        }
+
+        return ("CLEAR", "Governor headroom is healthy across heat, drawdown, and execution quality.", GreenBrush);
+    }
+
     // Redirection properties for partial methods logic (bridging to sub-ViewModels)
     partial void OnMarketOverviewChanged(MarketOverviewViewModel value)
     {
@@ -3271,6 +2744,10 @@ public partial class MainViewModel : ObservableObject
                 {
                     UpdatePlainEnglishTranslation();
                 }
+                else if (e.PropertyName == nameof(StrategyStudioViewModel.SelectedTuningStrategy))
+                {
+                    RefreshStrategyTuningStudio();
+                }
             };
         }
     }
@@ -3302,440 +2779,111 @@ public partial class MainViewModel : ObservableObject
         };
     }
 
-    private void UpdatePlainEnglishTranslation()
+    private string ResolveTuningStrategyKey(string? strategyName)
     {
-        string assetAction = string.IsNullOrEmpty(MarketOverview.SelectedSymbol) ? "assets" : MarketOverview.SelectedSymbol;
-        string riskAction = Studio.SelectedRiskProfile == "Aggressive" ? "aggressively" : Studio.SelectedRiskProfile == "Low" ? "conservatively" : "moderately";
-        string timeAction = MarketOverview.SelectedTimeframe == "1m" || MarketOverview.SelectedTimeframe == "5m" ? "rapidly scalping" : MarketOverview.SelectedTimeframe == "1d" ? "swing trading" : "monitoring intraday momentum";
-        
-        PlainEnglishTranslation = $"The bot will {riskAction} trade {assetAction} on the {MarketOverview.SelectedMarket} market. It is currently {timeAction} using {MarketOverview.SelectedTimeframe} intervals, waiting for multi-timeframe AlphaTrend confluence before executing.";
-    }
-
-    private void UpdateBotLaunchSummary()
-    {
-        var slopeText = Studio.GridSlopeBias < 40 ? "bearish" : Studio.GridSlopeBias > 60 ? "bullish" : "neutral";
-        UpdateBotLaunchRecommendation();
-        var exactBucketPressure = ResolveSelectedExactBucketPressure();
-        var concordanceSignal = ResolveSelectedConcordanceSignal();
-        var exactBucketLaunchText = exactBucketPressure is null
-            ? "exact bucket pressure unconfirmed"
-            : exactBucketPressure.Value.Impact.ToLowerInvariant();
-        var concordanceLaunchText = concordanceSignal is null
-            ? "concordance unconfirmed"
-            : concordanceSignal.Value.Impact.ToLowerInvariant();
-        Studio.BotLaunchSummary =
-            $"{Studio.SelectedBotStrategy} on {Studio.SelectedBotBaseAsset}/{Studio.SelectedBotQuoteAsset} with {Studio.BotFundingAmount:N0} {Studio.SelectedBotQuoteAsset}, " +
-            $"{Studio.SelectedBotObjective.ToLowerInvariant()} objective, grid {Studio.GridLowerLimit:F1}% to {Studio.GridUpperLimit:F1}%, density {Studio.GridDensity}, slope {slopeText}, throttle {StrategyThrottleStatus.ToLowerInvariant()}, {exactBucketLaunchText}, {concordanceLaunchText}, recommended capital {Studio.BotRecommendedFunding:N0}.";
-        Studio.BotLaunchHint = IsPaperMode
-            ? "Paper mode is active, so this launch will stay sandboxed until you switch to live."
-            : "Live mode is active. Double-check broker routing and risk limits before activating.";
-        UpdateBotProductivityInsights();
-    }
-
-    private void UpdateBotProductivityInsights()
-    {
-        var score = CalculateBotProductivityScore();
-        Studio.BotProductivityScore = $"Setup score {score}/100";
-        Studio.BotProductivityColor = ResolveBotProductivityColor(score);
-        Studio.BotSetupVelocity = ResolveBotSetupVelocity(score);
-        Studio.BotWorkflowAdvice = ResolveBotWorkflowAdvice();
-    }
-
-    private int CalculateBotProductivityScore()
-    {
-        var score = 40;
-        score += Studio.BotLaunchGuardStatus switch { "Ready" => 30, "Reduced" => 18, "Caution" => 10, "Disabled" => -10, "Blocked" => -15, _ => 0 };
-        score += StrategyThrottleStatus switch { "Normal" => 15, "Reduced" => 5, "Learning" => 3, _ => 0 };
-
-        if (Studio.BotFundingAmount > 0 && Studio.BotRecommendedFunding > 0)
+        if (string.IsNullOrWhiteSpace(strategyName))
         {
-            var alignment = (double)(Studio.BotRecommendedFunding / Studio.BotFundingAmount);
-            score += alignment >= 0.9 ? 10 : alignment >= 0.6 ? 5 : 0;
+            return StrategyTuningService.MomentumKey;
         }
 
-        if (Studio.GridDensity is >= 8 and <= 16) score += 5;
-        if (Studio.GridUpperLimit > Studio.GridLowerLimit && (Studio.GridUpperLimit - Studio.GridLowerLimit) >= 4) score += 5;
-        
-        return Math.Clamp(score, 0, 100);
+        if (strategyName.Contains("Breakout", StringComparison.OrdinalIgnoreCase))
+        {
+            return StrategyTuningService.BreakoutKey;
+        }
+
+        if (strategyName.Contains("Range", StringComparison.OrdinalIgnoreCase))
+        {
+            return StrategyTuningService.StatArbKey;
+        }
+
+        if (strategyName.Contains("HFT", StringComparison.OrdinalIgnoreCase) ||
+            strategyName.Contains("Scalp", StringComparison.OrdinalIgnoreCase))
+        {
+            return StrategyTuningService.ScalpingKey;
+        }
+
+        return StrategyTuningService.MomentumKey;
     }
 
-    private Brush ResolveBotProductivityColor(int score) => score >= 75 ? GreenBrush : score >= 55 ? OrangeBrush : RedBrush;
-
-    private string ResolveBotSetupVelocity(int score)
+    private void RefreshStrategyTuningStudio(bool syncCandidateFields = false)
     {
-        if (score >= 75) return "Fast lane. This configuration is clean enough for quick deployment.";
-        if (score >= 55) return "Medium friction. Use auto-tune to tighten capital and grid settings.";
-        return "Slow lane. Too much launch drag or weak edge is hurting deployment quality.";
+        var strategyKey = string.IsNullOrWhiteSpace(Studio.SelectedTuningStrategy)
+            ? ResolveTuningStrategyKey(Studio.SelectedBotStrategy)
+            : Studio.SelectedTuningStrategy;
+        var descriptor = GetTuningDescriptor(strategyKey);
+        var envelope = _strategyTuningService.GetEnvelope(strategyKey);
+        var strategyBucket = FindStrategyStudioBucket(strategyKey);
+
+        Studio.SelectedTuningStrategy = descriptor.StrategyKey;
+        ApplyTuningDescriptor(descriptor);
+
+        if (syncCandidateFields || !string.Equals(_lastTuningStrategyKey, descriptor.StrategyKey, StringComparison.OrdinalIgnoreCase))
+        {
+            var staged = envelope.Candidate ?? envelope.Active;
+            Studio.TuningPrimaryValue = Clamp(staged.PrimaryValue, descriptor.PrimaryMin, descriptor.PrimaryMax);
+            Studio.TuningSecondaryValue = Clamp(staged.SecondaryValue, descriptor.SecondaryMin, descriptor.SecondaryMax);
+            Studio.TuningTertiaryValue = Clamp(staged.TertiaryValue, descriptor.TertiaryMin, descriptor.TertiaryMax);
+            Studio.TuningSwarmWeight = Math.Clamp(staged.SwarmWeight, 5, 60);
+            Studio.TuningNote = staged.Note;
+            _lastTuningStrategyKey = descriptor.StrategyKey;
+        }
+
+        Studio.ActiveProfileSummary = BuildStrategyProfileSummary(envelope.Active, descriptor, "Active runtime");
+        Studio.CandidateProfileSummary = BuildStrategyProfileSummary(BuildStudioCandidateProfile(descriptor), descriptor, "Candidate");
+        Studio.TuningStageSummary = BuildStrategyStageSummary(strategyBucket);
+        Studio.TuningHealthSummary = BuildStrategyHealthSummary(strategyBucket);
+        Studio.TuningPromotionSummary = string.IsNullOrWhiteSpace(envelope.LastPromotionSummary)
+            ? "No profile promotion has been executed yet."
+            : envelope.LastPromotionSummary;
+        Studio.TuningRollbackSummary = envelope.Previous == null
+            ? "No rollback is available yet."
+            : envelope.LastRollbackSummary;
+        Studio.CanRollbackTuning = envelope.Previous != null;
+
+        var (projection, color) = BuildTuningProjection(strategyBucket, envelope.Active, BuildStudioCandidateProfile(descriptor), descriptor);
+        Studio.TuningProjectionSummary = projection;
+        Studio.TuningProjectionColor = color;
     }
 
-    private string ResolveBotWorkflowAdvice() => Studio.BotLaunchGuardStatus switch
+    private void ApplyTuningDescriptor(StrategyTuningDescriptor descriptor)
     {
-        "Disabled" => "Recovery first: re-enable only after paper validation and start with reduced size.",
-        "Blocked" => "Do not deploy. Backtest or change strategy before spending more operator time here.",
-        "Caution" => "Session is weak. Save time by waiting for a better killzone instead of tweaking endlessly.",
-        "Reduced" => "Lean into smaller funding and narrower decision scope. Productivity comes from disciplined repetition.",
-        "Ready" => "This bot is launch-efficient. Paper it once, then promote if execution quality holds.",
-        _ => "Use presets or auto-tune to reduce launch friction."
-    };
-
-    private void UpdateBotLaunchRecommendation()
-    {
-        var activeSession = SessionContexts.FirstOrDefault(context => context.IsActive)?.Name ?? "Unknown";
-        var strategyDisabled = DisabledStrategies.Any(s => StrategyTagsMatch(s, Studio.SelectedBotStrategy));
-        
-        // Find strategy health to determine Kelly fraction
-        var health = _persistedStrategyHealth.FirstOrDefault(s => StrategyTagsMatch(s.StrategyTag, Studio.SelectedBotStrategy));
-        decimal kellyFraction = 1.0m; // Default paper/probe sizing
-        if (health != null && health.Trades >= 5 && (decimal)health.ProfitFactor > 1.0m)
-        {
-            // Use optimal Half-Kelly math
-            kellyFraction = ThatsMyQuant.Application.Risk.KellyCriterionCalculator.CalculateFractionalKelly((decimal)health.WinRate / 100m, (decimal)health.ProfitFactor, 0.5m);
-        }
-        else if (health != null && health.Trades >= 5)
-        {
-            kellyFraction = 0.25m; // Defensive sizing if unprofitable but not completely disabled
-        }
-
-        var multipliers = CalculateLaunchMultipliers(activeSession);
-        
-        // Scale the base grid volume by the Kelly recommendation
-        Studio.BotRecommendedFunding = Math.Round(Studio.BotFundingAmount * multipliers.Throttle * multipliers.Risk * multipliers.Objective * multipliers.Session * kellyFraction, 0);
-
-        if (EvaluateLaunchGuards(activeSession, strategyDisabled))
-        {
-            UpdateDeploymentChecklist(activeSession, strategyDisabled);
-            RefreshCapitalAllocation();
-            return;
-        }
-
-        Studio.BotLaunchGuardStatus = "Ready";
-        Studio.BotLaunchGuardColor = GreenBrush;
-        Studio.BotLaunchGuardReason = "All core signals and session context are aligned.";
-        Studio.BotProfitabilityFocus = "Deployment is recommended. Start in paper mode or with small live probe size.";
-        
-        UpdateDeploymentChecklist(activeSession, strategyDisabled);
-        RefreshCapitalAllocation();
+        Studio.TuningPrimaryLabel = descriptor.PrimaryLabel;
+        Studio.TuningSecondaryLabel = descriptor.SecondaryLabel;
+        Studio.TuningTertiaryLabel = descriptor.TertiaryLabel;
+        Studio.TuningPrimaryMinimum = descriptor.PrimaryMin;
+        Studio.TuningPrimaryMaximum = descriptor.PrimaryMax;
+        Studio.TuningSecondaryMinimum = descriptor.SecondaryMin;
+        Studio.TuningSecondaryMaximum = descriptor.SecondaryMax;
+        Studio.TuningTertiaryMinimum = descriptor.TertiaryMin;
+        Studio.TuningTertiaryMaximum = descriptor.TertiaryMax;
     }
 
-    private (decimal Throttle, decimal Risk, decimal Objective, decimal Session) CalculateLaunchMultipliers(string activeSession)
+    private StrategyParameterProfile BuildStudioCandidateProfile(StrategyTuningDescriptor descriptor)
     {
-        decimal throttle = StrategyThrottleStatus switch { "Blocked" => 0m, "Reduced" => 0.5m, "Normal" => 1m, "Learning" => 0.35m, "Unavailable" => 0.25m, _ => 0.25m };
-        decimal risk = Studio.SelectedRiskProfile switch { "Low" => 0.55m, "Aggressive" => 1m, _ => 0.8m };
-        decimal objective = Studio.SelectedBotObjective switch { "Low Drawdown" => 0.6m, "Income Flow" => 0.8m, "Fast Rotation" => 0.9m, _ => 1m };
-        decimal session = activeSession switch { "London Killzone" => 1m, "NY Killzone" => 0.95m, "Asia" => 0.65m, "Close / Dead Zone" => 0.45m, _ => 0.6m };
-        return (throttle, risk, objective, session);
+        return new StrategyParameterProfile
+        {
+            StrategyKey = descriptor.StrategyKey,
+            PrimaryValue = Clamp(Studio.TuningPrimaryValue, descriptor.PrimaryMin, descriptor.PrimaryMax),
+            SecondaryValue = Clamp(Studio.TuningSecondaryValue, descriptor.SecondaryMin, descriptor.SecondaryMax),
+            TertiaryValue = Clamp(Studio.TuningTertiaryValue, descriptor.TertiaryMin, descriptor.TertiaryMax),
+            SwarmWeight = Math.Clamp(Studio.TuningSwarmWeight, 5, 60),
+            Note = Studio.TuningNote?.Trim() ?? string.Empty,
+            UpdatedAtUtc = DateTime.UtcNow
+        };
     }
 
-    private bool EvaluateLaunchGuards(string activeSession, bool strategyDisabled)
-    {
-        var isForceEnabled = IsForceEnabledStrategy(Studio.SelectedBotStrategy);
-
-        if (strategyDisabled) return UpdateLaunchGuard("Disabled", RedBrush, $"{Studio.SelectedBotStrategy} is on the diagonal list.", "Do not deploy disabled strategies.", 0);
-        if (StrategyThrottleStatus == "Blocked") return UpdateLaunchGuard("Blocked", RedBrush, "Strategy bucket is underperforming.", "Focus on research and backtesting.", null);
-
-        var pressure = ResolveSelectedExactBucketPressure();
-        if (pressure is { } p && p.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase))
-        {
-            if (isForceEnabled)
-            {
-                return UpdateLaunchGuard("Reduced", OrangeBrush, $"Exact bucket: {p.Summary}", "Manual recovery is enabled, so keep this deployment in reduced probe mode.", null);
-            }
-
-            return UpdateLaunchGuard("Blocked", RedBrush, $"Exact bucket: {p.Summary}", "Exact bucket learning is rejecting this deployment.", 0);
-        }
-
-        var concordance = ResolveSelectedConcordanceSignal();
-        if (concordance is { } c && (c.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase) || c.Impact.Contains("capping real edge", StringComparison.OrdinalIgnoreCase)))
-        {
-            if (isForceEnabled)
-            {
-                return UpdateLaunchGuard("Caution", OrangeBrush, c.Summary, "Manual recovery is enabled, but concordance still requires probe-size discipline.", null);
-            }
-
-            return UpdateLaunchGuard("Blocked", RedBrush, c.Summary, "Concordance logic is capping this deployment.", 0);
-        }
-
-        if (activeSession.Contains("Zone", StringComparison.OrdinalIgnoreCase))
-            return UpdateLaunchGuard("Caution", OrangeBrush, "Market is in a low-liquidity or transition zone.", "Deployment is possible but not recommended for new strategies.", null);
-
-        return false;
-    }
-
-    private bool UpdateLaunchGuard(string status, Brush color, string reason, string focus, decimal? funding)
-    {
-        Studio.BotLaunchGuardStatus = status;
-        Studio.BotLaunchGuardColor = color;
-        Studio.BotLaunchGuardReason = reason;
-        Studio.BotProfitabilityFocus = focus;
-        if (funding.HasValue) Studio.BotRecommendedFunding = funding.Value;
-        return true;
-    }
-
-    private void UpdateDeploymentChecklist(string activeSession, bool strategyDisabled)
-    {
-        DeploymentChecklist.Clear();
-
-        AddDeploymentCheck(
-            "Strategy status",
-            !strategyDisabled,
-            strategyDisabled
-                ? $"{Studio.SelectedBotStrategy} is currently disabled by strategy health controls."
-                : $"{Studio.SelectedBotStrategy} is enabled for deployment review.");
-
-        var sessionPassing = !activeSession.Contains("Zone", StringComparison.OrdinalIgnoreCase);
-        AddDeploymentCheck(
-            "Session quality",
-            sessionPassing,
-            sessionPassing
-                ? $"{activeSession} is acceptable for deployment."
-                : $"{activeSession} is weak for fresh risk. Wait for a better session.");
-
-        var throttlePassing = StrategyThrottleStatus is "Normal" or "Learning";
-        AddDeploymentCheck(
-            "Throttle",
-            throttlePassing,
-            string.IsNullOrWhiteSpace(StrategyThrottleReason)
-                ? $"Throttle state is {StrategyThrottleStatus}."
-                : StrategyThrottleReason);
-
-        var exactBucketPressure = ResolveSelectedExactBucketPressure();
-        var exactBucketPassing = exactBucketPressure is null ||
-            !exactBucketPressure.Value.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase);
-        AddDeploymentCheck(
-            "Exact bucket pressure",
-            exactBucketPassing,
-            exactBucketPressure?.Summary ?? "No exact-bucket pressure stored yet.");
-
-        var concordance = ResolveSelectedConcordanceSignal();
-        var concordancePassing = concordance is null ||
-            (!concordance.Value.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase) &&
-             !concordance.Value.Impact.Contains("capping real edge", StringComparison.OrdinalIgnoreCase));
-        AddDeploymentCheck(
-            "Concordance",
-            concordancePassing,
-            concordance?.Summary ?? "Concordance is still unconfirmed.");
-
-        var fundingPassing = Studio.BotRecommendedFunding > 0;
-        AddDeploymentCheck(
-            "Capital sizing",
-            fundingPassing,
-            fundingPassing
-                ? $"Recommended capital is {Studio.BotRecommendedFunding:N0} {Studio.SelectedBotQuoteAsset}."
-                : "Recommended capital is zero, so deployment should stay blocked.");
-    }
-
-    private (string Impact, string Summary, Brush Color)? ResolveSelectedExactBucketPressure()
-    {
-        return ResolveExactBucketPressure(Studio.SelectedBotStrategy, MarketOverview.SelectedSymbol);
-    }
-
-    private (decimal AverageBias, string Summary)? ResolveSelectedVenueSignal()
-    {
-        if (string.IsNullOrWhiteSpace(Studio.SelectedBotStrategy))
-        {
-            return null;
-        }
-
-        var exactVenue = VenueExecutionBiasRows.FirstOrDefault(row =>
-            StrategyTagsMatch(row.StrategyTag, Studio.SelectedBotStrategy) &&
-            (string.IsNullOrWhiteSpace(MarketOverview.SelectedSymbol) || row.Symbol.Equals(MarketOverview.SelectedSymbol, StringComparison.OrdinalIgnoreCase)));
-
-        if (exactVenue is not null)
-        {
-            return (exactVenue.AverageBias, exactVenue.Summary);
-        }
-
-        var broadVenue = StrategyLeaderboard.FirstOrDefault(row =>
-            StrategyTagsMatch(row.StrategyTag, Studio.SelectedBotStrategy) &&
-            !string.IsNullOrWhiteSpace(row.VenueExecutionSummary));
-
-        return broadVenue is null
-            ? null
-            : (broadVenue.AverageVenueExecutionBias, broadVenue.VenueExecutionSummary);
-    }
-
-    private (string Impact, string Summary, Brush Color)? ResolveSelectedConcordanceSignal()
-    {
-        var exactBucketPressure = ResolveSelectedExactBucketPressure();
-        var venueSignal = ResolveSelectedVenueSignal();
-
-        if (exactBucketPressure is null || venueSignal is null)
-        {
-            return null;
-        }
-
-        return BuildConcordanceDisplay(
-            exactBucketPressure.Value.Impact,
-            exactBucketPressure.Value.Summary,
-            venueSignal.Value.AverageBias,
-            venueSignal.Value.Summary);
-    }
-
-    private (string Impact, string Summary, Brush Color)? ResolveExactBucketPressure(string? strategyTag, string? symbol)
-    {
-        if (string.IsNullOrWhiteSpace(strategyTag))
-        {
-            return null;
-        }
-
-        var exact = ExactBucketPromotionPressureRows.FirstOrDefault(row =>
-            StrategyTagsMatch(row.StrategyTag, strategyTag) &&
-            (string.IsNullOrWhiteSpace(symbol) || row.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase)));
-
-        if (exact is not null)
-        {
-            return (exact.PromotionImpact, exact.Summary, exact.PromotionImpactColor);
-        }
-
-        var broad = StrategyLeaderboard.FirstOrDefault(row =>
-            StrategyTagsMatch(row.StrategyTag, strategyTag));
-
-        if (broad is not null && !string.IsNullOrWhiteSpace(broad.ExactBucketPromotionImpact))
-        {
-            return (broad.ExactBucketPromotionImpact, broad.ExactBucketSummary, broad.ExactBucketPromotionImpactColor);
-        }
-
-        return null;
-    }
-
-    private static bool StrategyTagsMatch(string? left, string? right)
-    {
-        if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
-        {
-            return false;
-        }
-
-        static string Normalize(string value) => value.Replace(" ", string.Empty, StringComparison.Ordinal).Trim();
-        return Normalize(left).Equals(Normalize(right), StringComparison.OrdinalIgnoreCase);
-    }
-
-    private void AddDeploymentCheck(string title, bool isPassing, string detail)
-    {
-        DeploymentChecklist.Add(new ChecklistItemViewModel
-        {
-            Title = title,
-            Detail = detail,
-            Status = isPassing ? "Pass" : "Review",
-            IsPassing = isPassing,
-            Color = isPassing ? GreenBrush : OrangeBrush
-        });
-    }
-
-    private void EvaluateStrategyThrottle()
-    {
-        var focusBucket = FindBestStrategyBucketForThrottle();
-        
-        if (focusBucket == null || focusBucket.Trades < 3)
-        {
-            StrategyThrottleStatus = "Learning";
-            StrategyThrottleReason = "The selected strategy needs at least 3 closed trades before automatic throttling kicks in.";
-            StrategyThrottleColor = GrayBrush;
-            return;
-        }
-
-        var isForceEnabled = IsForceEnabledStrategy(Studio.SelectedBotStrategy);
-        
-        if (HasEdgeBandFailure(focusBucket.StrategyTag, focusBucket.RegimeTag))
-        {
-            UpdateThrottleForEdgeBandFailure(focusBucket, isForceEnabled);
-            return;
-        }
-
-        if (focusBucket.ProfitFactor < 1.0 || (focusBucket.TotalPnL < 0 && focusBucket.WinRate < 45))
-        {
-            UpdateThrottleForUnderperformance(focusBucket, isForceEnabled);
-            return;
-        }
-
-        UpdateThrottleForSoftOrNormalPerformance(focusBucket);
-    }
-
-    private StrategyLeaderboardRow? FindBestStrategyBucketForThrottle()
+    private StrategyLeaderboardRow? FindStrategyStudioBucket(string strategyKey)
     {
         var selected = StrategyLeaderboard.FirstOrDefault(row =>
-            StrategyTagsMatch(row.StrategyTag, Studio.SelectedBotStrategy));
-
-        selected ??= _persistedStrategyHealth
-            .Where(row =>
-                StrategyTagsMatch(row.StrategyTag, Studio.SelectedBotStrategy))
-            .OrderByDescending(row => row.RecordedAtUtc)
-            .Select(row => new StrategyLeaderboardRow
-            {
-                StrategyTag = row.StrategyTag, RegimeTag = row.RegimeTag, Trades = row.Trades,
-                WinRate = row.WinRate, ProfitFactor = row.ProfitFactor, TotalPnL = row.TotalPnL
-            })
-            .FirstOrDefault();
-
-        var weakest = StrategyLeaderboard.OrderBy(row => row.ProfitFactor).ThenBy(row => row.TotalPnL).FirstOrDefault();
-        weakest ??= _persistedStrategyHealth.OrderBy(row => row.ProfitFactor).ThenBy(row => row.TotalPnL)
-            .Select(row => new StrategyLeaderboardRow
-            {
-                StrategyTag = row.StrategyTag, RegimeTag = row.RegimeTag, Trades = row.Trades,
-                WinRate = row.WinRate, ProfitFactor = row.ProfitFactor, TotalPnL = row.TotalPnL
-            }).FirstOrDefault();
-
-        return selected ?? weakest;
-    }
-
-    private void UpdateThrottleForEdgeBandFailure(StrategyLeaderboardRow bucket, bool isForceEnabled)
-    {
-        if (isForceEnabled)
+            StrategyTagsMatch(row.StrategyTag, strategyKey) ||
+            StrategyTagsMatch(ResolveTuningStrategyKey(row.StrategyTag), strategyKey));
+        if (selected != null)
         {
-            StrategyThrottleStatus = "Reduced";
-            StrategyThrottleReason = $"{BuildEdgeBandFailureReason(bucket.StrategyTag, bucket.RegimeTag)} Manual recovery is active, so size stays cut.";
-            StrategyThrottleColor = OrangeBrush;
+            return selected;
         }
-        else
-        {
-            StrategyThrottleStatus = "Blocked";
-            StrategyThrottleReason = BuildEdgeBandFailureReason(bucket.StrategyTag, bucket.RegimeTag);
-            StrategyThrottleColor = RedBrush;
-        }
-    }
 
-    private void UpdateThrottleForUnderperformance(StrategyLeaderboardRow bucket, bool isForceEnabled)
-    {
-        if (isForceEnabled)
-        {
-            StrategyThrottleStatus = "Reduced";
-            StrategyThrottleReason = $"{bucket.StrategyTag} is in manual recovery mode. Reduced size active.";
-            StrategyThrottleColor = OrangeBrush;
-        }
-        else
-        {
-            StrategyThrottleStatus = "Blocked";
-            StrategyThrottleReason = $"{bucket.StrategyTag} in {bucket.RegimeTag} is underperforming.";
-            StrategyThrottleColor = RedBrush;
-        }
-    }
-
-    private void UpdateThrottleForSoftOrNormalPerformance(StrategyLeaderboardRow bucket)
-    {
-        if (bucket.ProfitFactor < 1.25 || bucket.WinRate < 52)
-        {
-            StrategyThrottleStatus = "Reduced";
-            StrategyThrottleReason = $"{bucket.StrategyTag} is tradable but soft. Keep reduced size.";
-            StrategyThrottleColor = OrangeBrush;
-        }
-        else
-        {
-            StrategyThrottleStatus = "Normal";
-            StrategyThrottleReason = $"{bucket.StrategyTag} has enough edge to trade at normal size.";
-            StrategyThrottleColor = GreenBrush;
-        }
-    }
-
-    private TradeDecision ApplyStrategyThrottle(TradeDecision decision)
-    {
-        var forceEnabled = IsForceEnabledStrategy(decision.StrategyTag);
-        var bucket = StrategyLeaderboard.FirstOrDefault(row =>
-            row.StrategyTag.Equals(decision.StrategyTag, StringComparison.OrdinalIgnoreCase) &&
-            row.RegimeTag.Equals(decision.RegimeTag, StringComparison.OrdinalIgnoreCase));
-
-        bucket ??= _persistedStrategyHealth
-            .Where(row =>
-                row.StrategyTag.Equals(decision.StrategyTag, StringComparison.OrdinalIgnoreCase) &&
-                row.RegimeTag.Equals(decision.RegimeTag, StringComparison.OrdinalIgnoreCase))
+        var snapshot = _persistedStrategyHealth
+            .Where(row => StrategyTagsMatch(ResolveTuningStrategyKey(row.StrategyTag), strategyKey))
             .OrderByDescending(row => row.RecordedAtUtc)
             .Select(row => new StrategyLeaderboardRow
             {
@@ -3748,90 +2896,240 @@ public partial class MainViewModel : ObservableObject
             })
             .FirstOrDefault();
 
-        if (bucket == null || bucket.Trades < 3)
+        return snapshot;
+    }
+
+    private string BuildStrategyStageSummary(StrategyLeaderboardRow? bucket)
+    {
+        if (bucket == null)
         {
-            StrategyThrottleStatus = "Learning";
-            StrategyThrottleReason = $"{decision.StrategyTag} in {decision.RegimeTag} is still gathering enough samples.";
-            StrategyThrottleColor = GrayBrush;
-            return decision;
+            return "No stored ladder bucket yet. Stage a candidate profile, but keep it in paper until live data exists.";
         }
 
-        if (HasEdgeBandFailure(decision.StrategyTag, decision.RegimeTag))
+        var stage = string.IsNullOrWhiteSpace(bucket.PromotionStage) ? "Unknown" : bucket.PromotionStage;
+        var regime = string.IsNullOrWhiteSpace(bucket.RegimeTag) ? "Unknown" : bucket.RegimeTag;
+        return $"{bucket.StrategyTag} is currently operating in {stage} across {regime} conditions with {bucket.Trades} tracked trades.";
+    }
+
+    private string BuildStrategyHealthSummary(StrategyLeaderboardRow? bucket)
+    {
+        if (bucket == null)
         {
-            if (forceEnabled)
-            {
-                StrategyThrottleStatus = "Reduced";
-                StrategyThrottleReason = $"{BuildEdgeBandFailureReason(decision.StrategyTag, decision.RegimeTag)} Manual recovery keeps sizing aggressively reduced.";
-                StrategyThrottleColor = OrangeBrush;
-
-                return decision with
-                {
-                    ShouldTrade = decision.ShouldTrade,
-                    Confidence = Math.Min(decision.Confidence, 55),
-                    PositionSizePercent = Math.Min(decision.PositionSizePercent, 0.01m),
-                    Reasoning = $"Edge-band recovery override reduced {decision.StrategyTag} in {decision.RegimeTag}. {decision.Reasoning}"
-                };
-            }
-
-            StrategyThrottleStatus = "Blocked";
-            StrategyThrottleReason = BuildEdgeBandFailureReason(decision.StrategyTag, decision.RegimeTag);
-            StrategyThrottleColor = RedBrush;
-
-            return decision with
-            {
-                ShouldTrade = false,
-                Confidence = Math.Min(decision.Confidence, 45),
-                Reasoning = $"Edge-band failure blocked {decision.StrategyTag} in {decision.RegimeTag}. {decision.Reasoning}"
-            };
+            return "Promotion workflow is waiting for a persisted strategy bucket before it can score live quality.";
         }
 
-        if (bucket.ProfitFactor < 1.0 || (bucket.TotalPnL < 0 && bucket.WinRate < 45))
+        var expectancy = bucket.Trades <= 0 ? 0m : bucket.TotalPnL / bucket.Trades;
+        return $"PF {bucket.ProfitFactor:F2} | WR {bucket.WinRate:F1}% | EV/trade {expectancy:F2} | PnL {bucket.TotalPnL:F2}.";
+    }
+
+    private string BuildStrategyProfileSummary(
+        StrategyParameterProfile profile,
+        StrategyTuningDescriptor descriptor,
+        string label)
+    {
+        return
+            $"{label}: {descriptor.PrimaryLabel} {profile.PrimaryValue:F2}, " +
+            $"{descriptor.SecondaryLabel} {profile.SecondaryValue:F2}, " +
+            $"{descriptor.TertiaryLabel} {profile.TertiaryValue:F2}, weight {profile.SwarmWeight}. " +
+            $"{(string.IsNullOrWhiteSpace(profile.Note) ? "No operator note." : profile.Note)}";
+    }
+
+    private (string Summary, Brush Color) BuildTuningProjection(
+        StrategyLeaderboardRow? bucket,
+        StrategyParameterProfile active,
+        StrategyParameterProfile candidate,
+        StrategyTuningDescriptor descriptor)
+    {
+        if (bucket == null || bucket.Trades <= 0)
         {
-            if (forceEnabled)
-            {
-                StrategyThrottleStatus = "Reduced";
-                StrategyThrottleReason = $"{decision.StrategyTag} is in manual recovery mode. The trade is allowed, but size stays aggressively reduced.";
-                StrategyThrottleColor = OrangeBrush;
-
-                return decision with
-                {
-                    ShouldTrade = decision.ShouldTrade,
-                    Confidence = Math.Min(decision.Confidence, 55),
-                    PositionSizePercent = Math.Min(decision.PositionSizePercent, 0.01m),
-                    Reasoning = $"Manual recovery override reduced {decision.StrategyTag} in {decision.RegimeTag}. {decision.Reasoning}"
-                };
-            }
-
-            StrategyThrottleStatus = "Blocked";
-            StrategyThrottleReason = $"{decision.StrategyTag} in {decision.RegimeTag} is blocked because the current bucket is losing quality.";
-            StrategyThrottleColor = RedBrush;
-
-            return decision with
-            {
-                ShouldTrade = false,
-                Confidence = Math.Min(decision.Confidence, 45),
-                Reasoning = $"Auto-throttle blocked {decision.StrategyTag} in {decision.RegimeTag}. {decision.Reasoning}"
-            };
+            return (
+                $"Projection: thin sample. Candidate adjusts {descriptor.PrimaryLabel.ToLowerInvariant()}, {descriptor.SecondaryLabel.ToLowerInvariant()}, and {descriptor.TertiaryLabel.ToLowerInvariant()} without enough bucket truth yet. Keep it in paper or probe size.",
+                GrayBrush);
         }
 
-        if (bucket.ProfitFactor < 1.25 || bucket.WinRate < 52)
-        {
-            StrategyThrottleStatus = "Reduced";
-            StrategyThrottleReason = $"{decision.StrategyTag} in {decision.RegimeTag} is size-reduced until the bucket stabilizes.";
-            StrategyThrottleColor = OrangeBrush;
+        var currentExpectancy = bucket.TotalPnL / Math.Max(1, bucket.Trades);
+        var selectivityShift = ComputeSelectivityShift(descriptor, active, candidate);
+        var weightShift = (candidate.SwarmWeight - active.SwarmWeight) / 20m;
+        var performanceBias = ((decimal)bucket.ProfitFactor - 1.0m) + ((decimal)bucket.WinRate - 50m) / 100m;
 
-            return decision with
-            {
-                Confidence = Math.Max(0, decision.Confidence - 10),
-                PositionSizePercent = Math.Max(0m, decision.PositionSizePercent * 0.5m),
-                Reasoning = $"Auto-throttle reduced size for {decision.StrategyTag} in {decision.RegimeTag}. {decision.Reasoning}"
-            };
+        decimal expectancyDelta;
+        double profitFactorDelta;
+        double winRateDelta;
+        decimal tradeDeltaPercent;
+
+        if (performanceBias < 0)
+        {
+            expectancyDelta = Math.Abs(currentExpectancy) * (0.18m * selectivityShift - 0.05m * Math.Max(0m, weightShift));
+            profitFactorDelta = (double)(0.25m * selectivityShift - 0.04m * Math.Max(0m, weightShift));
+            winRateDelta = (double)(4m * selectivityShift - 1.2m * Math.Max(0m, weightShift));
+            tradeDeltaPercent = (-12m * selectivityShift) + (5m * weightShift);
+        }
+        else
+        {
+            expectancyDelta = Math.Abs(currentExpectancy) * (-0.08m * selectivityShift + 0.06m * weightShift);
+            profitFactorDelta = (double)(-0.10m * selectivityShift - 0.03m * Math.Max(0m, weightShift));
+            winRateDelta = (double)(-1.5m * selectivityShift - 0.8m * Math.Max(0m, weightShift));
+            tradeDeltaPercent = (-8m * selectivityShift) + (8m * weightShift);
         }
 
-        StrategyThrottleStatus = "Normal";
-        StrategyThrottleReason = $"{decision.StrategyTag} in {decision.RegimeTag} is cleared for normal sizing.";
-        StrategyThrottleColor = GreenBrush;
-        return decision;
+        var projectedExpectancy = currentExpectancy + expectancyDelta;
+        var projectedPf = Math.Max(0.1, bucket.ProfitFactor + profitFactorDelta);
+        var projectedWr = Math.Clamp(bucket.WinRate + winRateDelta, 5, 95);
+        var projectedTrades = Math.Max(1, (int)Math.Round(bucket.Trades * (1 + (double)(tradeDeltaPercent / 100m))));
+        var color = projectedExpectancy >= currentExpectancy ? GreenBrush : projectedExpectancy >= currentExpectancy * 0.95m ? OrangeBrush : RedBrush;
+        var stance = color == GreenBrush ? "Promotion-friendly" : color == OrangeBrush ? "Neutral / probe first" : "Defensive";
+
+        return (
+            $"Projection: {stance}. EV/trade {currentExpectancy:F2} -> {projectedExpectancy:F2}, PF {bucket.ProfitFactor:F2} -> {projectedPf:F2}, WR {bucket.WinRate:F1}% -> {projectedWr:F1}%, sample pace ~{projectedTrades} trades. This is a bucket-based projection, not a full replay.",
+            color);
+    }
+
+    private static decimal ComputeSelectivityShift(
+        StrategyTuningDescriptor descriptor,
+        StrategyParameterProfile active,
+        StrategyParameterProfile candidate)
+    {
+        var primaryShift = NormalizeShift(active.PrimaryValue, candidate.PrimaryValue, descriptor.PrimaryMin, descriptor.PrimaryMax, descriptor.PrimaryHigherIsStricter);
+        var secondaryShift = NormalizeShift(active.SecondaryValue, candidate.SecondaryValue, descriptor.SecondaryMin, descriptor.SecondaryMax, descriptor.SecondaryHigherIsStricter);
+        var tertiaryShift = NormalizeShift(active.TertiaryValue, candidate.TertiaryValue, descriptor.TertiaryMin, descriptor.TertiaryMax, descriptor.TertiaryHigherIsStricter);
+        return (primaryShift + secondaryShift + tertiaryShift) / 3m;
+    }
+
+    private static decimal NormalizeShift(decimal active, decimal candidate, decimal min, decimal max, bool higherIsStricter)
+    {
+        if (max <= min)
+        {
+            return 0m;
+        }
+
+        var delta = (candidate - active) / (max - min);
+        return higherIsStricter ? delta : -delta;
+    }
+
+    private static StrategyTuningDescriptor GetTuningDescriptor(string strategyKey)
+    {
+        return strategyKey switch
+        {
+            StrategyTuningService.BreakoutKey => new StrategyTuningDescriptor(
+                strategyKey,
+                "Volume surge multiple",
+                1.10m,
+                3.00m,
+                true,
+                "Range threshold",
+                0.01m,
+                0.08m,
+                false,
+                "Retest proximity",
+                0.002m,
+                0.020m,
+                false),
+            StrategyTuningService.ScalpingKey => new StrategyTuningDescriptor(
+                strategyKey,
+                "Strong OFI threshold",
+                0.40m,
+                0.90m,
+                true,
+                "Max spread (bps)",
+                2m,
+                20m,
+                false,
+                "Min fill probability",
+                0.40m,
+                0.95m,
+                true),
+            StrategyTuningService.StatArbKey => new StrategyTuningDescriptor(
+                strategyKey,
+                "Entry z-score",
+                1.50m,
+                4.00m,
+                true,
+                "Max half-life",
+                4m,
+                30m,
+                false,
+                "VWAP agreement",
+                0.20m,
+                2.00m,
+                true),
+            _ => new StrategyTuningDescriptor(
+                StrategyTuningService.MomentumKey,
+                "RSI bull threshold",
+                50m,
+                75m,
+                true,
+                "ADX trend threshold",
+                15m,
+                40m,
+                true,
+                "Volume expansion",
+                1.00m,
+                2.00m,
+                true)
+        };
+    }
+
+    [RelayCommand]
+    private async Task StageTuningCandidate()
+    {
+        var descriptor = GetTuningDescriptor(Studio.SelectedTuningStrategy);
+        var candidate = BuildStudioCandidateProfile(descriptor);
+        await _strategyTuningService.SaveCandidateAsync(descriptor.StrategyKey, candidate, candidate.Note);
+        RefreshStrategyTuningStudio(syncCandidateFields: true);
+        AddSystemLog($"STUDIO: Candidate profile staged for {descriptor.StrategyKey}.");
+    }
+
+    [RelayCommand]
+    private void EvaluateTuningCandidate()
+    {
+        RefreshStrategyTuningStudio();
+        AddSystemLog($"STUDIO: Projection refreshed for {Studio.SelectedTuningStrategy}.");
+    }
+
+    [RelayCommand]
+    private async Task PromoteTuningCandidate()
+    {
+        var descriptor = GetTuningDescriptor(Studio.SelectedTuningStrategy);
+        var candidate = BuildStudioCandidateProfile(descriptor);
+        await _strategyTuningService.SaveCandidateAsync(descriptor.StrategyKey, candidate, candidate.Note);
+
+        if (!_userPromptService.Confirm(
+                "Promote Strategy Profile",
+                $"Promote the staged {descriptor.StrategyKey} profile into the active runtime and keep the previous profile for rollback?"))
+        {
+            return;
+        }
+
+        await _strategyTuningService.PromoteCandidateAsync(descriptor.StrategyKey, candidate.Note);
+        RefreshStrategyTuningStudio(syncCandidateFields: true);
+        UpdateBotLaunchSummary();
+        AddSystemLog($"STUDIO: {descriptor.StrategyKey} candidate promoted into the active runtime.");
+    }
+
+    [RelayCommand]
+    private async Task RollbackTuningPromotion()
+    {
+        var descriptor = GetTuningDescriptor(Studio.SelectedTuningStrategy);
+        if (!_userPromptService.Confirm(
+                "Rollback Strategy Profile",
+                $"Rollback the active {descriptor.StrategyKey} profile to the previous promoted version?"))
+        {
+            return;
+        }
+
+        await _strategyTuningService.RollbackAsync(descriptor.StrategyKey, "Rolled back from Strategy Studio.");
+        RefreshStrategyTuningStudio(syncCandidateFields: true);
+        UpdateBotLaunchSummary();
+        AddSystemLog($"STUDIO: {descriptor.StrategyKey} profile rolled back to the previous version.");
+    }
+
+    private void UpdatePlainEnglishTranslation()
+    {
+        string assetAction = string.IsNullOrEmpty(MarketOverview.SelectedSymbol) ? "assets" : MarketOverview.SelectedSymbol;
+        string riskAction = Studio.SelectedRiskProfile == "Aggressive" ? "aggressively" : Studio.SelectedRiskProfile == "Low" ? "conservatively" : "moderately";
+        string timeAction = MarketOverview.SelectedTimeframe == "1m" || MarketOverview.SelectedTimeframe == "5m" ? "rapidly scalping" : MarketOverview.SelectedTimeframe == "1d" ? "swing trading" : "monitoring intraday momentum";
+        
+        PlainEnglishTranslation = $"The bot will {riskAction} trade {assetAction} on the {MarketOverview.SelectedMarket} market. It is currently {timeAction} using {MarketOverview.SelectedTimeframe} intervals, waiting for multi-timeframe AlphaTrend confluence before executing.";
     }
 
     private void RefreshOpenPositionsFromTrades(IEnumerable<Trade> trades)
@@ -3895,7 +3193,7 @@ public partial class MainViewModel : ObservableObject
         string[] symbols = MarketOverview.SelectedMarket switch
         {
             "BIST" => new[] { "THYAO", "GARAN", "AKBNK", "SISE", "EREGL", "TUPRS", "BIMAS", "ASELS", "KCHOL" },
-            "Crypto" => new[] { "BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD", "AVAX-USD", "LINK-USD" },
+            "Crypto" => new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT", "LINKUSDT" },
             "Forex" => new[] { "USDTRY=X", "EURTRY=X", "EURUSD=X", "GBPUSD=X", "USDJPY=X" },
             _ => Array.Empty<string>()
         };
@@ -3931,7 +3229,11 @@ public partial class MainViewModel : ObservableObject
         Studio.BacktestStatus = $"Running backtest for {MarketOverview.SelectedSymbol} on {MarketOverview.SelectedTimeframe}...";
         Studio.BacktestScenario = $"{MarketOverview.SelectedMarket} | {MarketOverview.SelectedSymbol} | {MarketOverview.SelectedTimeframe} | {Studio.SelectedRiskProfile} risk";
         
-        var candles = await _marketDataService.GetCandlesAsync(MarketOverview.SelectedSymbol, 150, MarketOverview.SelectedMarket, MarketOverview.SelectedTimeframe);
+        var candles = await _marketDataService.GetCandlesAsync(
+            MarketOverview.SelectedSymbol,
+            ResolveBacktestCandleCount(MarketOverview.SelectedTimeframe),
+            MarketOverview.SelectedMarket,
+            MarketOverview.SelectedTimeframe);
         var result = await _backtestEngine.RunAsync(candles, MarketOverview.SelectedSymbol, 100000);
         
         InvokeOnUi(() => ApplyBacktestResultsToUi(candles, result));
@@ -4014,7 +3316,11 @@ public partial class MainViewModel : ObservableObject
 
     private async Task<GlobalBacktestResultViewModel?> ExecuteGlobalBacktestForSymbol(string s)
     {
-        var candles = await _marketDataService.GetCandlesAsync(s, 150, MarketOverview.SelectedMarket, MarketOverview.SelectedTimeframe);
+        var candles = await _marketDataService.GetCandlesAsync(
+            s,
+            ResolveBacktestCandleCount(MarketOverview.SelectedTimeframe),
+            MarketOverview.SelectedMarket,
+            MarketOverview.SelectedTimeframe);
         if (candles.Count == 0) return null;
         
         var result = await _backtestEngine.RunAsync(candles, s, 100000);
@@ -4040,6 +3346,17 @@ public partial class MainViewModel : ObservableObject
         Studio.BacktestStatus = $"Bulk backtest complete for {MarketOverview.SelectedMarket}. {Studio.GlobalBacktestResults.Count} symbols processed.";
         AddSystemLog("GLOBAL: All market simulations finalized.");
     }
+
+    private static int ResolveBacktestCandleCount(string timeframe)
+        => timeframe switch
+        {
+            "1m" => 1800,
+            "5m" => 1200,
+            "15m" => 1000,
+            "1h" => 720,
+            "4h" => 500,
+            _ => 365
+        };
 
     [RelayCommand]
     private Task StartTrading()
@@ -4115,46 +3432,94 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void EmergencyStop()
     {
+        if (!_userPromptService.Confirm(
+                "Emergency Shutdown",
+                "This will halt the trading loop and clear every visible open position from the operator deck. Continue?"))
+        {
+            AddSystemLog("EMERGENCY STOP: Operator cancelled shutdown request.");
+            return;
+        }
+
         _tradingLoopService.Stop();
         Status = "STOPPED";
         StatusColor = RedBrush;
         AddSystemLog("EMERGENCY STOP: All trading halted.");
         ActivePositions.Clear();
+        PortfolioView.ActivePositions.Clear();
     }
 
     [RelayCommand]
     private void ClosePosition(PositionViewModel position)
     {
         if (position == null) return;
-        AddSystemLog($"Closing {position.Symbol} {position.Side} at Market.");
-        ActivePositions.Remove(position);
+        if (!_userPromptService.Confirm(
+                "Close Position",
+                $"Flatten {position.Symbol} {position.Side} at market?\n\nSize {position.Size:N4} | Remaining {position.RemainingQuantity:N4} | Mark {position.MarkPrice:N2}"))
+        {
+            AddSystemLog($"Close request cancelled for {position.Symbol}.");
+            return;
+        }
+
+        AddSystemLog($"Closing {position.Symbol} {position.Side} at market. Remaining qty {position.RemainingQuantity:N4}.");
+        RemovePositionFromDeck(position);
     }
 
     [RelayCommand]
     private void SetBreakEven(PositionViewModel position)
     {
         if (position == null) return;
-        AddSystemLog($"Moving SL to BE for {position.Symbol}. Risk removed.");
+        if (position.EntryPrice <= 0)
+        {
+            AddSystemLog($"Break-even request skipped for {position.Symbol}. Entry price is unavailable.");
+            return;
+        }
+
+        position.StopLoss = position.EntryPrice;
+        AddSystemLog($"Stop moved to break-even for {position.Symbol} at {position.EntryPrice:N2}.");
     }
 
     [RelayCommand]
     private void CloseAllPositions()
     {
+        if (PortfolioView.ActivePositions.Count == 0)
+        {
+            AddSystemLog("Close-all request ignored. No active positions are currently loaded.");
+            return;
+        }
+
+        if (!_userPromptService.Confirm(
+                "Close All Positions",
+                $"Flatten all {PortfolioView.ActivePositions.Count} visible open positions? This is intended for operator intervention only."))
+        {
+            AddSystemLog("Close-all request cancelled by operator.");
+            return;
+        }
+
         AddSystemLog("EMERGENCY KILL SWITCH: Closing all active positions...");
         ActivePositions.Clear();
+        PortfolioView.ActivePositions.Clear();
     }
 
     [RelayCommand]
     private void ResetKillSwitch()
     {
-        _riskAgent.ResetKillSwitch();
+        _riskAgent.ResetSoftPause();
         RefreshRiskPanel();
-        AddSystemLog("Risk kill-switch reset.");
+        AddSystemLog("Risk soft pause reset.");
     }
 
     [RelayCommand]
     private void ToggleTradingMode()
     {
+        if (IsPaperMode &&
+            !_userPromptService.Confirm(
+                "Switch To Live Mode",
+                "You are about to switch the cockpit from paper to live mode. Confirm broker credentials, venue safeguards, and kill-switch readiness before proceeding. Continue?"))
+        {
+            AddSystemLog("Trading mode switch to live was cancelled.");
+            return;
+        }
+
         IsPaperMode = !IsPaperMode;
         UpdateTradingMode();
         AddSystemLog(IsPaperMode
@@ -4168,20 +3533,28 @@ public partial class MainViewModel : ObservableObject
         var exportDirectory = Path.Combine(Path.GetTempPath(), "ThatsMyQuant", "exports");
         Directory.CreateDirectory(exportDirectory);
 
-        var exportPath = Path.Combine(
+        var exportStamp = DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+        var csvPath = Path.Combine(
             exportDirectory,
-            $"ledger-audit-{DateTime.Now:yyyyMMdd-HHmmss}.csv");
+            $"ledger-audit-{exportStamp}.csv");
+        var jsonPath = Path.Combine(
+            exportDirectory,
+            $"ledger-audit-{exportStamp}.json");
 
-        File.WriteAllText(exportPath, BuildLedgerExportCsv(), Encoding.UTF8);
-        LastLedgerExportPath = exportPath;
-        AddSystemLog($"Ledger Export: Stored audit CSV at {exportPath}");
+        File.WriteAllText(csvPath, BuildLedgerExportCsv(), Encoding.UTF8);
+        File.WriteAllText(jsonPath, BuildLedgerExportJson(), Encoding.UTF8);
+        LastLedgerExportPath = csvPath;
+        AddSystemLog($"Ledger Export: Stored audit CSV at {csvPath}");
+        AddSystemLog($"Ledger Export: Stored audit JSON at {jsonPath}");
     }
 
     [RelayCommand]
-    private void SaveSettings()
+    private async Task SaveSettings()
     {
-        AddSystemLog("SYSTEM: Global configuration and API keys saved to secure vault.");
-        AddSystemLog("INFRA: Webhook configurations verified successfully.");
+        await ExchangeSettings.SaveSettingsCommand.ExecuteAsync(null);
+        UpdateRuntimeIntegrityStatus();
+        AddSystemLog($"SYSTEM: Exchange mode saved as {ExchangeSettings.SelectedExchangeMode}.");
+        AddSystemLog($"INFRA: Exchange settings status -> {ExchangeSettings.SaveStatus}");
     }
 
     [RelayCommand]
@@ -4271,10 +3644,48 @@ public partial class MainViewModel : ObservableObject
         return builder.ToString();
     }
 
+    private string BuildLedgerExportJson()
+    {
+        var payload = TradeJournal
+            .Select(ResolveStoredTruthJournalEntry)
+            .Select(entry => new
+            {
+                entry.Time,
+                entry.Symbol,
+                entry.ExecutionMode,
+                entry.MlModelVersion,
+                entry.Side,
+                entry.PromotionStage,
+                entry.StageExplanation,
+                entry.EdgeSummary,
+                entry.ExitSummary,
+                entry.MlDriftImpact,
+                entry.MlDriftSummary,
+                entry.ConcordanceImpact,
+                entry.ConcordanceSummary,
+                entry.VenueImpact,
+                entry.AllocatorImpact,
+                entry.PnL,
+                entry.Reasoning
+            })
+            .ToList();
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions
+        {
+            WriteIndented = true
+        });
+    }
+
     private static string CsvEscape(string? value)
     {
         var text = value ?? string.Empty;
         return $"\"{text.Replace("\"", "\"\"")}\"";
+    }
+
+    private void RemovePositionFromDeck(PositionViewModel position)
+    {
+        ActivePositions.Remove(position);
+        PortfolioView.ActivePositions.Remove(position);
     }
 
     [RelayCommand]
@@ -4290,8 +3701,8 @@ public partial class MainViewModel : ObservableObject
         var lower = Studio.StrategyPrompt.ToLower();
         
         // 1. Symbol/Market Extraction
-        if (lower.Contains("btc") || lower.Contains("bitcoin")) { MarketOverview.SelectedMarket = "Crypto"; MarketOverview.SelectedSymbol = "BTC-USD"; }
-        else if (lower.Contains("eth") || lower.Contains("ethereum")) { MarketOverview.SelectedMarket = "Crypto"; MarketOverview.SelectedSymbol = "ETH-USD"; }
+        if (lower.Contains("btc") || lower.Contains("bitcoin")) { MarketOverview.SelectedMarket = "Crypto"; MarketOverview.SelectedSymbol = "BTCUSDT"; }
+        else if (lower.Contains("eth") || lower.Contains("ethereum")) { MarketOverview.SelectedMarket = "Crypto"; MarketOverview.SelectedSymbol = "ETHUSDT"; }
         else if (lower.Contains("usd") || lower.Contains("try")) { MarketOverview.SelectedMarket = "Forex"; MarketOverview.SelectedSymbol = "USDTRY=X"; }
         else if (lower.Contains("thy") || lower.Contains("turkish airlines")) { MarketOverview.SelectedMarket = "BIST"; MarketOverview.SelectedSymbol = "THYAO"; }
         
@@ -4471,879 +3882,11 @@ public partial class MainViewModel : ObservableObject
         AddSystemLog($"LAUNCH CONTROL: {strategy} moved into manual recovery mode at reduced size.");
     }
 
-    public async Task AnalyzeSymbol(string symbol, string market, string timeframe)
-    {
-        try
-        {
-            AddSystemLog($"ANALYSIS: Processing {symbol} ({market}) - {timeframe}...");
-            var candles = await _marketDataService.GetCandlesAsync(symbol, 200, market, timeframe);
-            SetMarketHealth("Online");
-
-            var risk = ResolveRiskParameters(Studio.SelectedRiskProfile);
-            var rawDecision = await _technicalAnalysis.AnalyzeAsync(new Signal { Symbol = symbol }, candles, risk);
-            if (rawDecision.Indicators == null) return;
-
-            var decision = ApplyStrategyThrottle(rawDecision);
-            UpdateBotLaunchSummary();
-
-            await UpdateAnalysisResultsAsync(symbol, market, candles, decision);
-            
-            // Tiered Telemetry Integration
-            var snapshot = await _agentCoordinator.RunFullPipelineAsync(
-                new Signal { Symbol = symbol, Price = rawDecision.Indicators.CurrentPrice },
-                new List<MarketTick>(), // Ticks would come from a live stream in reality
-                candles,
-                MarketRegime.Trending, // Regime can be determined from RSM agent in snapshot
-                _tradeCache,
-                _tradeCache.Where(t => t.IsClosed).ToList());
-
-            UpdateTelemetry(snapshot);
-
-            await ExecutePostAnalysisTasksAsync(symbol, market, candles, decision);
-        }
-        catch (Exception ex)
-        {
-            SetMarketHealth("Degraded");
-            AddSystemLog($"ERROR: {ex.Message}");
-        }
-    }
-
-    private void SetMarketHealth(string status)
-    {
-        ListenerHealth = status == "Online" ? "Online" : "Warning";
-        MarketDataHealth = status;
-    }
-
-    private async Task UpdateAnalysisResultsAsync(string symbol, string market, List<Candle> candles, TradeDecision decision)
-    {
-        var ind = decision.Indicators!;
-        
-        InvokeOnUi(() => 
-        {
-            UpdateWatchlistAndChart(symbol, ind, candles);
-            RefreshIndicatorProperties(ind);
-            RefreshDecisionProperties(decision);
-
-            if (decision.ShouldTrade)
-            {
-                LogAnalysisResults(symbol, decision, ind, market);
-            }
-            else
-            {
-                var reasoning = decision.Reasoning.Length > 80 ? decision.Reasoning[..80] + "..." : decision.Reasoning;
-                AddSystemLog($"❌ SKIP: {symbol} — {reasoning}");
-            }
-        });
-
-        await Task.CompletedTask;
-    }
-
-    private async Task ExecutePostAnalysisTasksAsync(string symbol, string market, List<Candle> candles, TradeDecision decision)
-    {
-        var ind = decision.Indicators!;
-
-        var multiTimeframeTask = UpdateMultiTimeframeAsync(symbol, market);
-        var aiAnalystTask = UpdateAiAnalyst(symbol, ind);
-        RefreshRiskPanel();
-
-        if (decision.ShouldTrade)
-        {
-            _ = DispatchTradeAlertsAsync(symbol, decision, ind);
-        }
-
-        await Task.WhenAll(multiTimeframeTask, aiAnalystTask);
-        await RefreshStrategyLeaderboard();
-        
-        UpdateTraderExperience(decision, ind, candles);
-        UpdateVisualReasoning(decision, ind, candles);
-        UpdateSessionSummary();
-    }
-
-    private async Task DispatchTradeAlertsAsync(string symbol, TradeDecision decision, IndicatorSnapshot ind)
-    {
-        foreach (var alert in _alertingServices)
-        {
-            var audit = BuildAlertAuditContext(symbol, decision, ind);
-            try
-            {
-                await alert.SendTradeAlertAsync(symbol, decision, ind, audit);
-            }
-            catch (Exception ex)
-            {
-                AddSystemLog($"Alert Error: {ex.Message}");
-            }
-        }
-    }
-
-    private void UpdateWatchlistAndChart(string symbol, IndicatorSnapshot ind, List<Candle> candles)
-    {
-        var watchlistItem = WatchlistItems.FirstOrDefault(w => w.Symbol == symbol);
-        if (watchlistItem != null)
-        {
-            watchlistItem.Price = ind.CurrentPrice;
-            var startPrice = candles.First().Close;
-            watchlistItem.ChangePercent = (double)((ind.CurrentPrice - startPrice) / startPrice * 100);
-        }
-
-        UpdateIndicatorAgenda(ind);
-    }
-
-    private void UpdateTelemetry(FiveTierSnapshot snapshot)
-    {
-        InvokeOnUi(() =>
-        {
-            // Tier 1 & 2 -> Telemetry View
-            Telemetry.OrderBookRatio = snapshot.Foundation.BidAskImbalance;
-            Telemetry.TickDirectionRatio = snapshot.Foundation.TickDirectionRatio;
-            Telemetry.VwapSigma = (double)snapshot.Patterns.VwapDeviationSigmas;
-            Telemetry.IchimokuCloudStatus = snapshot.Patterns.IchimokuState.ToString();
-            Telemetry.BollingerWidth = snapshot.Patterns.BollingerPercentB; // Simplified mapping
-
-            // Tier 3 -> Strategy Studio (Votes)
-            foreach (var vote in snapshot.Votes)
-            {
-                switch (vote.StrategyTag)
-                {
-                    case "Momentum":
-                        Studio.MomentumVote = $"{vote.Vote} ({vote.ConfidenceAdjustment:P0})";
-                        break;
-                    case "Breakout":
-                        Studio.BreakoutVote = $"{vote.Vote} ({vote.ConfidenceAdjustment:P0})";
-                        break;
-                    case "StatArb":
-                        Studio.StatArbVote = $"{vote.Vote} ({vote.ConfidenceAdjustment:P0})";
-                        break;
-                    case "Scalp":
-                        Studio.ScalpVote = $"{vote.Vote} ({vote.ConfidenceAdjustment:P0})";
-                        break;
-                }
-            }
-
-            // Tier 4 -> Strategy Studio (Risk)
-            Studio.RiskGauntletSummary = snapshot.RiskGauntlet.Approved ? "PASSED" : $"VETO: {snapshot.RiskGauntlet.Reason}";
-            Studio.KellyFraction = snapshot.RiskGauntlet.SizeMultiplier;
-
-            // Tier 5 -> AI Analyst
-            AiAnalystView.MarketRegime = snapshot.Meta.StrategyWeights.OrderByDescending(x => x.Value).FirstOrDefault().Key ?? "Determining...";
-            AiAnalystView.RLReward = snapshot.Meta.ConfidenceScalar; // Simplified for UI
-            AiAnalystView.OnlineLearningWeights = string.Join(" | ", snapshot.Meta.StrategyWeights.Select(sw => $"{sw.Key}: {sw.Value:P0}"));
-        });
-    }
-
-    private void RefreshIndicatorProperties(IndicatorSnapshot ind)
-    {
-        CurrentPrice = ind.CurrentPrice;
-        UpdateRsiUi(ind.RSI);
-        UpdateMacdUi(ind.MACDHistogram ?? 0);
-        UpdateEmaUi(ind.EMA20 ?? 0, ind.EMA50 ?? 0);
-        UpdateVitalsUi(ind.BollingerUpper, ind.BollingerLower, ind.ATR, ind.VolumeRatio);
-        UpdateAlphaTrendUi(ind.AlphaTrend);
-
-        NearestSupport = ind.NearestSupport?.Price ?? 0;
-        NearestResistance = ind.NearestResistance?.Price ?? 0;
-    }
-
-    private void UpdateRsiUi(double? rsi)
-    {
-        RSI = rsi ?? 50;
-        RSIColor = RSI < 30 ? GreenBrush : RSI > 70 ? RedBrush : GrayBrush;
-    }
-
-    private void UpdateMacdUi(double macdHistogram)
-    {
-        if (macdHistogram > 0)
-        {
-            MACDStatus = $"▲ Bullish ({macdHistogram:F4})";
-            MACDColor = GreenBrush;
-        }
-        else
-        {
-            MACDStatus = $"▼ Bearish ({macdHistogram:F4})";
-            MACDColor = RedBrush;
-        }
-    }
-
-    private void UpdateEmaUi(double ema20, double ema50)
-    {
-        if (ema20 > ema50)
-        {
-            EMAStatus = "Golden Cross ▲";
-            EMAColor = GreenBrush;
-        }
-        else
-        {
-            EMAStatus = "Death Cross ▼";
-            EMAColor = RedBrush;
-        }
-    }
-
-    private void UpdateVitalsUi(double? bbUpper, double? bbLower, double? atr, double? volRatio)
-    {
-        BBUpper = bbUpper ?? 0;
-        BBLower = bbLower ?? 0;
-        ATR = atr ?? 0;
-        VolumeRatio = volRatio ?? 1.0;
-        VolumeColor = VolumeRatio >= 1.5 ? GreenBrush : GrayBrush;
-    }
-
-    private void UpdateAlphaTrendUi(AlphaTrendResult? alpha)
-    {
-        if (alpha == null) return;
-
-        AlphaTrendValue = (decimal?)alpha.Value;
-        AlphaTrendStatus = alpha.IsBullish ? "▲ BULLISH" : "▼ BEARISH";
-        AlphaTrendColor = alpha.IsBullish ? GreenBrush : RedBrush;
-
-        if (alpha.Signal != null && alpha.IsConfirmed)
-        {
-            AddSystemLog($"⚡ AlphaTrend CONFIRMED {alpha.Signal} signal!");
-        }
-    }
-
-    private void RefreshDecisionProperties(TradeDecision decision)
-    {
-        ConfluenceScore = decision.Confidence;
-        ConfluenceColor = decision.Confidence >= 60 ? GreenBrush
-                        : decision.Confidence >= 40 ? OrangeBrush : RedBrush;
-
-        StopLoss = decision.StopLoss;
-        TakeProfit = decision.TakeProfit;
-        PositionSize = decision.PositionSizePercent;
-        Telemetry.AnalysisTimestamp = $"Updated {DateTime.Now:HH:mm:ss}";
-    }
-
-    private void LogAnalysisResults(string symbol, TradeDecision decision, IndicatorSnapshot ind, string market)
-    {
-        var alertAudit = BuildAlertAuditContext(symbol, decision, ind);
-
-        TradeJournal.Insert(0, new TradeJournalEntry
-        {
-            Time = DateTime.Now,
-            Symbol = symbol,
-            Side = decision.Side.ToString(),
-            Price = ind.CurrentPrice,
-            Confidence = decision.Confidence,
-            Status = "Signal Approved",
-            ExecutionMode = alertAudit.ExecutionMode,
-            PromotionStage = alertAudit.PromotionStage,
-            StageExplanation = alertAudit.StageExplanation,
-            ExactBucketImpact = alertAudit.ExactBucketImpact,
-            ExactBucketSummary = alertAudit.ExactBucketSummary,
-            VenueImpact = alertAudit.VenueImpact,
-            AllocatorImpact = alertAudit.AllocatorImpact,
-            EdgeSummary = alertAudit.EdgeSummary,
-            ExitSummary = alertAudit.ExitSummary,
-            MlDriftImpact = alertAudit.MlDriftImpact,
-            MlDriftSummary = alertAudit.MlDriftSummary,
-            VenueImpactColor = ResolveJournalVenueImpactColor(decision, ind),
-            MlDriftImpactColor = GrayBrush,
-            ExecutionModeColor = GetCurrentExecutionModeColor(),
-            SideColor = decision.Side == TradeSide.Buy ? GreenBrush : RedBrush,
-            PnL = 0m,
-            Reasoning = decision.Reasoning.Length > 60
-                ? decision.Reasoning[..60] + "..."
-                : decision.Reasoning
-        });
-
-        RefreshOperatorAuditAlerts();
-
-        string currency = market == "BIST" ? "TRY" : "$";
-        AddSystemLog($"Signal approved: {decision.Side} {symbol} @ {currency}{ind.CurrentPrice:F2} (Score: {decision.Confidence}/100)");
-    }
-
-    private async Task UpdateAiAnalyst(string symbol, IndicatorSnapshot ind)
-    {
-        try
-        {
-            InvokeOnUi(() =>
-            {
-                AiAnalystView.AiSummary = "Generating AI insight...";
-                AiAnalystView.AiSentimentMode = "Analyzing";
-                AiAnalystView.AiSentimentColor = GrayBrush;
-                AiAnalystView.AiTradeRecommendation = "Preparing recommendation...";
-                AiAnalystView.AiRiskSummary = "Checking risk posture...";
-                AiAnalystView.ExecutionReadiness = 0;
-                AiAnalystView.TraderSafetyStatus = "Review pending";
-                AiAnalystView.TraderSafetyColor = GrayBrush;
-                TraderWarnings.Clear();
-            });
-
-            var result = await _aiAnalyst.AnalyzeSnapshotAsync(symbol, ind);
-            
-            InvokeOnUi(() =>
-            {
-                AiServiceHealth = "Online";
-                AiAnalystView.AiSummary = result.ExecutiveSummary;
-                AiAnalystView.AiTradeRecommendation = result.TradeRecommendation;
-                AiAnalystView.AiRiskSummary = result.RiskSummary;
-                AiAnalystView.ExecutionReadiness = result.ExecutionReadinessScore;
-                UpdateTraderSafety(result);
-
-                if (result.SentimentScore >= 0.5) { AiAnalystView.AiSentimentMode = $"Strong Bullish ({result.SentimentScore:F2})"; AiAnalystView.AiSentimentColor = GreenBrush; }
-                else if (result.SentimentScore <= -0.5) { AiAnalystView.AiSentimentMode = $"Strong Bearish ({result.SentimentScore:F2})"; AiAnalystView.AiSentimentColor = RedBrush; }
-                else if (result.SentimentScore > 0) { AiAnalystView.AiSentimentMode = $"Bullish ({result.SentimentScore:F2})"; AiAnalystView.AiSentimentColor = GreenBrush; }
-                else if (result.SentimentScore < 0) { AiAnalystView.AiSentimentMode = $"Bearish ({result.SentimentScore:F2})"; AiAnalystView.AiSentimentColor = RedBrush; }
-                else { AiAnalystView.AiSentimentMode = "Neutral (0.00)"; AiAnalystView.AiSentimentColor = GrayBrush; }
-            });
-        }
-        catch (Exception ex)
-        {
-            InvokeOnUi(() =>
-            {
-                AiAnalystView.AiSummary = "AI Analyst unavailable.";
-                AiAnalystView.AiSentimentMode = "Error";
-                AiAnalystView.AiSentimentColor = RedBrush;
-                AiAnalystView.AiTradeRecommendation = "Fallback to manual review";
-                AiAnalystView.AiRiskSummary = "AI analyst unavailable, so use manual risk checks only.";
-                AiAnalystView.ExecutionReadiness = 0;
-                AiAnalystView.TraderSafetyStatus = "Manual review required";
-                AiAnalystView.TraderSafetyColor = OrangeBrush;
-                TraderWarnings.Clear();
-                TraderWarnings.Add("AI analyst unavailable");
-                AiServiceHealth = "Degraded";
-            });
-            AddSystemLog($"AI Error: {ex.Message}");
-        }
-    }
-
-    private void UpdateTraderSafety(AiAnalysisResult result)
-    {
-        TraderWarnings.Clear();
-        foreach (var flag in result.RiskFlags.Take(4))
-        {
-            TraderWarnings.Add(flag);
-        }
-
-        if (TraderWarnings.Count == 0)
-        {
-            TraderWarnings.Add("No material AI risk flags.");
-        }
-
-        if (result.ExecutionReadinessScore >= 75)
-        {
-            AiAnalystView.TraderSafetyStatus = "Ready with controls";
-            AiAnalystView.TraderSafetyColor = GreenBrush;
-            return;
-        }
-
-        if (result.ExecutionReadinessScore >= 55)
-        {
-            AiAnalystView.TraderSafetyStatus = "Caution";
-            AiAnalystView.TraderSafetyColor = OrangeBrush;
-            return;
-        }
-
-        AiAnalystView.TraderSafetyStatus = "Stand down";
-        AiAnalystView.TraderSafetyColor = RedBrush;
-    }
-
-    private static void InvokeOnUiThread(Action action)
-    {
-        var dispatcher = System.Windows.Application.Current?.Dispatcher;
-        if (dispatcher == null)
-        {
-            action();
-            return;
-        }
-
-        dispatcher.Invoke(action);
-    }
-
-    private void UpdateTraderExperience(TradeDecision decision, IndicatorSnapshot indicators, List<Candle> candles)
-    {
-        var strategyTag = string.IsNullOrWhiteSpace(decision.StrategyTag) ? "Confluence filter" : decision.StrategyTag;
-        var regimeTag = string.IsNullOrWhiteSpace(decision.RegimeTag) ? "Unclassified regime" : decision.RegimeTag;
-        var atr = indicators.ATR.HasValue ? Convert.ToDecimal(indicators.ATR.Value) : 0m;
-        var resistanceRoom = indicators.NearestResistance?.Price is decimal resistance
-            ? resistance - indicators.CurrentPrice
-            : atr * 2;
-        var supportRoom = indicators.NearestSupport?.Price is decimal support
-            ? indicators.CurrentPrice - support
-            : atr * 2;
-        var reward = Math.Abs(decision.TakeProfit - indicators.CurrentPrice);
-        var risk = Math.Abs(indicators.CurrentPrice - decision.StopLoss);
-        RiskRewardRatio = risk > 0 ? reward / risk : 0;
-
-        InvokeOnUi(() =>
-        {
-            PopulateEntryChecklist(indicators, decision, supportRoom, resistanceRoom, atr);
-            UpdateTraderStatusLabels(decision, indicators, strategyTag, regimeTag);
-            PopulateSafetyBanners(indicators);
-            DetermineTradeReadiness(decision, indicators);
-        });
-
-        if (candles.Count > 0)
-        {
-            MarketOverview.InspectChartAt(MarketOverview.ChartCanvasWidth * 0.82); // Slightly shifted for perspective
-        }
-
-        UpdateHftWorkspace();
-    }
-
-    private void PopulateEntryChecklist(IndicatorSnapshot indicators, TradeDecision decision, decimal supportRoom, decimal resistanceRoom, decimal atr)
-    {
-        EntryChecklist.Clear();
-        AddChecklistItem(
-            "Trend aligned",
-            (indicators.AlphaTrend?.IsBullish ?? false) && (indicators.PMax?.IsBullish ?? true) && (indicators.EMA20 ?? 0) >= (indicators.EMA50 ?? 0),
-            "AlphaTrend, PMax, and EMA stack are aligned.");
-        AddChecklistItem(
-            "Momentum confirmed",
-            (indicators.MACDHistogram ?? 0) > 0 && (indicators.RSI ?? 50) >= 45 && (indicators.RSI ?? 50) <= 70,
-            "Momentum is supportive without looking overheated.");
-        AddChecklistItem(
-            "Volume confirmed",
-            (indicators.VolumeRatio ?? 0) >= 1.2,
-            "Relative volume is strong enough to trust the move.");
-        AddChecklistItem(
-            "Structure room",
-            decision.Side == TradeSide.Sell ? supportRoom >= atr * 0.75m : resistanceRoom >= atr * 0.75m,
-            "There is enough room before the nearest support or resistance.");
-        AddChecklistItem(
-            "Risk acceptable",
-            !IsKillSwitchArmed && RiskRewardRatio >= 1.4m && decision.PositionSizePercent > 0,
-            "Risk, size, and kill-switch controls are inside tolerance.");
-        AddChecklistItem(
-            "Execution quality",
-            AiAnalystView.ExecutionReadiness >= 55 && QueueHealth != "Critical (Dead-Letter)" && MarketDataHealth == "Online",
-            "Execution conditions and system health are acceptable.");
-    }
-
-    private void UpdateTraderStatusLabels(TradeDecision decision, IndicatorSnapshot indicators, string strategyTag, string regimeTag)
-    {
-        AiAnalystView.SignalConfidenceLabel = $"Signal confidence: {decision.Confidence}/100";
-        AiAnalystView.ExecutionQualityLabel = $"Execution quality: {AiAnalystView.ExecutionReadiness}/100";
-        var exactBucketPressure = ResolveSelectedExactBucketPressure();
-        var concordanceSignal = ResolveSelectedConcordanceSignal();
-        var exactBucketExecutionText = exactBucketPressure is null
-            ? "Exact bucket: pressure is still unconfirmed."
-            : $"Exact bucket: {exactBucketPressure.Value.Summary}";
-        var concordanceExecutionText = concordanceSignal is null
-            ? "Concordance: edge and venue execution are still unconfirmed."
-            : $"Concordance: {concordanceSignal.Value.Summary}";
-        MarketOverview.MarketPulse =
-            $"Price {indicators.CurrentPrice:F2} | RSI {(indicators.RSI ?? 0):F1} | Vol {(indicators.VolumeRatio ?? 0):F1}x | " +
-            $"ATR {(indicators.ATR ?? 0):F2} | {exactBucketExecutionText} {concordanceExecutionText}";
-        AiAnalystView.ExecutionPlan =
-            $"Entry {decision.Side} with stop {decision.StopLoss:F2}, target {decision.TakeProfit:F2}, " +
-            $"size {decision.PositionSizePercent:P1}, R/R 1:{RiskRewardRatio:F2}. {exactBucketExecutionText} {concordanceExecutionText}";
-
-        AiAnalystView.WhyThisTrade =
-            $"{decision.Side} bias via {strategyTag} in {regimeTag}. " +
-            $"{decision.Reasoning} Stop {decision.StopLoss:F2}, target {decision.TakeProfit:F2}, size {decision.PositionSizePercent:P1}.";
-        MarketOverview.BotStatusSummary = decision.ShouldTrade
-            ? $"Scanning complete: {strategyTag} found a {decision.Side} candidate in {regimeTag}. Execution quality is {AiAnalystView.ExecutionReadiness}/100. Throttle {StrategyThrottleStatus.ToLowerInvariant()}. {exactBucketExecutionText} {concordanceExecutionText}"
-            : $"Bot is scanning but standing down. {decision.Reasoning}";
-        MarketOverview.DailyMarketBriefing =
-            $"{MarketOverview.SelectedMarket} briefing for {MarketOverview.SelectedSymbol}: {regimeTag} backdrop with {strategyTag} bias. " +
-            $"Current price {indicators.CurrentPrice:F2}, support {NearestSupport:F2}, resistance {NearestResistance:F2}, " +
-            $"AI stance: {AiAnalystView.AiTradeRecommendation}. {exactBucketExecutionText} {concordanceExecutionText}";
-    }
-
-
-    private void DetermineTradeReadiness(TradeDecision decision, IndicatorSnapshot indicators)
-    {
-        var passedChecks = EntryChecklist.Count(item => item.IsPassing);
-
-        if (decision.ShouldTrade && AiAnalystView.ExecutionReadiness >= 75 && passedChecks >= 5 && !IsKillSwitchArmed)
-        {
-            AiAnalystView.TradeReadiness = "Ready";
-            AiAnalystView.TradeReadinessColor = GreenBrush;
-            AiAnalystView.TradeReadinessReason = "Confluence, execution quality, and controls are all supportive.";
-        }
-        else if (AiAnalystView.ExecutionReadiness >= 55 && passedChecks >= 4 && !IsKillSwitchArmed)
-        {
-            AiAnalystView.TradeReadiness = "Caution";
-            AiAnalystView.TradeReadinessColor = OrangeBrush;
-            AiAnalystView.TradeReadinessReason = "The setup is tradable, but one or more filters still need respect.";
-        }
-        else
-        {
-            AiAnalystView.TradeReadiness = "Do Not Trade";
-            AiAnalystView.TradeReadinessColor = RedBrush;
-            AiAnalystView.TradeReadinessReason = "At least one critical filter is failing or execution quality is too weak.";
-        }
-    }
-
-    private void UpdateHftWorkspace()
-    {
-        var (exactBucketPressure, concordanceSignal, exactBucketHftText, concordanceHftText) = ResolveHftContext();
-        var (sessionTrades, sessionPnl, sessionWinRate) = CalculateHftPerformance();
-        var estimatedSlippageBps = CalculateEstimatedSlippage();
-
-        InvokeOnUi(() =>
-        {
-            UpdateHftLabels(sessionTrades.Count, sessionPnl, sessionWinRate, estimatedSlippageBps, exactBucketHftText, concordanceHftText);
-            ResolveHftBias(exactBucketPressure, concordanceSignal, exactBucketHftText, concordanceHftText, estimatedSlippageBps);
-        });
-    }
-
-    private ((string Impact, string Summary, Brush Color)? Pressure, (string Impact, string Summary, Brush Color)? Concordance, string PressureText, string ConcordanceText) ResolveHftContext()
-    {
-        var pressure = ResolveSelectedExactBucketPressure();
-        var concordance = ResolveSelectedConcordanceSignal();
-        var pressureText = pressure is null
-            ? "Exact bucket: pressure not confirmed yet."
-            : $"Exact bucket: {pressure.Value.Summary}";
-        var concordanceText = concordance is null
-            ? "Concordance: exact bucket edge and venue execution are not confirmed yet."
-            : $"Concordance: {concordance.Value.Summary}";
-        return (pressure, concordance, pressureText, concordanceText);
-    }
-
-    private (List<Trade> Trades, decimal Pnl, double WinRate) CalculateHftPerformance()
-    {
-        var trades = _tradeCache
-            .Where(trade => trade.Status == TradeStatus.Executed && trade.IsClosed && trade.ExitTime.HasValue)
-            .Where(trade => trade.ExitTime!.Value.Date == DateTime.UtcNow.Date)
-            .ToList();
-        var pnl = trades.Sum(CalculateTradePnL);
-        var wins = trades.Count(trade => CalculateTradePnL(trade) > 0);
-        var winRate = trades.Count == 0 ? 0 : wins * 100.0 / trades.Count;
-        return (trades, pnl, winRate);
-    }
-
-    private decimal CalculateEstimatedSlippage()
-    {
-        var normalizedAtr = ATR <= 0 ? 0.25m : Convert.ToDecimal(ATR);
-        var referencePrice = CurrentPrice <= 0 ? 1m : CurrentPrice;
-        var queueMultiplier = GetQueueMultiplier(QueueHealth);
-        var readinessMultiplier = AiAnalystView.ExecutionReadiness >= 70 ? 0.75m : AiAnalystView.ExecutionReadiness >= 55 ? 1.0m : 1.25m;
-        var volumeMultiplier = VolumeRatio >= 1.2 ? 0.8m : 1.15m;
-        return Math.Round((normalizedAtr / referencePrice) * 10000m * queueMultiplier * readinessMultiplier * volumeMultiplier, 1);
-    }
-
-    private void UpdateHftLabels(int tradeCount, decimal sessionPnl, double sessionWinRate, decimal estimatedSlippageBps, string pressureText, string concordanceText)
-    {
-        Telemetry.HftWorkspaceHeadline = $"Execution mode {TradingModeLabel}. Queue {QueueHealth.ToLowerInvariant()}, market data {MarketDataHealth.ToLowerInvariant()}, AI {AiServiceHealth.ToLowerInvariant()}. {pressureText} {concordanceText}";
-        Telemetry.HftLatencySummary = $"API {ApiPing} | Server {ServerLatency} | Listener {ListenerHealth}";
-        Telemetry.HftMicrostructureSummary = $"OFI {Telemetry.HftInferenceStatus} | Z-score {Telemetry.ZScoreStatus} | Volume {(VolumeRatio):F1}x | ATR {ATR:F2}";
-        Telemetry.HftEstimatedSlippage = $"~{estimatedSlippageBps:N1} bps";
-        Telemetry.HftSessionPnl = sessionPnl >= 0 ? $"+{sessionPnl:N0}" : $"{sessionPnl:N0}";
-        Telemetry.HftSessionPnlColor = sessionPnl >= 0 ? GreenBrush : RedBrush;
-        Telemetry.HftSessionWinRate = tradeCount == 0 ? "WR --" : $"WR {sessionWinRate:F0}% / {tradeCount}";
-
-        ResolveFillQuality(estimatedSlippageBps);
-    }
-
-    private void ResolveFillQuality(decimal estimatedSlippageBps)
-    {
-        if (estimatedSlippageBps <= 8 && AiAnalystView.ExecutionReadiness >= 70 && QueueHealth == "Optimal")
-        {
-            Telemetry.HftFillQuality = "Institutional";
-            Telemetry.HftFillQualityColor = GreenBrush;
-        }
-        else if (estimatedSlippageBps <= 15 && AiAnalystView.ExecutionReadiness >= 55)
-        {
-            Telemetry.HftFillQuality = "Acceptable";
-            Telemetry.HftFillQualityColor = OrangeBrush;
-        }
-        else
-        {
-            Telemetry.HftFillQuality = "Fragile";
-            Telemetry.HftFillQualityColor = RedBrush;
-        }
-    }
-
-    private void ResolveHftBias((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pressureText, string concordanceText, decimal estimatedSlippageBps)
-    {
-        if (CheckHftBlocked(pressure, concordance, pressureText, concordanceText)) return;
-        if (CheckHftProbe(pressure, concordance, concordanceText)) return;
-        if (CheckHftReady(pressure, concordance, pressureText, concordanceText)) return;
-
-        Telemetry.HftExecutionBias = "Standby";
-        Telemetry.HftExecutionBiasColor = GrayBrush;
-        Telemetry.HftRiskSummary = $"Wait for stronger liquidity before using HFT-style actions. {pressureText} {concordanceText}";
-    }
-
-    private bool CheckHftBlocked((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pText, string cText)
-    {
-        if (DeadLetterCount > 0 || QueueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase))
-        {
-            SetHftBias("Blocked", RedBrush, $"Dead-letter traffic/queue stress. HFT disabled. {pText} {cText}");
-            return true;
-        }
-        if (MarketDataHealth != "Online" || StrategyThrottleStatus == "Blocked")
-        {
-            SetHftBias("Caution", OrangeBrush, $"Execution degraded by data/throttle constraints. {pText} {cText}");
-            return true;
-        }
-        if (concordance?.Impact.Contains("capping", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            SetHftBias("Blocked", RedBrush, $"Concordance blocking HFT aggression. {concordance.Value.Summary}");
-            return true;
-        }
-        if (pressure?.Impact.Contains("near Paper", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            SetHftBias("Blocked", RedBrush, $"Bucket pressure holding near Paper. {pressure.Value.Summary}");
-            return true;
-        }
-        return false;
-    }
-
-    private bool CheckHftProbe((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string cText)
-    {
-        if (pressure?.Impact.Contains("LiveProbe", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            var summary = concordance?.Impact.Contains("holding LiveProbe", StringComparison.OrdinalIgnoreCase) == true
-                ? $"Concordance holding in LiveProbe. {concordance.Value.Summary}"
-                : $"Bucket pressure holding in LiveProbe. {pressure.Value.Summary} {cText}";
-            SetHftBias("Caution", OrangeBrush, summary);
-            return true;
-        }
-        return false;
-    }
-
-    private bool CheckHftReady((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pText, string cText)
-    {
-        if (AiAnalystView.ExecutionReadiness >= 70 && QueueHealth == "Optimal" && VolumeRatio >= 1.2)
-        {
-            var summary = ResolveHftReadySummary(pressure, concordance, pText, cText);
-            SetHftBias("Ready", GreenBrush, summary);
-            return true;
-        }
-        return false;
-    }
-
-    private void SetHftBias(string bias, Brush color, string summary)
-    {
-        Telemetry.HftExecutionBias = bias;
-        Telemetry.HftExecutionBiasColor = color;
-        Telemetry.HftRiskSummary = summary;
-    }
-
-    private void AddChecklistItem(string title, bool isPassing, string detail)
-    {
-        EntryChecklist.Add(new ChecklistItemViewModel
-        {
-            Title = title,
-            Detail = detail,
-            Status = isPassing ? "Pass" : "Review",
-            IsPassing = isPassing,
-            Color = isPassing ? GreenBrush : OrangeBrush
-        });
-    }
-
-    private decimal GetQueueMultiplier(string queueHealth)
-    {
-        if (queueHealth == "Optimal") return 0.65m;
-        if (queueHealth.StartsWith("Critical", StringComparison.OrdinalIgnoreCase)) return 1.8m;
-        return 1.1m;
-    }
-
-    private string ResolveHftReadySummary((string Impact, string Summary, Brush Color)? pressure, (string Impact, string Summary, Brush Color)? concordance, string pText, string cText)
-    {
-        if (concordance?.Impact.Contains("supports scaling", StringComparison.OrdinalIgnoreCase) == true)
-            return $"Concordance supports scaling. {concordance.Value.Summary}";
-        if (pressure?.Impact.Contains("supports scaled deployment", StringComparison.OrdinalIgnoreCase) == true)
-            return $"Bucket pressure supports scaling. {pressure.Value.Summary} {cText}";
-        return $"Conditions supportive for faster workflows. {pText} {cText}";
-    }
 
     private static decimal CalculateProfitFactor(decimal grossProfit, decimal grossLoss)
     {
         if (grossLoss > 0) return grossProfit / grossLoss;
         return grossProfit > 0 ? 99m : 0m;
-    }
-
-    private void UpdateSessionSummary()
-    {
-        var topStrategy = StrategyLeaderboard.FirstOrDefault();
-        var weakestStrategy = StrategyLeaderboard
-            .OrderBy(row => row.ProfitFactor)
-            .ThenBy(row => row.TotalPnL)
-            .FirstOrDefault();
-        var sessionActivity = BuildSessionActivitySnapshot();
-
-        AiAnalystView.SessionSummary =
-            $"Session: {sessionActivity.Count} recent {sessionActivity.SourceLabel}, {sessionActivity.ApprovedCount} approved setups, " +
-            $"queue {QueueHealth.ToLowerInvariant()}. " +
-            $"Top bucket: {(topStrategy == null ? "n/a" : $"{topStrategy.StrategyTag} ({topStrategy.RegimeTag})")}. " +
-            $"Weakest bucket: {(weakestStrategy == null ? "n/a" : $"{weakestStrategy.StrategyTag} ({weakestStrategy.RegimeTag})")}.";
-    }
-
-    private SessionActivitySnapshot BuildSessionActivitySnapshot()
-    {
-        var recentTrades = _tradeCache
-            .OrderByDescending(trade => trade.ExitTime ?? trade.EntryTime)
-            .Take(10)
-            .ToList();
-
-        if (recentTrades.Count > 0)
-        {
-            var approvedTradeCount = recentTrades.Count(trade =>
-                trade.Status == TradeStatus.Executed ||
-                trade.Status == TradeStatus.Failed ||
-                trade.Status == TradeStatus.Queued);
-
-            return new SessionActivitySnapshot(recentTrades.Count, approvedTradeCount, "stored trade records");
-        }
-
-        var recentSignals = TradeJournal.Take(10).ToList();
-        var approvedCount = recentSignals.Count(entry => entry.Status.Contains("Approved", StringComparison.OrdinalIgnoreCase));
-        return new SessionActivitySnapshot(recentSignals.Count, approvedCount, "journal entries");
-    }
-
-    private void UpdateTradingMode()
-    {
-        TradingModeLabel = IsPaperMode ? "PAPER" : "LIVE";
-        TradingModeColor = IsPaperMode ? OrangeBrush : RedBrush;
-        UpdateRuntimeIntegrityStatus();
-    }
-
-    private void UpdateRuntimeIntegrityStatus()
-    {
-        var simulationMode = string.Equals(Environment.GetEnvironmentVariable("TMQ_SIMULATION_MODE"), "true", StringComparison.OrdinalIgnoreCase);
-        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Disabled";
-        var hasGeminiKey = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY"));
-        var hasBinanceKeys = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_KEY")) && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_SECRET"));
-
-        MarketOverview.ExecutionServiceStatus = ResolveExecutionServiceStatus(exchangeMode, simulationMode, hasBinanceKeys);
-        IsHftRuntimeAvailable = exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) || exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
-        MarketOverview.AiProviderStatus = ResolveAiProviderStatus(hasGeminiKey, simulationMode);
-
-        var configIssues = IdentifyConfigurationGaps(simulationMode);
-        UpdateConfigValidationStatus(configIssues, simulationMode);
-        UpdateIntegrityVisuals();
-    }
-
-    private string ResolveExecutionServiceStatus(string exchangeMode, bool simulationMode, bool hasBinanceKeys)
-    {
-        if ((exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase) || simulationMode) && !hasBinanceKeys) return "SIMULATION BROKER";
-        if ((exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) || exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)) && hasBinanceKeys)
-            return exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) ? "BINANCE TESTNET" : "BINANCE LIVE";
-        return "EXECUTION DISABLED";
-    }
-
-    private string ResolveAiProviderStatus(bool hasGeminiKey, bool simulationMode)
-    {
-        if (hasGeminiKey) return "GEMINI LIVE";
-        if (simulationMode) return "AI SIMULATION";
-        return "RULE-BASED FALLBACK";
-    }
-
-    private List<string> IdentifyConfigurationGaps(bool simulationMode)
-    {
-        var issues = new List<string>();
-        if (!IsHftRuntimeAvailable) issues.Add("HFT streaming disabled");
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_TELEGRAM_BOT_TOKEN")) || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_TELEGRAM_CHAT_ID")))
-            issues.Add("telegram alert not configured");
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_ALERT_WEBHOOK_URL"))) issues.Add("webhook alert not configured");
-        if (!File.Exists(Path.Combine(AppContext.BaseDirectory, "models", "price_prediction.onnx"))) issues.Add("onnx model path missing");
-        if (MarketOverview.ExecutionServiceStatus == "EXECUTION DISABLED") issues.Add("no live exchange configured");
-        if (MarketOverview.AiProviderStatus == "RULE-BASED FALLBACK") issues.Add("no live AI provider configured");
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY")) && !simulationMode) issues.Add("AI analyst running on deterministic fallback");
-        return issues;
-    }
-
-    private void UpdateConfigValidationStatus(List<string> issues, bool simulationMode)
-    {
-        if (issues.Count == 0)
-        {
-            MarketOverview.ConfigValidationStatus = "CONFIG VALID";
-            MarketOverview.ConfigValidationSummary = "Runtime is configured for real services with no major startup gaps.";
-        }
-        else
-        {
-            MarketOverview.ConfigValidationStatus = simulationMode ? "SIMULATION CONFIG" : "CONFIG GAPS";
-            MarketOverview.ConfigValidationSummary = string.Join(" | ", issues.Distinct(StringComparer.OrdinalIgnoreCase));
-        }
-    }
-
-    private void UpdateIntegrityVisuals()
-    {
-        if (MarketOverview.ExecutionServiceStatus == "EXECUTION DISABLED")
-        {
-            PortfolioView.PortfolioExecutionModeLabel = "SAFE / DISABLED EXECUTION";
-            PortfolioView.PortfolioExecutionModeColor = RedBrush;
-            MarketOverview.RuntimeIntegrityStatus = "SAFE MODE";
-            MarketOverview.RuntimeIntegrityColor = RedBrush;
-            return;
-        }
-
-        if (IsPaperMode || MarketOverview.ExecutionServiceStatus == "SIMULATION BROKER")
-        {
-            PortfolioView.PortfolioExecutionModeLabel = "SIMULATED EXECUTION";
-            PortfolioView.PortfolioExecutionModeColor = OrangeBrush;
-        }
-        else
-        {
-            PortfolioView.PortfolioExecutionModeLabel = "REAL EXECUTION";
-            PortfolioView.PortfolioExecutionModeColor = GreenBrush;
-        }
-
-        if (MarketOverview.ExecutionServiceStatus == "SIMULATION BROKER" || MarketOverview.AiProviderStatus == "AI SIMULATION")
-        {
-            MarketOverview.RuntimeIntegrityStatus = "SIMULATION MODE";
-            MarketOverview.RuntimeIntegrityColor = OrangeBrush;
-            return;
-        }
-
-        if (MarketOverview.AiProviderStatus == "RULE-BASED FALLBACK")
-        {
-            MarketOverview.RuntimeIntegrityStatus = "LIVE RULES ONLY";
-            MarketOverview.RuntimeIntegrityColor = OrangeBrush;
-            return;
-        }
-
-        MarketOverview.RuntimeIntegrityStatus = "REAL SERVICES";
-        MarketOverview.RuntimeIntegrityColor = GreenBrush;
-    }
-
-    private string GetCurrentExecutionModeLabel()
-    {
-        if (MarketOverview.ExecutionServiceStatus == "EXECUTION DISABLED")
-        {
-            return "SAFE";
-        }
-
-        return IsPaperMode || MarketOverview.ExecutionServiceStatus == "SIMULATION BROKER"
-            ? "SIM"
-            : "REAL";
-    }
-
-    private Brush GetCurrentExecutionModeColor()
-    {
-        return GetCurrentExecutionModeLabel() switch
-        {
-            "REAL" => GreenBrush,
-            "SAFE" => RedBrush,
-            _ => OrangeBrush
-        };
-    }
-
-    private int _lastSessionHour = -1;
-    private void UpdateSessionContext()
-    {
-        var localNow = TimeZoneInfo.ConvertTimeBySystemTimeZoneId(DateTime.UtcNow, "Turkey Standard Time");
-        var hour = localNow.Hour;
-
-        if (hour == _lastSessionHour && SessionContexts.Count > 0) return;
-        _lastSessionHour = hour;
-
-        SessionContexts.Clear();
-        AddSessionContext("Asia", hour is >= 3 and < 10, "Lower-liquidity handoff. Favor patience.");
-        AddSessionContext("London Killzone", hour is >= 10 and < 13, "Best displacement window for PA continuation.");
-        AddSessionContext("NY Killzone", hour is >= 15 and < 18, "Watch for reversal, sweep, and expansion.");
-        AddSessionContext("Close / Dead Zone", !(hour is >= 10 and < 13) && !(hour is >= 15 and < 18), "Reduce aggression when liquidity thins.");
-
-        var active = SessionContexts.FirstOrDefault(item => item.IsActive);
-        CurrentSessionLabel = active == null
-            ? $"Session context: {localNow:HH:mm} Istanbul"
-            : $"{active.Name} active · {localNow:HH:mm} Istanbul";
-        SessionGuidance = active?.Guidance ?? "No killzone is active. Expect slower, choppier PA unless volatility expands.";
-        UpdateBotLaunchSummary();
-    }
-
-    private void AddSessionContext(string name, bool isActive, string guidance)
-    {
-        SessionContexts.Add(new SessionContextViewModel
-        {
-            Name = name,
-            Guidance = guidance,
-            IsActive = isActive,
-            Color = isActive ? GreenBrush : GrayBrush
-        });
     }
 
     private void UpdateVisualReasoning(TradeDecision decision, IndicatorSnapshot indicators, List<Candle> candles)
@@ -5355,14 +3898,16 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        var (min, max) = GetDisplayRange(candles);
+        var displayRange = GetDisplayRangeProxy(candles);
+        var min = displayRange.Min;
+        var max = displayRange.Max;
         var range = Math.Max(max - min, 0.01m);
 
         if (indicators.NearestSupport?.Price is decimal support)
         {
             AddReasoningOverlay(
                 80,
-                ProjectPriceToY(support + Math.Max((decimal)(indicators.ATR ?? 1.2) * 0.4m, 0.2m), min, range),
+                ProjectPriceToYProxy(support + Math.Max((decimal)(indicators.ATR ?? 1.2) * 0.4m, 0.2m), min, range),
                 260,
                 34,
                 "HTF Discount / OB Candidate",
@@ -5374,7 +3919,7 @@ public partial class MainViewModel : ObservableObject
         {
             AddReasoningOverlay(
                 420,
-                ProjectPriceToY(resistance + Math.Max((decimal)(indicators.ATR ?? 1.2) * 0.3m, 0.2m), min, range),
+                ProjectPriceToYProxy(resistance + Math.Max((decimal)(indicators.ATR ?? 1.2) * 0.3m, 0.2m), min, range),
                 260,
                 34,
                 "Premium / Liquidity Pool",
@@ -5390,9 +3935,9 @@ public partial class MainViewModel : ObservableObject
             var label = decision.Side == TradeSide.Buy ? "BULLISH FVG / FV" : "BEARISH FVG / FV";
             AddReasoningOverlay(
                 250,
-                ProjectPriceToY(anchorHigh, min, range),
+                ProjectPriceToYProxy(anchorHigh, min, range),
                 180,
-                Math.Max(ProjectPriceToY(anchorLow, min, range) - ProjectPriceToY(anchorHigh, min, range), 24),
+                Math.Max(ProjectPriceToYProxy(anchorLow, min, range) - ProjectPriceToYProxy(anchorHigh, min, range), 24),
                 label,
                 "Fair Value Gap detected via volume displacement",
                 decision.Side == TradeSide.Buy ? "#2F81F7" : "#FF3366");
@@ -5400,6 +3945,26 @@ public partial class MainViewModel : ObservableObject
 
         AiAnalystView.VisualReasoningSummary =
             $"Overlaying {ReasoningOverlays.Count} inferred PA zones from support/resistance, displacement, and {decision.StrategyTag}.";
+    }
+
+    private (decimal Min, decimal Max) GetDisplayRangeProxy(List<Candle> candles)
+    {
+        // Internal helper to avoid deep refactoring of logic while moving storage
+        var lows = candles.Select(c => c.Low).OrderBy(v => v).ToList();
+        var highs = candles.Select(c => c.High).OrderBy(v => v).ToList();
+        var trim = candles.Count >= 20 ? Math.Max(1, candles.Count / 20) : 0;
+        var min = lows[Math.Min(trim, lows.Count - 1)];
+        var max = highs[Math.Max(0, highs.Count - 1 - trim)];
+        if (max <= min) { min = candles.Min(c => c.Low); max = candles.Max(c => c.High); }
+        var padding = Math.Max((max - min) * 0.08m, 0.01m);
+        min -= padding; max += padding;
+        return (min, max);
+    }
+
+    private double ProjectPriceToYProxy(decimal price, decimal min, decimal range)
+    {
+        var normalized = (double)((price - min) / range);
+        return MarketOverview.ChartCanvasHeight - (normalized * MarketOverview.ChartCanvasHeight);
     }
 
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Brush> _brushCache = new();
@@ -5431,96 +3996,38 @@ public partial class MainViewModel : ObservableObject
 
     private void RefreshRiskPanel()
     {
-        IsKillSwitchArmed = _riskAgent.IsKillSwitchArmed;
-        RiskGuardStatus = IsKillSwitchArmed ? "Armed: Yes" : "Armed: No";
+        var riskProfile = ResolveRiskParameters(Studio.SelectedRiskProfile);
+        var signal = string.IsNullOrWhiteSpace(SelectedSymbol)
+            ? null
+            : new Signal { Symbol = SelectedSymbol };
+        var snapshot = _riskAgent.GetDashboardSnapshot(_tradeCache, signal, riskProfile);
+
+        IsSoftPauseArmed = snapshot.IsSoftPauseArmed;
+        RiskGuardStatus = snapshot.IsSoftPauseArmed ? "ARMED" : "CLEAR";
+        RiskGovernorSoftPauseSummary = snapshot.IsSoftPauseArmed
+            ? snapshot.SoftPauseReason
+            : "Soft pause clear. Governor can continue sizing new risk.";
+
+        var symbolLabel = string.IsNullOrWhiteSpace(snapshot.Symbol) ? "selected symbol" : snapshot.Symbol;
+        RiskGovernorHeatSummary =
+            $"Portfolio {snapshot.OpenHeat:P1} of {snapshot.MaxPortfolioHeat:P0} | {symbolLabel} {snapshot.SymbolHeat:P1} of {snapshot.MaxSymbolExposure:P0} | Correlated {snapshot.CorrelatedHeat:P1} of {snapshot.MaxCorrelatedExposure:P0}";
+        RiskGovernorDrawdownSummary =
+            $"Drawdown {snapshot.DrawdownPercent:F2}% (soft {snapshot.SoftDrawdownPercent:F1}% / hard {snapshot.HardDrawdownPercent:F1}%) | Daily loss {snapshot.DailyLossPercent:F2}% of {snapshot.MaxDailyLossPercent:F1}%";
+        RiskGovernorExecutionSummary =
+            $"Execution health {snapshot.ExecutionHealth:P0} vs floor {snapshot.MinimumExecutionHealth:P0} | Open trades {snapshot.OpenTradeCount} | Closed sample {snapshot.ClosedTradeCount}";
+        RiskGovernorCompressionSummary =
+            $"Execution {snapshot.ExecutionMultiplier:F2}x | Performance {snapshot.PerformanceMultiplier:F2}x | Drawdown {snapshot.DrawdownMultiplier:F2}x";
+
+        var presentation = ResolveRiskGovernorPresentation(snapshot);
+        RiskGovernorStatus = presentation.Status;
+        RiskGovernorStatusColor = presentation.Color;
+        RiskGovernorReason = presentation.Reason;
     }
 
 
     private void NormalizeChart(List<Candle> candles)
     {
-        InvokeOnUi(() => 
-        {
-            ChartCandles.Clear();
-            PriceScaleLabels.Clear();
-            TimeScaleLabels.Clear();
-            HorizontalGridLines.Clear();
-            VerticalGridLines.Clear();
-        });
-        MarketOverview.ChartSourceCandles.Clear();
-        MarketOverview.ChartSourceCandles.AddRange(candles);
-        if (candles.Count == 0)
-        {
-            MarketOverview.ChartHeaderTitle = $"{MarketOverview.SelectedSymbol} · {MarketOverview.SelectedTimeframe} · {MarketOverview.SelectedMarket}";
-            MarketOverview.ChartHeaderOhlc = "O -- H -- L -- C --";
-            MarketOverview.CurrentPriceMarker = "--";
-            return;
-        }
-
-        var (min, max) = GetDisplayRange(candles);
-        decimal range = max - min;
-
-        double canvasWidth = MarketOverview.ChartCanvasWidth;
-        double canvasHeight = MarketOverview.ChartCanvasHeight;
-        double candleWidth = candles.Count > 1 ? (canvasWidth / candles.Count) * 0.82 : 40;
-        double gap = candles.Count > 1 ? (canvasWidth / candles.Count) * 0.18 : 10;
-
-        for (int i = 0; i < candles.Count; i++)
-        {
-            var candle = candles[i];
-            double x = candles.Count > 1 ? (double)i / (candles.Count - 1) * (canvasWidth - candleWidth) : 0;
-
-            var open = Clamp(candle.Open, min, max);
-            var close = Clamp(candle.Close, min, max);
-            var high = Clamp(candle.High, min, max);
-            var low = Clamp(candle.Low, min, max);
-
-            // Normalized Y coordinates (Inverted for WPF)
-            double openY = canvasHeight - (double)((open - min) / range) * canvasHeight;
-            double closeY = canvasHeight - (double)((close - min) / range) * canvasHeight;
-            double highY = canvasHeight - (double)((high - min) / range) * canvasHeight;
-            double lowY = canvasHeight - (double)((low - min) / range) * canvasHeight;
-
-            bool isBullish = candle.Close >= candle.Open;
-            var color = isBullish ? BuyColorBrush : SellColorBrush;
-            InvokeOnUi(() => 
-            {
-                ChartCandles.Add(new CandleViewModel
-                {
-                    X = x,
-                    WickX = x + (candleWidth / 2),
-                    BodyY = Math.Min(openY, closeY),
-                    BodyHeight = Math.Max(Math.Abs(openY - closeY), 1.2),
-                    WickY1 = highY,
-                    WickY2 = lowY,
-                    Width = candleWidth,
-                    Color = color
-                });
-            });
-        }
-
-        InvokeOnUiThread(() => PopulateChartScales(candles, min, max, canvasWidth, canvasHeight));
-
-        // Keep Polyline for indicators or overlay if needed, currently we use it as a simple 'trend' line
-        var points = new PointCollection();
-        for (int i = 0; i < candles.Count; i++)
-        {
-            double x = (double)i / (candles.Count - 1) * canvasWidth;
-            double y = canvasHeight - (double)((Clamp(candles[i].Close, min, max) - min) / range) * canvasHeight;
-            points.Add(new System.Windows.Point(x, y));
-        }
-        ChartPoints = points;
-
-        var last = candles[^1];
-        MarketOverview.ChartHeaderTitle = $"{MarketOverview.SelectedSymbol} · {MarketOverview.SelectedTimeframe} · {MarketOverview.SelectedMarket}";
-        MarketOverview.SetChartHeader(last, candles.Count > 1 ? candles[^2].Close : last.Open);
-        MarketOverview.CurrentPriceMarker = $"{last.Close:F2}";
-        MarketOverview.CurrentPriceMarkerY = canvasHeight - (double)((Clamp(last.Close, min, max) - min) / range) * canvasHeight;
-        
-        // Final sanity check for Multi-Timeframe bar
-        if (TimeframeConfluences.Count == 0 || TimeframeConfluences[0].Status == "Loading...")
-        {
-            _ = UpdateMultiTimeframeAsync(MarketOverview.SelectedSymbol, MarketOverview.SelectedMarket);
-        }
+        MarketOverview.NormalizeChart(candles);
     }
 
     private void NormalizeBacktestMarkers(List<Candle> candles, List<ThatsMyQuant.Contracts.Models.BacktestTradeResult> trades)
@@ -5528,7 +4035,7 @@ public partial class MainViewModel : ObservableObject
         InvokeOnUiThread(() => BacktestMarkers.Clear());
         if (candles.Count == 0 || trades.Count == 0) return;
 
-        var (min, max) = GetDisplayRange(candles);
+        var (min, max) = GetDisplayRangeProxy(candles);
         decimal range = max - min;
         if (range <= 0) range = 1;
 
@@ -5576,281 +4083,9 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private static (decimal Min, decimal Max) GetDisplayRange(List<Candle> candles)
-    {
-        if (candles.Count == 0)
-        {
-            return (0m, 1m);
-        }
+    private static decimal Clamp(decimal value, decimal min, decimal max) => Math.Clamp(value, min, max);
 
-        var lows = candles.Select(c => c.Low).OrderBy(v => v).ToList();
-        var highs = candles.Select(c => c.High).OrderBy(v => v).ToList();
-        var trim = candles.Count >= 20 ? Math.Max(1, candles.Count / 20) : 0;
-
-        var min = lows[Math.Min(trim, lows.Count - 1)];
-        var max = highs[Math.Max(0, highs.Count - 1 - trim)];
-
-        if (max <= min)
-        {
-            min = candles.Min(c => c.Low);
-            max = candles.Max(c => c.High);
-        }
-
-        var padding = Math.Max((max - min) * 0.08m, 0.01m);
-        min -= padding;
-        max += padding;
-
-        if (max <= min)
-        {
-            max = min + 1m;
-        }
-
-        return (min, max);
-    }
-
-    private static decimal Clamp(decimal value, decimal min, decimal max)
-    {
-        if (value < min)
-        {
-            return min;
-        }
-
-        if (value > max)
-        {
-            return max;
-        }
-
-        return value;
-    }
-
-    private void UpdatePortfolioGrowth()
-    {
-        var baseline = Convert.ToDouble(Balance);
-        var closedTrades = _tradeCache
-            .Where(t => t.IsClosed && t.ExitTime.HasValue && t.Status == TradeStatus.Executed)
-            .OrderBy(t => t.ExitTime)
-            .ToList();
-
-        UpdatePortfolioStageUi(closedTrades);
-
-        if (closedTrades.Count == 0)
-        {
-            SetEmptyGrowthState(baseline);
-            return;
-        }
-
-        var (windowStart, labelSelector, summary) = ResolvePortfolioGrowthWindow();
-        PortfolioView.PortfolioRangeSummary = summary;
-
-        var tradesInWindow = closedTrades.Where(t => t.ExitTime!.Value >= windowStart).ToList();
-        if (tradesInWindow.Count == 0)
-        {
-            SetEmptyWindowGrowthState(baseline, summary);
-            return;
-        }
-
-        ProcessAndApplyGrowth(tradesInWindow, labelSelector, baseline);
-    }
-
-    private void UpdatePortfolioStageUi(List<Trade> closedTrades)
-    {
-        var dominantStage = closedTrades.Count == 0
-            ? "No ladder data yet"
-            : closedTrades
-                .GroupBy(InferPromotionStage)
-                .OrderByDescending(group => group.Count())
-                .Select(group => group.Key)
-                .FirstOrDefault() ?? "UNKNOWN";
-        
-        PortfolioView.PortfolioPromotionStageLabel = dominantStage;
-    }
-
-    private (DateTime Start, Func<DateTime, string> Labeler, string Summary) ResolvePortfolioGrowthWindow()
-    {
-        var now = DateTime.Now;
-        var storedStageContext = ResolveStoredPromotionStageContext(_tradeCache.Where(t => t.IsClosed).ToList(), PortfolioView.PortfolioPromotionStageLabel);
-        
-        return PortfolioView.SelectedPortfolioRange switch
-        {
-            "Daily" => (now.Date, d => d.ToString("HH"), 
-                $"{PortfolioView.PortfolioExecutionModeLabel} | Stage {PortfolioView.PortfolioPromotionStageLabel} | Daily equity curve | {storedStageContext}"),
-            "Weekly" => (now.Date.AddDays(-6), d => d.ToString("ddd"), 
-                $"{PortfolioView.PortfolioExecutionModeLabel} | Stage {PortfolioView.PortfolioPromotionStageLabel} | Weekly growth | {storedStageContext}"),
-            "Yearly" => (new DateTime(now.Year, 1, 1, 0, 0, 0, DateTimeKind.Local), d => $"Q{((d.Month - 1) / 3) + 1}", 
-                $"{PortfolioView.PortfolioExecutionModeLabel} | Stage {PortfolioView.PortfolioPromotionStageLabel} | Yearly growth | {storedStageContext}"),
-            _ => (new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Local), d => $"W{((d.Day - 1) / 7) + 1}", 
-                $"{PortfolioView.PortfolioExecutionModeLabel} | Stage {PortfolioView.PortfolioPromotionStageLabel} | Monthly growth | {storedStageContext}")
-        };
-    }
-
-    private void SetEmptyGrowthState(double baseline)
-    {
-        var labels = new List<string>();
-        var values = new List<double>();
-        BuildFlatPortfolioSeries(labels, values, baseline);
-        var (_, _, summary) = ResolvePortfolioGrowthWindow();
-        var storedStageContext = ResolveStoredPromotionStageContext(_tradeCache.Where(t => t.IsClosed).ToList(), PortfolioView.PortfolioPromotionStageLabel);
-        
-        PortfolioView.PortfolioGrowthHeadline = $"{Balance:N0}";
-        PortfolioView.PortfolioRangeSummary = summary;
-        PortfolioView.PortfolioGrowthSubtext = $"No realized growth history yet. Dominant stage: {PortfolioView.PortfolioPromotionStageLabel}. {storedStageContext}";
-        PortfolioView.PortfolioGrowthColor = GrayBrush;
-        ApplyPortfolioSeries(labels, values);
-    }
-
-    private void SetEmptyWindowGrowthState(double baseline, string windowSummary)
-    {
-        var labels = new List<string>();
-        var values = new List<double>();
-        BuildFlatPortfolioSeries(labels, values, baseline);
-        var storedStageContext = ResolveStoredPromotionStageContext(_tradeCache.Where(t => t.IsClosed).ToList(), PortfolioView.PortfolioPromotionStageLabel);
-
-        PortfolioView.PortfolioGrowthHeadline = $"{Balance:N0}";
-        PortfolioView.PortfolioRangeSummary = windowSummary;
-        PortfolioView.PortfolioGrowthSubtext = $"No closed trades in this window. Dominant stage: {PortfolioView.PortfolioPromotionStageLabel}. {storedStageContext}";
-        PortfolioView.PortfolioGrowthColor = GrayBrush;
-        ApplyPortfolioSeries(labels, values);
-    }
-
-    private void ProcessAndApplyGrowth(List<Trade> trades, Func<DateTime, string> labelSelector, double baseline)
-    {
-        var labels = new List<string>();
-        var values = new List<double>();
-        decimal cumulative = Balance;
-        var storedStageContext = ResolveStoredPromotionStageContext(trades, PortfolioView.PortfolioPromotionStageLabel);
-
-        foreach (var bucket in trades.GroupBy(t => labelSelector(t.ExitTime!.Value)))
-        {
-            cumulative += bucket.Sum(CalculateTradePnL);
-            labels.Add(bucket.Key);
-            values.Add(Convert.ToDouble(cumulative));
-        }
-
-        var first = values.FirstOrDefault(baseline);
-        var last = values.LastOrDefault(baseline);
-        var changePercent = Math.Abs(first) < 1e-9 ? 0 : ((last - first) / first) * 100d;
-
-        PortfolioView.PortfolioGrowthHeadline = $"{last:N0}";
-        PortfolioView.PortfolioGrowthSubtext = $"{changePercent:+0.00;-0.00;0.00}% realized | Dominant stage {PortfolioView.PortfolioPromotionStageLabel} | {storedStageContext}";
-        PortfolioView.PortfolioGrowthColor = changePercent >= 0 ? GreenBrush : RedBrush;
-
-        ApplyPortfolioSeries(labels, values);
-    }
-
-    private void BuildFlatPortfolioSeries(List<string> labels, List<double> values, double baseline)
-    {
-        labels.AddRange(PortfolioView.SelectedPortfolioRange switch
-        {
-            "Daily" => new[] { "09", "11", "13", "15", "17", "19" },
-            "Weekly" => new[] { "Mon", "Tue", "Wed", "Thu", "Fri" },
-            "Yearly" => new[] { "Q1", "Q2", "Q3", "Q4" },
-            _ => new[] { "W1", "W2", "W3", "W4" }
-        });
-
-        foreach (var _ in labels)
-        {
-            values.Add(baseline);
-        }
-    }
-
-    private void ApplyPortfolioSeries(List<string> labels, List<double> values)
-    {
-        if (labels.Count == 0 || values.Count == 0)
-        {
-            return;
-        }
-
-        var min = values.Min();
-        var max = values.Max();
-        var range = Math.Max(1d, max - min);
-        var width = 760d;
-        var height = 220d;
-        var points = new System.Windows.Media.PointCollection();
-
-        PortfolioXAxisLabels.Clear();
-        PortfolioYAxisLabels.Clear();
-
-        for (var i = 0; i < values.Count; i++)
-        {
-            var x = values.Count == 1 ? 0 : i * (width / (values.Count - 1));
-            var y = height - ((values[i] - min) / range * height);
-            points.Add(new System.Windows.Point(x, y));
-
-            PortfolioXAxisLabels.Add(new ChartAxisLabel
-            {
-                Text = labels[i],
-                X = x - 8,
-                Y = height + 12
-            });
-        }
-
-        for (var step = 0; step <= 4; step++)
-        {
-            var value = max - ((max - min) * step / 4d);
-            var y = height * step / 4d;
-            PortfolioYAxisLabels.Add(new ChartAxisLabel
-            {
-                Text = value.ToString("N0"),
-                X = width + 16,
-                Y = y - 8
-            });
-        }
-
-        PortfolioGrowthPoints = points;
-    }
-
-    private void PopulateChartScales(List<Candle> candles, decimal min, decimal max, double canvasWidth, double canvasHeight)
-    {
-        const int horizontalSteps = 5;
-        const int verticalSteps = 6;
-
-        InvokeOnUi(() => 
-        {
-            for (int i = 0; i <= horizontalSteps; i++)
-            {
-                var y = canvasHeight / horizontalSteps * i;
-                var price = max - (max - min) * (decimal)i / horizontalSteps;
-                HorizontalGridLines.Add(new ChartGridLineViewModel { X1 = 0, Y1 = y, X2 = canvasWidth, Y2 = y });
-                PriceScaleLabels.Add(new ChartAxisLabel
-                {
-                    Text = price.ToString("F2"),
-                    X = canvasWidth + 10,
-                    Y = y - 8
-                });
-            }
-
-            for (int i = 0; i < verticalSteps; i++)
-            {
-                var x = canvasWidth / (verticalSteps - 1) * i;
-                var index = Math.Min(candles.Count - 1, (int)Math.Round((double)i / Math.Max(1, verticalSteps - 1) * (candles.Count - 1)));
-                VerticalGridLines.Add(new ChartGridLineViewModel { X1 = x, Y1 = 0, X2 = x, Y2 = canvasHeight });
-                TimeScaleLabels.Add(new ChartAxisLabel
-                {
-                    Text = candles[index].Timestamp.ToString(candles.Count > 120 ? "dd MMM" : "dd MMM HH:mm"),
-                    X = Math.Max(0, x - 24),
-                    Y = canvasHeight + 10
-                });
-            }
-        });
-    }
-
-
-    private void UpdateIndicatorAgenda(IndicatorSnapshot ind)
-    {
-        IndicatorDetails.Clear();
-        LogicTree.Clear();
-
-        LogicTree.Add(BuildMomentumNode(ind));
-        LogicTree.Add(BuildTrendNode(ind));
-        LogicTree.Add(BuildVolatilityNode(ind));
-
-        // Maintain old list for backwards compatibility
-        foreach (var node in LogicTree)
-            foreach (var child in node.Indicators)
-                IndicatorDetails.Add(child);
-    }
-
-    private LogicTreeNode BuildMomentumNode(IndicatorSnapshot ind)
+    private LogicTreeNode LegacyBuildMomentumNode(IndicatorSnapshot ind)
     {
         var node = new LogicTreeNode { Category = "⚡ Momentum Weights" };
         node.Indicators.Add(new IndicatorDetailViewModel { 
@@ -5866,7 +4101,7 @@ public partial class MainViewModel : ObservableObject
         return node;
     }
 
-    private LogicTreeNode BuildTrendNode(IndicatorSnapshot ind)
+    private LogicTreeNode LegacyBuildTrendNode(IndicatorSnapshot ind)
     {
         var node = new LogicTreeNode { Category = "📈 Trend Confluence" };
         node.Indicators.Add(new IndicatorDetailViewModel { 
@@ -5892,7 +4127,7 @@ public partial class MainViewModel : ObservableObject
         return node;
     }
 
-    private LogicTreeNode BuildVolatilityNode(IndicatorSnapshot ind)
+    private LogicTreeNode LegacyBuildVolatilityNode(IndicatorSnapshot ind)
     {
         var node = new LogicTreeNode { Category = "🌪 Volatility / Volume" };
         node.Indicators.Add(new IndicatorDetailViewModel { Name = "Volatility (ATR)", Category = "Volatility", Value = ind.ATR?.ToString("F2") ?? "—", Status = "Normal", Color = GrayBrush });
@@ -5906,14 +4141,14 @@ public partial class MainViewModel : ObservableObject
 
 
     // Brush helpers
-    private static readonly Brush GreenBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0xB9, 0x50));
-    private static readonly Brush RedBrush = new SolidColorBrush(Color.FromRgb(0xDA, 0x36, 0x33));
-    private static readonly Brush BuyColorBrush = new SolidColorBrush(Color.FromRgb(0x00, 0xFF, 0xBB)); // Neon Emerald
-    private static readonly Brush SellColorBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x33, 0x66)); // Electric Raspberry
-    private static readonly Brush OrangeBrush = new SolidColorBrush(Color.FromRgb(0xF0, 0x88, 0x3E));
-    private static readonly Brush GrayBrush = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
+    private static readonly Brush LegacyGreenBrush = new SolidColorBrush(Color.FromRgb(0x3F, 0xB9, 0x50));
+    private static readonly Brush LegacyRedBrush = new SolidColorBrush(Color.FromRgb(0xDA, 0x36, 0x33));
+    private static readonly Brush LegacyBuyColorBrush = new SolidColorBrush(Color.FromRgb(0x00, 0xFF, 0xBB)); // Neon Emerald
+    private static readonly Brush LegacySellColorBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x33, 0x66)); // Electric Raspberry
+    private static readonly Brush LegacyOrangeBrush = new SolidColorBrush(Color.FromRgb(0xF0, 0x88, 0x3E));
+    private static readonly Brush LegacyGrayBrush = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
 
-    private void InvokeOnUi(Action action)
+    private void LegacyInvokeOnUi(Action action)
     {
         if (System.Windows.Application.Current?.Dispatcher is { } dispatcher)
         {
@@ -5937,6 +4172,21 @@ public partial class MainViewModel : ObservableObject
 
     private record StrategyBucketKey(string Symbol, string StrategyTag, string RegimeTag, string SessionTag, string Scope = "Default", string ExecutionMode = "REAL", string PromotionStage = "UNKNOWN");
 
+    private record StrategyTuningDescriptor(
+        string StrategyKey,
+        string PrimaryLabel,
+        decimal PrimaryMin,
+        decimal PrimaryMax,
+        bool PrimaryHigherIsStricter,
+        string SecondaryLabel,
+        decimal SecondaryMin,
+        decimal SecondaryMax,
+        bool SecondaryHigherIsStricter,
+        string TertiaryLabel,
+        decimal TertiaryMin,
+        decimal TertiaryMax,
+        bool TertiaryHigherIsStricter);
+
     private record CapitalAllocationCandidate(
         string Symbol, string StrategyTag, string RegimeTag, string SessionTag,
         string EffectiveStage, double Score, decimal AverageVenueBias,
@@ -5947,7 +4197,7 @@ public partial class MainViewModel : ObservableObject
 
     private record JournalMatchedItem(ParsedEdgeJournalEntry Journal, Trade Trade);
 
-    private void RefreshHeatmap()
+    private void LegacyRefreshHeatmap()
     {
         var currentYear = DateTime.Now.Year;
         var monthlyPnL = new decimal[12];
@@ -6001,7 +4251,7 @@ public partial class MainViewModel : ObservableObject
         CurrentYtdPerformance = $"{totalYtd:+0.0;-0.0;0.0}%";
     }
 
-    private void PopulateSafetyBanners(IndicatorSnapshot indicators)
+    private void LegacyPopulateSafetyBanners(IndicatorSnapshot indicators)
     {
         SafetyBanners.Clear();
         // Fallback safety logic 
@@ -6015,9 +4265,9 @@ public partial class MainViewModel : ObservableObject
             SafetyBanners.Add(new SafetyBannerRow("Environment: Standard Operating Conditions", GreenBrush));
     }
 
-    public record SafetyBannerRow(string Message, Brush Color);
+    public record LegacySafetyBannerRow(string Message, Brush Color);
 
-    private async Task UpdateMultiTimeframeAsync(string symbol, string market)
+    private async Task LegacyUpdateMultiTimeframeAsync(string symbol, string market)
     {
         if (string.IsNullOrWhiteSpace(symbol))
         {
@@ -6075,9 +4325,9 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    private decimal CalculatedProtectionScore()
+    private decimal LegacyCalculatedProtectionScore()
     {
-        if (_riskAgent.IsKillSwitchArmed) return 0;
+        if (_riskAgent.IsSoftPauseArmed) return 0;
         
         var score = 100m;
         
@@ -6095,7 +4345,7 @@ public partial class MainViewModel : ObservableObject
         return Math.Clamp(score, 0, 100);
     }
 
-    private decimal CalculatedInvestmentScore()
+    private decimal LegacyCalculatedInvestmentScore()
     {
         if (_tradeCache.Count == 0) return 50;
 
@@ -6108,7 +4358,7 @@ public partial class MainViewModel : ObservableObject
         return Math.Clamp(score, 0, 100);
     }
 
-    private decimal CalculatedFitnessScore()
+    private decimal LegacyCalculatedFitnessScore()
     {
         var score = 100m;
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -14,7 +15,7 @@ namespace ThatsMyQuant.Application.Strategy;
 public sealed class CircuitBreakerService
 {
     private readonly ILogger<CircuitBreakerService> _logger;
-    private readonly MemoryPortfolioManager _portfolio;
+    private readonly IPortfolioManager _portfolio;
 
     // Configuration
     private readonly decimal _maxDrawdownPercent;
@@ -40,7 +41,7 @@ public sealed class CircuitBreakerService
 
     public CircuitBreakerService(
         ILogger<CircuitBreakerService> logger,
-        MemoryPortfolioManager portfolio,
+        IPortfolioManager portfolio,
         decimal maxDrawdownPercent = 5.0m,
         int maxConsecutiveErrors = 3,
         int maxOrdersPerSecond = 10)

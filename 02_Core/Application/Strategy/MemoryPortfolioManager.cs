@@ -1,34 +1,15 @@
 using System.Collections.Concurrent;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Application.Strategy;
 
 /// <summary>
-/// Tracks a single symbol's open position state.
-/// </summary>
-public sealed record PositionState
-{
-    public string Symbol { get; init; } = "";
-    public decimal EntryPrice { get; init; }
-    public decimal Quantity { get; init; }
-    public bool IsLong { get; init; }
-    public DateTime OpenedAt { get; init; }
-
-    /// <summary>
-    /// Calculates unrealized P&amp;L at a given market price.
-    /// </summary>
-    public decimal UnrealizedPnl(decimal currentPrice)
-    {
-        var direction = IsLong ? 1m : -1m;
-        return (currentPrice - EntryPrice) * Quantity * direction;
-    }
-}
-
-/// <summary>
 /// A high-performance, in-memory portfolio manager for real-time balance tracking.
 /// Designed for low-latency HFT environments with per-symbol position tracking.
 /// </summary>
-public sealed class MemoryPortfolioManager
+public sealed class MemoryPortfolioManager : IPortfolioManager
 {
     private readonly ConcurrentDictionary<string, decimal> _balances = new();
     private readonly ConcurrentDictionary<string, decimal> _lockedBalances = new();
@@ -102,7 +83,7 @@ public sealed class MemoryPortfolioManager
     /// <summary>Opens or updates a position for a symbol.</summary>
     public void OpenPosition(string symbol, decimal entryPrice, decimal quantity, bool isLong)
     {
-        _positions[symbol] = new PositionState
+        var position = new PositionState
         {
             Symbol = symbol,
             EntryPrice = entryPrice,
@@ -110,9 +91,11 @@ public sealed class MemoryPortfolioManager
             IsLong = isLong,
             OpenedAt = DateTime.UtcNow
         };
+        position.UpdatePrice(entryPrice); // Initialize MAFE
+        _positions[symbol] = position;
     }
 
-    /// <summary>Closes a position and records realized P&amp;L.</summary>
+    /// <summary>Closes a position and records realized P&L.</summary>
     public decimal ClosePosition(string symbol, decimal exitPrice)
     {
         if (!_positions.TryRemove(symbol, out var pos))
@@ -139,6 +122,21 @@ public sealed class MemoryPortfolioManager
         => _positions;
 
     /// <summary>
+    /// Updates market prices for all open positions to calculate dynamic MFE/MAE.
+    /// Recommended to be called from the TickPipeline or market data handler.
+    /// </summary>
+    public void UpdateMarketPrices(IReadOnlyDictionary<string, decimal> latestPrices)
+    {
+        foreach (var (symbol, price) in latestPrices)
+        {
+            if (_positions.TryGetValue(symbol, out var pos))
+            {
+                pos.UpdatePrice(price);
+            }
+        }
+    }
+
+    /// <summary>
     /// Total exposure = sum of all position notional values.
     /// </summary>
     public decimal GetTotalExposure()
@@ -161,15 +159,15 @@ public sealed class MemoryPortfolioManager
 
     private static void InterlockedAdd(ref decimal location, decimal value)
     {
-        // Decimal is not natively supported by Interlocked.Add. 
-        // We use a CompareExchange loop for thread-safety without heavy locks.
-        decimal initial, computed;
-        do
+        // Decimal is 128-bit and not supported by Interlocked.CompareExchange.
+        // Use a lock-based CAS loop for thread-safety.
+        lock (_decimalLock)
         {
-            initial = location;
-            computed = initial + value;
-        } while (initial != Interlocked.CompareExchange(ref location, computed, initial));
+            location += value;
+        }
     }
+
+    private static readonly object _decimalLock = new();
 
     public void Clear()
     {
@@ -178,5 +176,69 @@ public sealed class MemoryPortfolioManager
         _positions.Clear();
         _realizedPnl = 0;
     }
-}
 
+    /// <summary>
+    /// Updates the portfolio state based on a real-time execution report (Trade object).
+    /// Handles partial fills, full fills, and cancellations.
+    /// </summary>
+    public void UpdateFromExecutionReport(Trade trade)
+    {
+        if (trade == null) return;
+
+        if (trade.Status == TradeStatus.Executed || trade.LifecycleStatus == TradeLifecycleStatus.PartiallyFilled)
+        {
+            // Update or open position
+            OpenPosition(
+                trade.Symbol,
+                trade.EntryPrice,
+                trade.FilledQuantity > 0 ? trade.FilledQuantity : trade.Quantity,
+                trade.Side == TradeSide.Buy);
+
+            // If it's a full fill or closed, record P&L
+            if (trade.IsClosed)
+            {
+                ClosePosition(trade.Symbol, trade.AverageExitPrice > 0 ? trade.AverageExitPrice : trade.ExitPrice);
+            }
+        }
+        else if (trade.Status == TradeStatus.Rejected || trade.Status == TradeStatus.Failed)
+        {
+            // If an order was canceled, ensure we unlock the balance
+            var quoteAsset = trade.Symbol.EndsWith("USDT") ? "USDT" : "TRY";
+            var estimatedNotional = trade.EntryPrice * trade.Quantity;
+            Unlock(quoteAsset, estimatedNotional);
+            
+            // If it was partially filled before cancellation, we keep the position as is 
+            // unless the LifecycleStatus marks it as closed.
+            if (trade.IsClosed)
+            {
+                _positions.TryRemove(trade.Symbol, out _);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reconciles the in-memory balances with external source of truth (Exchange REST API).
+    /// Used to catch drift from missed WebSocket events.
+    /// </summary>
+    public void Reconcile(IReadOnlyDictionary<string, (decimal Total, decimal Locked)> externalBalances)
+    {
+        foreach (var (asset, (total, locked)) in externalBalances)
+        {
+            SetBalance(asset, total);
+            
+            if (asset == "USDT") _usdtLocked = locked;
+            else if (asset == "TRY") _tryLocked = locked;
+            _lockedBalances[asset] = locked;
+        }
+
+        // Remove assets that are no longer in the external report
+        foreach (var asset in _balances.Keys.ToList())
+        {
+            if (!externalBalances.ContainsKey(asset))
+            {
+                _balances.TryRemove(asset, out _);
+                _lockedBalances.TryRemove(asset, out _);
+            }
+        }
+    }
+}

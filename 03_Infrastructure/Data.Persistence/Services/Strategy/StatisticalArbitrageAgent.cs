@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
@@ -11,14 +12,19 @@ public sealed class StatisticalArbitrageAgent : IStrategyAgent
 {
     private readonly ILogger<StatisticalArbitrageAgent> _logger;
     private readonly StatArbOptions _options;
+    private readonly StrategyTuningService? _tuningService;
 
     public string StrategyTag => "StatArb";
-    public int SwarmWeight => _options.SwarmWeight;
+    public int SwarmWeight => ResolveOptions().SwarmWeight;
 
-    public StatisticalArbitrageAgent(ILogger<StatisticalArbitrageAgent> logger, IOptions<StatArbOptions>? options = null)
+    public StatisticalArbitrageAgent(
+        ILogger<StatisticalArbitrageAgent> logger,
+        IOptions<StatArbOptions>? options = null,
+        StrategyTuningService? tuningService = null)
     {
         _logger = logger;
         _options = options?.Value ?? new StatArbOptions();
+        _tuningService = tuningService;
     }
 
     public bool CanHandle(Signal signal, MarketRegime regime)
@@ -31,10 +37,12 @@ public sealed class StatisticalArbitrageAgent : IStrategyAgent
         IReadOnlyList<Candle> candles,
         CancellationToken ct = default)
     {
-        if (candles.Count < _options.LookbackBars)
+        var options = ResolveOptions();
+
+        if (candles.Count < options.LookbackBars)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        var closes = candles.TakeLast(_options.LookbackBars).Select(c => (double)c.Close).ToArray();
+        var closes = candles.TakeLast(options.LookbackBars).Select(c => (double)c.Close).ToArray();
         var mean = closes.Average();
         var variance = closes.Select(c => (c - mean) * (c - mean)).Average();
         var stdDev = Math.Sqrt(variance);
@@ -43,18 +51,18 @@ public sealed class StatisticalArbitrageAgent : IStrategyAgent
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
         var zScore = ((double)signal.Price - mean) / stdDev;
-        if (Math.Abs(zScore) < _options.EntryZScore)
+        if (Math.Abs(zScore) < options.EntryZScore)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
         var coefficientOfVariation = stdDev / Math.Abs(mean);
-        var hasMeaningfulDispersion = coefficientOfVariation >= _options.MinCoefficientOfVariation;
+        var hasMeaningfulDispersion = coefficientOfVariation >= options.MinCoefficientOfVariation;
 
         var halfLife = EstimateHalfLife(closes);
-        var hasGoodHalfLife = halfLife > 0 && halfLife <= _options.MaxHalfLife;
-        var hasFastHalfLife = halfLife > 0 && halfLife <= _options.FastHalfLife;
+        var hasGoodHalfLife = halfLife > 0 && halfLife <= options.MaxHalfLife;
+        var hasFastHalfLife = halfLife > 0 && halfLife <= options.FastHalfLife;
 
         var adfStatistic = ComputeAdfStatistic(closes);
-        var isStationary = adfStatistic < _options.AdfCriticalValue;
+        var isStationary = adfStatistic < options.AdfCriticalValue;
 
         var confirmedFactors = 1;
         var reasons = new List<string> { $"z={zScore:F2}" };
@@ -92,19 +100,19 @@ public sealed class StatisticalArbitrageAgent : IStrategyAgent
         if (confirmedFactors < 3)
             return Task.FromResult(StrategyVote.Abstain(StrategyTag));
 
-        float confidence = confirmedFactors * _options.BaseConfidencePerFactor;
-        confidence += (float)(Math.Min(Math.Abs(zScore) - _options.EntryZScore, _options.ZScoreMagnitudeCap) * _options.ZScoreBonusMultiplier);
-        if (hasFastHalfLife) confidence += _options.FastHalfLifeBonus;
-        if (adfStatistic < _options.AdfCriticalValue - _options.AdfBonusOffset) confidence += _options.StrongStationarityBonus;
+        float confidence = confirmedFactors * options.BaseConfidencePerFactor;
+        confidence += (float)(Math.Min(Math.Abs(zScore) - options.EntryZScore, options.ZScoreMagnitudeCap) * options.ZScoreBonusMultiplier);
+        if (hasFastHalfLife) confidence += options.FastHalfLifeBonus;
+        if (adfStatistic < options.AdfCriticalValue - options.AdfBonusOffset) confidence += options.StrongStationarityBonus;
 
         if (!double.IsNaN(patterns.VwapDeviationSigmas))
         {
-            var vwapAgrees = (zScore > 0 && patterns.VwapDeviationSigmas > _options.VwapAgreementThreshold)
-                || (zScore < 0 && patterns.VwapDeviationSigmas < -_options.VwapAgreementThreshold);
+            var vwapAgrees = (zScore > 0 && patterns.VwapDeviationSigmas > options.VwapAgreementThreshold)
+                || (zScore < 0 && patterns.VwapDeviationSigmas < -options.VwapAgreementThreshold);
 
             if (vwapAgrees)
             {
-                confidence += _options.VwapAgreementBonus;
+                confidence += options.VwapAgreementBonus;
                 reasons.Add($"VWAP {patterns.VwapDeviationSigmas:F1}sig agrees");
             }
         }
@@ -112,6 +120,11 @@ public sealed class StatisticalArbitrageAgent : IStrategyAgent
         var direction = zScore > 0 ? "short" : "long";
         var reasoning = string.Join(" | ", reasons);
         return Task.FromResult(StrategyVote.Approve(StrategyTag, confidence, $"StatArb {direction} ({confirmedFactors}/4 factors): {reasoning}"));
+    }
+
+    private StatArbOptions ResolveOptions()
+    {
+        return _tuningService?.GetStatArbOptions() ?? _options;
     }
 
     private static double EstimateHalfLife(double[] prices)

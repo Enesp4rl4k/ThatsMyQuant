@@ -23,4 +23,8 @@ public class DisabledExchangeService : IExchangeService
     }
 
     public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side) => Task.FromResult(0m);
+
+    public Task<List<string>> GetFavoritesAsync() => Task.FromResult(new List<string>());
+
+    public Task<int> CancelAllOrdersAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
 }

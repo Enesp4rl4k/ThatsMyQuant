@@ -13,6 +13,7 @@ public class QuantDbContext : DbContext
     public DbSet<Trade> Trades => Set<Trade>();
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<WebhookRequestLog> WebhookRequestLogs => Set<WebhookRequestLog>();
+    public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
 
     public QuantDbContext(DbContextOptions<QuantDbContext> options) : base(options) { }
 
@@ -126,6 +127,34 @@ public class QuantDbContext : DbContext
             entity.HasIndex(x => x.IdempotencyKey).IsUnique();
             entity.HasIndex(x => x.Nonce).IsUnique();
             entity.HasIndex(x => x.ExpiresAtUtc);
+        });
+
+        modelBuilder.Entity<OperatorUser>(entity =>
+        {
+            entity.ToTable("OperatorUsers");
+            entity.HasKey(u => u.Id);
+
+            entity.Property(u => u.Username)
+                  .IsRequired()
+                  .HasMaxLength(64);
+
+            entity.Property(u => u.Email)
+                  .IsRequired()
+                  .HasMaxLength(256);
+
+            entity.Property(u => u.PasswordHash)
+                  .IsRequired();
+
+            entity.Property(u => u.Role)
+                  .HasConversion<string>()
+                  .HasMaxLength(16);
+
+            entity.Property(u => u.IsActive).IsRequired();
+            entity.Property(u => u.CreatedAt).IsRequired();
+            entity.Property(u => u.MustChangePassword).IsRequired();
+
+            entity.HasIndex(u => u.Username).IsUnique();
+            entity.HasIndex(u => u.Email).IsUnique();
         });
     }
 }

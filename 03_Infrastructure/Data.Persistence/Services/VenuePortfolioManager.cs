@@ -10,19 +10,19 @@ namespace ThatsMyQuant.Infrastructure.Services;
 /// Venue-aware, lock-free in-memory portfolio manager for execution hot paths.
 /// Balances and reservations are maintained per venue/asset using atomic scaled longs.
 /// </summary>
-public sealed class MemoryPortfolioManager : ISharedPortfolioStateManager
+public sealed class VenuePortfolioManager : ISharedPortfolioStateManager
 {
     private const long BalanceScale = 100_000_000L;
 
-    private static readonly Lazy<MemoryPortfolioManager> _instance =
-        new(() => new MemoryPortfolioManager());
+    private static readonly Lazy<VenuePortfolioManager> _instance =
+        new(() => new VenuePortfolioManager());
 
-    public static MemoryPortfolioManager Instance => _instance.Value;
+    public static VenuePortfolioManager Instance => _instance.Value;
 
     private readonly ConcurrentDictionary<BalanceKey, AtomicBalanceCell> _balances = new();
     private readonly ConcurrentDictionary<PositionKey, AtomicPositionCell> _positions = new();
 
-    private MemoryPortfolioManager() { }
+    private VenuePortfolioManager() { }
 
     public decimal AvailableUsdt => GetAvailableBalance(VenueKind.Binance, "USDT");
 

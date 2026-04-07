@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\03_Infrastructure\Data.Persistence\ThatsMyQuant.Infrastructure.csproj" />
     <ProjectReference Include="..\..\03_Infrastructure\AI.DeepSeek\ThatsMyQuant.AI.DeepSeek.csproj" />
     <ProjectReference Include="..\..\02_Core\Application\ThatsMyQuant.Application.csproj" />

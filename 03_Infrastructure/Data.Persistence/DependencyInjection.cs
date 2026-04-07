@@ -1,5 +1,7 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 using ThatsMyQuant.Infrastructure.Services.Foundation;
 using ThatsMyQuant.Infrastructure.Services.Patterns;
 using ThatsMyQuant.Infrastructure.Services.Strategy;
@@ -11,10 +13,16 @@ namespace ThatsMyQuant.Infrastructure;
 
 public static class DependencyInjection
 {
-    public static IServiceCollection AddThatsMyQuantInfrastructure(this IServiceCollection services)
+    public static IServiceCollection AddThatsMyQuantInfrastructure(this IServiceCollection services,
+        IConfiguration? configuration = null)
     {
-        services.AddSingleton(sp => MemoryPortfolioManager.Instance);
-        services.AddSingleton<ISharedPortfolioStateManager>(sp => sp.GetRequiredService<MemoryPortfolioManager>());
+        if (configuration != null)
+            services.Configure<TelegramOptions>(configuration.GetSection("Telegram"));
+        services.AddSingleton<IAuditLogger, ConsoleAuditLogger>();
+        services.AddSingleton<IBistMarketGateway, SimulatedBistMarketGateway>();
+
+        services.AddSingleton(sp => VenuePortfolioManager.Instance);
+        services.AddSingleton<ISharedPortfolioStateManager>(sp => sp.GetRequiredService<VenuePortfolioManager>());
 
         // Tier 1: Foundation
         services.AddScoped<IFoundationAgent, OrderBookDepthAnalyzer>();
@@ -45,6 +53,7 @@ public static class DependencyInjection
 
         // Exchange: Multi-exchange routing
         services.AddSingleton<ExchangeServiceResolver>();
+        services.AddSingleton<IExchangeServiceResolver>(sp => sp.GetRequiredService<ExchangeServiceResolver>());
 
         return services;
     }

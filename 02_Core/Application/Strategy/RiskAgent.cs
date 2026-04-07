@@ -1,3 +1,4 @@
+using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
@@ -14,14 +15,15 @@ namespace ThatsMyQuant.Application.Strategy;
 /// Dedicated portfolio governor responsible for sizing, drawdown controls,
 /// portfolio heat caps, and execution-quality feedback loops.
 /// </summary>
-public class RiskAgent : IFocusedAgent
+public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>, INotificationHandler<StaleDataAlert>
 {
     private readonly ILogger<RiskAgent> _logger;
-    private readonly MemoryPortfolioManager? _portfolioManager;
+    private readonly IPortfolioManager? _portfolioManager;
     private readonly TokenBucketRateLimiter _rateLimiter;
     private readonly RiskGovernorOptions _options;
     private readonly ConcurrentDictionary<Guid, Trade> _observedTrades = new();
-    private volatile bool _killSwitchArmed;
+    private volatile bool _softPauseArmed;
+    private volatile string _softPauseReason = "Soft pause disarmed.";
 
     private static readonly IReadOnlyList<HashSet<string>> KnownCorrelatedGroups =
     [
@@ -30,11 +32,13 @@ public class RiskAgent : IFocusedAgent
         new(StringComparer.OrdinalIgnoreCase) { "EURUSD", "GBPUSD", "AUDUSD" }
     ];
 
-    public bool IsKillSwitchArmed => _killSwitchArmed;
+    public bool IsSoftPauseArmed => _softPauseArmed;
+    public string SoftPauseReason => _softPauseReason;
+    public bool IsKillSwitchArmed => IsSoftPauseArmed;
 
     public RiskAgent(
         ILogger<RiskAgent> logger,
-        MemoryPortfolioManager? portfolioManager = null,
+        IPortfolioManager? portfolioManager = null,
         IOptions<RiskGovernorOptions>? options = null)
     {
         _logger = logger;
@@ -45,20 +49,80 @@ public class RiskAgent : IFocusedAgent
 
     public Task ResetAsync(string symbol, CancellationToken ct = default)
     {
-        _killSwitchArmed = false;
-        _logger.LogInformation("RiskAgent reset for {Symbol}. Kill-switch disarmed.", symbol);
+        _softPauseArmed = false;
+        _logger.LogInformation("RiskAgent reset for {Symbol}. Soft pause disarmed.", symbol);
         return Task.CompletedTask;
     }
 
     public Task ProcessStepAsync(Candle candle, CancellationToken ct = default)
         => Task.CompletedTask;
 
-    public void ResetKillSwitch() => _killSwitchArmed = false;
-
-    public void ArmKillSwitch(string reason)
+    public void ResetSoftPause()
     {
-        _killSwitchArmed = true;
-        _logger.LogCritical("RISK KILL-SWITCH ARMED: {Reason}", reason);
+        _softPauseArmed = false;
+        _softPauseReason = "Soft pause disarmed.";
+    }
+
+    public void ResetKillSwitch() => ResetSoftPause();
+
+    public void ArmSoftPause(string reason)
+    {
+        _softPauseArmed = true;
+        _softPauseReason = string.IsNullOrWhiteSpace(reason) ? "Soft pause armed." : reason;
+        _logger.LogWarning("RISK SOFT PAUSE ARMED (New Entries Halted): {Reason}", _softPauseReason);
+    }
+
+    public void ArmKillSwitch(string reason) => ArmSoftPause(reason);
+
+    public Task Handle(VpinToxicityAlert notification, CancellationToken cancellationToken)
+    {
+        ArmSoftPause($"Toxic order flow (VPIN Z-Score: {notification.ZScore:F2}) on {notification.Symbol}. Pausing new entries.");
+        return Task.CompletedTask;
+    }
+
+    public Task Handle(StaleDataAlert notification, CancellationToken cancellationToken)
+    {
+        ArmSoftPause($"Stale Data Guard tripped on {notification.Symbol}. Latency: {notification.LatencyMs}ms. Pausing new entries.");
+        return Task.CompletedTask;
+    }
+
+    public RiskGovernorDashboardSnapshot GetDashboardSnapshot(
+        IReadOnlyList<Trade>? recentTrades,
+        Signal? signal,
+        RiskParameters riskProfile,
+        decimal requestedPositionFraction = 0m,
+        decimal assumedStartingEquity = 0m)
+    {
+        var state = BuildPortfolioState(
+            recentTrades,
+            signal,
+            requestedPositionFraction,
+            riskProfile,
+            assumedStartingEquity);
+
+        return new RiskGovernorDashboardSnapshot(
+            signal?.Symbol ?? string.Empty,
+            _softPauseArmed,
+            _softPauseReason,
+            state.OpenTrades.Count,
+            state.ClosedTrades.Count,
+            state.OpenHeat,
+            _options.MaxPortfolioHeat,
+            state.SymbolHeat,
+            _options.MaxSymbolExposure,
+            state.CorrelatedHeat,
+            _options.MaxCorrelatedExposure,
+            state.DrawdownPercent,
+            _options.SoftDrawdownPercent,
+            _options.HardDrawdownPercent,
+            state.DailyLossPercent,
+            riskProfile.MaxDailyLossPercent,
+            state.ExecutionHealth,
+            _options.MinimumExecutionHealthToTrade,
+            state.ExecutionMultiplier,
+            state.PerformanceMultiplier,
+            state.DrawdownMultiplier,
+            state.RequestedPositionFraction);
     }
 
     public Task<(bool Approved, string Reason, decimal SafePositionSizePercent)> EvaluateAsync(
@@ -68,7 +132,7 @@ public class RiskAgent : IFocusedAgent
         IReadOnlyList<Trade>? recentTrades = null,
         Signal? signal = null)
     {
-        if (_killSwitchArmed) return Task.FromResult((false, "Kill-switch is armed.", 0m));
+        if (_softPauseArmed) return Task.FromResult((false, $"Soft pause is armed: {_softPauseReason}", 0m));
         if (!_rateLimiter.TryConsume()) return Task.FromResult((false, "HFT Rate limit exceeded.", 0m));
 
         var state = BuildPortfolioState(
@@ -124,7 +188,7 @@ public class RiskAgent : IFocusedAgent
         RiskParameters riskProfile,
         decimal assumedStartingEquity = 0m)
     {
-        if (_killSwitchArmed) return Task.FromResult((false, "Kill-switch is armed."));
+        if (_softPauseArmed) return Task.FromResult((false, $"Soft pause is armed: {_softPauseReason}"));
 
         var state = BuildPortfolioState(
             recentTrades,
@@ -228,7 +292,7 @@ public class RiskAgent : IFocusedAgent
     {
         if (state.DailyLossPercent >= riskProfile.MaxDailyLossPercent)
         {
-            ArmKillSwitch($"Daily loss limit breached ({state.DailyLossPercent:F2}%).");
+            ArmSoftPause($"Daily loss limit breached ({state.DailyLossPercent:F2}%).");
             return (false, "Daily loss limit breached.");
         }
 
@@ -239,7 +303,7 @@ public class RiskAgent : IFocusedAgent
     {
         if (state.DrawdownPercent >= _options.HardDrawdownPercent)
         {
-            ArmKillSwitch($"Drawdown guard breached ({state.DrawdownPercent:F2}%).");
+            ArmSoftPause($"Drawdown guard breached ({state.DrawdownPercent:F2}%).");
             return (false, "Portfolio drawdown breaker is active.");
         }
 
@@ -627,12 +691,40 @@ public class RiskAgent : IFocusedAgent
         decimal RequestedPositionFraction);
 }
 
+public sealed record RiskGovernorDashboardSnapshot(
+    string Symbol,
+    bool IsSoftPauseArmed,
+    string SoftPauseReason,
+    int OpenTradeCount,
+    int ClosedTradeCount,
+    decimal OpenHeat,
+    decimal MaxPortfolioHeat,
+    decimal SymbolHeat,
+    decimal MaxSymbolExposure,
+    decimal CorrelatedHeat,
+    decimal MaxCorrelatedExposure,
+    decimal DrawdownPercent,
+    decimal SoftDrawdownPercent,
+    decimal HardDrawdownPercent,
+    decimal DailyLossPercent,
+    decimal MaxDailyLossPercent,
+    decimal ExecutionHealth,
+    decimal MinimumExecutionHealth,
+    decimal ExecutionMultiplier,
+    decimal PerformanceMultiplier,
+    decimal DrawdownMultiplier,
+    decimal RequestedPositionFraction)
+{
+    public bool IsKillSwitchArmed => IsSoftPauseArmed;
+    public string KillSwitchReason => SoftPauseReason;
+}
+
 internal sealed class TokenBucketRateLimiter
 {
     private readonly int _capacity;
     private readonly double _refillRate;
     private double _tokens;
-    private DateTime _lastRefill;
+    private long _lastRefillTick;
     private readonly object _lock = new();
 
     public TokenBucketRateLimiter(int capacity, double refillRate)
@@ -640,17 +732,17 @@ internal sealed class TokenBucketRateLimiter
         _capacity = capacity;
         _refillRate = refillRate;
         _tokens = capacity;
-        _lastRefill = DateTime.UtcNow;
+        _lastRefillTick = Environment.TickCount64;
     }
 
     public bool TryConsume()
     {
         lock (_lock)
         {
-            var now = DateTime.UtcNow;
-            var elapsed = (now - _lastRefill).TotalSeconds;
+            var nowTick = Environment.TickCount64;
+            var elapsed = (nowTick - _lastRefillTick) / 1000.0;
             _tokens = Math.Min(_capacity, _tokens + elapsed * _refillRate);
-            _lastRefill = now;
+            _lastRefillTick = nowTick;
 
             if (_tokens >= 1.0)
             {

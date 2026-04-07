@@ -90,6 +90,8 @@ public sealed class StrategyBucketPerformanceSnapshot
     public double ProfitFactor { get; set; }
     public decimal ExpectedValue { get; set; }
     public decimal TotalPnL { get; set; }
+    public double UlcerIndex { get; set; }
+    public double SortinoRatio { get; set; }
     public decimal AverageEdgeScore { get; set; }
     public int HighEdgeTrades { get; set; }
     public double HighEdgeWinRate { get; set; }
@@ -151,6 +153,8 @@ public sealed class ExitPolicyPerformanceSnapshot
     public double ProfitFactor { get; set; }
     public decimal ExpectedValue { get; set; }
     public decimal TotalPnL { get; set; }
+    public double UlcerIndex { get; set; }
+    public double SortinoRatio { get; set; }
     public DateTime RecordedAtUtc { get; set; } = DateTime.UtcNow;
 
     public ExitPolicyPerformanceSnapshot Clone()

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
@@ -33,11 +34,16 @@ public class SignalRepository : ISignalRepository
 
     private readonly QuantDbContext _db;
     private readonly SignalWriterChannel? _signalWriterChannel;
+    private readonly ExecutionSignalQueue? _executionSignalQueue;
 
-    public SignalRepository(QuantDbContext db, SignalWriterChannel? signalWriterChannel = null)
+    public SignalRepository(
+        QuantDbContext db,
+        SignalWriterChannel? signalWriterChannel = null,
+        ExecutionSignalQueue? executionSignalQueue = null)
     {
         _db = db;
         _signalWriterChannel = signalWriterChannel;
+        _executionSignalQueue = executionSignalQueue;
     }
 
     public async Task<Signal?> GetByIdAsync(Guid id)
@@ -51,6 +57,8 @@ public class SignalRepository : ISignalRepository
 
     public async Task AddAsync(Signal signal)
     {
+        TryEnqueueForExecution(signal);
+
         if (_signalWriterChannel?.TryWrite(SignalPersistenceBatchWriter.Clone(signal)) == true)
         {
             return;
@@ -61,6 +69,8 @@ public class SignalRepository : ISignalRepository
 
     public async Task UpdateAsync(Signal signal)
     {
+        TryEnqueueForExecution(signal);
+
         if (_signalWriterChannel?.TryWrite(SignalPersistenceBatchWriter.Clone(signal)) == true)
         {
             return;
@@ -89,6 +99,16 @@ public class SignalRepository : ISignalRepository
         }
 
         return signals;
+    }
+
+    private void TryEnqueueForExecution(Signal signal)
+    {
+        if (signal.Status != TradeStatus.Queued)
+        {
+            return;
+        }
+
+        _executionSignalQueue?.TryEnqueue(SignalPersistenceBatchWriter.Clone(signal));
     }
 
     private readonly record struct SignalStatusCount(TradeStatus Status, int Count);

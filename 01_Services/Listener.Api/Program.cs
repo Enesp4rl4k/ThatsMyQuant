@@ -20,12 +20,21 @@ using Microsoft.SemanticKernel.ChatCompletion;
 using ThatsMyQuant.Infrastructure.Services.Validators;
 using Listener.Api.Hubs;
 using Listener.Api.Services;
+using Serilog;
+using ThatsMyQuant.Application.Observability;
 
 PerformanceBootstrapper.OptimizeForHft();
 
 var builder = WebApplication.CreateBuilder(args);
 
+Log.Logger = new LoggerConfiguration()
+    .Enrich.FromLogContext()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({CorrelationId}) {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
+builder.Host.UseSerilog();
+
 builder.Services.AddMemoryCache();
+builder.Services.AddHttpContextAccessor();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -40,7 +49,7 @@ builder.Services.AddRateLimiter(options =>
 
 // --- Database ---
 builder.Services.AddDbContextPool<QuantDbContext>(options =>
-    options.UseSqlite("Data Source=C:\\Users\\parlak\\Downloads\\ThatsMyQuant\\quant.db;Cache=Shared"), poolSize: 128);
+    options.UseConfiguredQuantDatabase(builder.Configuration), poolSize: 128);
 
 builder.Services.AddSingleton<SignalWriterChannel>();
 builder.Services.AddHostedService<QuantPersistenceWorker>();
@@ -59,14 +68,20 @@ builder.Services.AddHttpClient("Yahoo", client =>
     client.Timeout = TimeSpan.FromSeconds(10);
 });
 builder.Services.AddHttpClient("Binance");
+builder.Services.AddHttpClient("OKX");
 
 // --- CORE APPLICATION SERVICES ---
 builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddThatsMyQuantInfrastructure();
+builder.Services.AddSingleton(new ServiceRuntimeState("Listener.Api"));
+builder.Services.AddSingleton(new OperationalTelemetry("Listener.Api"));
+builder.Services.AddSingleton(new ServiceRuntimeState("Listener.Api"));
+builder.Services.AddSingleton(new OperationalTelemetry("Listener.Api"));
 
 // --- INFRASTRUCTURE ADAPTERS ---
 builder.Services.AddSingleton<BorsaMarketDataService>();
-builder.Services.AddSingleton<IMarketDataService, YahooFinanceMarketDataService>();
+builder.Services.AddSingleton<YahooFinanceMarketDataService>();
+builder.Services.AddSingleton<IMarketDataService, ExchangeRoutedMarketDataService>();
 builder.Services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
 builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
 builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
@@ -114,25 +129,50 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-app.UseHttpsRedirection();
+if (!app.Environment.IsDevelopment())
+{
+    app.UseHttpsRedirection();
+}
 app.UseRateLimiter();
+app.UseMiddleware<CorrelationIdMiddleware>();
 
 // Database Migration
 using (var scope = app.Services.CreateScope())
 {
+    var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+    var startupLogger = loggerFactory.CreateLogger("Listener.Api.Startup");
     var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
-    await db.Database.EnsureCreatedAsync();
+    await SqliteCompatibilityBootstrapper.EnsureCompatibleSchemaAsync(db, builder.Configuration, startupLogger);
 
     var exchangeInfo = scope.ServiceProvider.GetRequiredService<BinanceExchangeInfoProvider>();
-    await exchangeInfo.InitializeAsync();
+    try
+    {
+        await exchangeInfo.InitializeAsync();
+    }
+    catch (Exception ex)
+    {
+        startupLogger.LogWarning(ex, "Binance exchange metadata initialization failed. Listener.Api will continue with degraded symbol metadata.");
+    }
 }
+
+app.Services.GetRequiredService<ServiceRuntimeState>().MarkReady();
 
 app.UseMiddleware<HmacValidationMiddleware>();
 app.UseMiddleware<ApiKeyValidationMiddleware>();
 app.UseCors("AllowReact");
 
-app.MapPost("/webhook", async (Signal signal, IMediator mediator) =>
+app.MapObservabilityEndpoints(app.Services);
+
+app.MapPost("/webhook", async (Signal signal, HttpContext context, IMediator mediator) =>
 {
+    if (!signal.Metadata.ContainsKey("CorrelationId") &&
+        context.Items.TryGetValue(CorrelationIdMiddleware.HeaderName, out var correlationId) &&
+        correlationId is string correlationValue &&
+        !string.IsNullOrWhiteSpace(correlationValue))
+    {
+        signal.Metadata["CorrelationId"] = correlationValue;
+    }
+
     await mediator.Send(new ProcessSignalCommand(signal));
     return Results.Accepted();
 });
