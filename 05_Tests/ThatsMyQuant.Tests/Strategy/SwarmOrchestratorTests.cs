@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
+using NSubstitute.ExceptionExtensions;
 using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
@@ -213,6 +214,197 @@ public class SwarmOrchestratorTests : IDisposable
             .ToList();
 
         trainer.TrainAndSaveModel(data, modelPath);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldReject_WhenSystemIsHalted()
+    {
+        var featureAgent = new FeatureEngineeringAgent();
+        var driftMonitor = new FeatureDriftMonitor(5, zScoreThreshold: 3.0, minimumSamplesBeforeDrift: 1);
+        driftMonitor.SetBaseline(
+            new[] { 0d, 0d, 0d, 0d, 0d },
+            new[] { 1d, 1d, 1d, 1d, 1d });
+
+        var orchestrator = CreateOrchestrator(driftMonitor, featureAgent);
+
+        // Force 3 consecutive failures to trigger emergency shutdown
+        var faultyCoordinator = Substitute.For<IAgentCoordinator>();
+        faultyCoordinator.CollectStrategyVotesAsync(
+                Arg.Any<Signal>(), Arg.Any<PatternSnapshot>(), Arg.Any<FoundationSnapshot>(),
+                Arg.Any<IReadOnlyList<Candle>>(), Arg.Any<MarketRegime>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new Exception("Agent timeout"));
+        faultyCoordinator.RunMetaAdaptationAsync(
+                Arg.Any<IReadOnlyList<Trade>>(), Arg.Any<MarketRegime>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(new Exception("Agent timeout"));
+
+        var faultyOrchestrator = CreateOrchestratorWithCoordinator(driftMonitor, featureAgent, faultyCoordinator);
+
+        for (var i = 0; i < 3; i++)
+        {
+            await faultyOrchestrator.Handle(CreateRequest(), CancellationToken.None);
+        }
+
+        // Now the system should be halted
+        var result = await faultyOrchestrator.Handle(CreateRequest(), CancellationToken.None);
+
+        result.Approved.Should().BeFalse();
+        result.RejectionFlags.Should().HaveFlag(SignalReasonFlags.SystemError);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldReject_WhenPortfolioGuardrailsVeto()
+    {
+        var featureAgent = new FeatureEngineeringAgent();
+        var driftMonitor = new FeatureDriftMonitor(5, zScoreThreshold: 3.0, minimumSamplesBeforeDrift: 1);
+        driftMonitor.SetBaseline(
+            new[] { 0d, 0d, 0d, 0d, 0d },
+            new[] { 1d, 1d, 1d, 1d, 1d });
+
+        // Create a RiskAgent that will veto via portfolio guardrails
+        var riskAgent = new RiskAgent(Substitute.For<ILogger<RiskAgent>>());
+        riskAgent.ArmKillSwitch("Portfolio limit breached");
+
+        var sentimentService = Substitute.For<ISentimentService>();
+        sentimentService.AnalyzeNewsAsync(Arg.Any<string>())
+            .Returns(Task.FromResult((0.5d, false, "Supportive")));
+
+        var sentimentAgent = new SentimentAgent(
+            sentimentService,
+            new NewsFeedSim(Substitute.For<ILogger<NewsFeedSim>>()),
+            Substitute.For<ILogger<SentimentAgent>>());
+
+        var inferenceAgent = new InferenceAgent(driftMonitor, _modelPath);
+        var portfolioCache = Substitute.For<IPortfolioStateCache>();
+        portfolioCache.GetRecentTrades().Returns(Array.Empty<Trade>());
+
+        var coordinator = Substitute.For<IAgentCoordinator>();
+        var exchangeInfo = Substitute.For<IExchangeInfoProvider>();
+        exchangeInfo.GetTickSize(Arg.Any<string>()).Returns(0.01d);
+        exchangeInfo.GetLotSize(Arg.Any<string>()).Returns(0.001d);
+
+        var ofiAgent = new OFIExecutionAgent(
+            Substitute.For<ILogger<OFIExecutionAgent>>(),
+            exchangeInfo);
+
+        var orchestrator = new SwarmOrchestrator(
+            riskAgent, sentimentAgent, inferenceAgent, featureAgent,
+            portfolioCache, ofiAgent, coordinator,
+            Substitute.For<ILogger<SwarmOrchestrator>>());
+
+        var result = await orchestrator.Handle(CreateRequest(), CancellationToken.None);
+
+        result.Approved.Should().BeFalse();
+        result.RejectionFlags.Should().HaveFlag(SignalReasonFlags.RiskVeto);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldReject_WhenRiskGauntletVetoes()
+    {
+        var featureAgent = new FeatureEngineeringAgent();
+        featureAgent.CurrentTensor[0] = 1.5f;
+        featureAgent.CurrentTensor[1] = 1.2f;
+        featureAgent.CurrentTensor[2] = 0.9f;
+        var driftMonitor = new FeatureDriftMonitor(5, zScoreThreshold: 3.0, minimumSamplesBeforeDrift: 1);
+        driftMonitor.SetBaseline(
+            new[] { 1.5d, 1.2d, 0.9d, 0.6d, 0.3d },
+            new[] { 1d, 1d, 1d, 1d, 1d });
+
+        var coordinator = Substitute.For<IAgentCoordinator>();
+        coordinator.CollectStrategyVotesAsync(
+                Arg.Any<Signal>(), Arg.Any<PatternSnapshot>(), Arg.Any<FoundationSnapshot>(),
+                Arg.Any<IReadOnlyList<Candle>>(), Arg.Any<MarketRegime>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<StrategyVote>>(Array.Empty<StrategyVote>()));
+        coordinator.RunMetaAdaptationAsync(
+                Arg.Any<IReadOnlyList<Trade>>(), Arg.Any<MarketRegime>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(MetaAdaptation.Default));
+        coordinator.RunRiskGauntletAsync(
+                Arg.Any<Signal>(), Arg.Any<TradeDecision>(), Arg.Any<IReadOnlyList<Trade>>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(RiskGuardResult.Block("Risk.Correlation", SignalReasonFlags.RiskVeto, "Max correlation breached")));
+
+        var orchestrator = CreateOrchestratorWithCoordinator(driftMonitor, featureAgent, coordinator);
+        var request = CreateRequest();
+        request.Foundation = new FoundationSnapshot
+        {
+            BidAskImbalance = 0.6d,
+            TickDirectionRatio = 0.3d
+        };
+
+        var result = await orchestrator.Handle(request, CancellationToken.None);
+
+        result.Approved.Should().BeFalse();
+        result.RejectionFlags.Should().HaveFlag(SignalReasonFlags.RiskVeto);
+    }
+
+    [Fact]
+    public async Task Handle_ShouldResetFailureCounter_OnSuccess()
+    {
+        var featureAgent = new FeatureEngineeringAgent();
+        featureAgent.CurrentTensor[0] = 1.5f;
+        featureAgent.CurrentTensor[1] = 1.2f;
+        featureAgent.CurrentTensor[2] = 0.9f;
+        var driftMonitor = new FeatureDriftMonitor(5, zScoreThreshold: 3.0, minimumSamplesBeforeDrift: 1);
+        driftMonitor.SetBaseline(
+            new[] { 1.5d, 1.2d, 0.9d, 0.6d, 0.3d },
+            new[] { 1d, 1d, 1d, 1d, 1d });
+
+        var orchestrator = CreateOrchestrator(driftMonitor, featureAgent);
+
+        // Successful execution should not halt
+        var request = CreateRequest();
+        request.Foundation = new FoundationSnapshot
+        {
+            BidAskImbalance = 0.6d,
+            TickDirectionRatio = 0.3d
+        };
+        var result = await orchestrator.Handle(request, CancellationToken.None);
+
+        // After success, another request should still work (not halted)
+        var request2 = CreateRequest();
+        request2.Foundation = new FoundationSnapshot
+        {
+            BidAskImbalance = 0.6d,
+            TickDirectionRatio = 0.3d
+        };
+        var result2 = await orchestrator.Handle(request2, CancellationToken.None);
+
+        result2.RejectionFlags.Should().NotHaveFlag(SignalReasonFlags.SystemError);
+    }
+
+    private SwarmOrchestrator CreateOrchestratorWithCoordinator(
+        FeatureDriftMonitor driftMonitor,
+        FeatureEngineeringAgent featureAgent,
+        IAgentCoordinator coordinator)
+    {
+        var sentimentService = Substitute.For<ISentimentService>();
+        sentimentService.AnalyzeNewsAsync(Arg.Any<string>())
+            .Returns(Task.FromResult((0.5d, false, "Supportive backdrop")));
+
+        var sentimentAgent = new SentimentAgent(
+            sentimentService,
+            new NewsFeedSim(Substitute.For<ILogger<NewsFeedSim>>()),
+            Substitute.For<ILogger<SentimentAgent>>());
+
+        var inferenceAgent = new InferenceAgent(driftMonitor, _modelPath);
+        var portfolioCache = Substitute.For<IPortfolioStateCache>();
+        portfolioCache.GetRecentTrades().Returns(Array.Empty<Trade>());
+
+        var exchangeInfo = Substitute.For<IExchangeInfoProvider>();
+        exchangeInfo.GetTickSize(Arg.Any<string>()).Returns(0.01d);
+        exchangeInfo.GetLotSize(Arg.Any<string>()).Returns(0.001d);
+
+        var ofiAgent = new OFIExecutionAgent(
+            Substitute.For<ILogger<OFIExecutionAgent>>(),
+            exchangeInfo);
+
+        return new SwarmOrchestrator(
+            new RiskAgent(Substitute.For<ILogger<RiskAgent>>()),
+            sentimentAgent,
+            inferenceAgent,
+            featureAgent,
+            portfolioCache,
+            ofiAgent,
+            coordinator,
+            Substitute.For<ILogger<SwarmOrchestrator>>());
     }
 
     public void Dispose()

@@ -508,6 +508,96 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_DuplicateSignal_ShouldReturnExistingTradeWithoutExecution()
+    {
+        var signalId = Guid.NewGuid();
+        var existingTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signalId,
+            Symbol = "BTC-USD",
+            EntryPrice = 100m,
+            Quantity = 1m,
+            Status = TradeStatus.Executed
+        };
+
+        _tradeRepository.GetBySignalIdAsync(signalId).Returns(existingTrade);
+
+        var signal = new Signal
+        {
+            Id = signalId,
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.Id.Should().Be(existingTrade.Id);
+        result.Status.Should().Be(TradeStatus.Executed);
+        await _exchangeService.DidNotReceive().ExecuteOrderAsync(Arg.Any<Signal>());
+        await _tradeRepository.DidNotReceive().AddAsync(Arg.Any<Trade>());
+    }
+
+    [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldResetCircuitBreakerErrors()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(new Trade
+        {
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1m,
+            EntryTime = DateTime.UtcNow
+        });
+
+        // Record 2 errors, then succeed — should not halt
+        _circuitBreaker.RecordError(new Exception("err1"));
+        _circuitBreaker.RecordError(new Exception("err2"));
+
+        await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        _circuitBreaker.IsHalted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Handle_ExecutionMode_ShouldPersistExecutionModeFromMetadata()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+        signal.Metadata["ExecutionMode"] = "PAPER";
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(new Trade
+        {
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            EntryPrice = 100m,
+            Quantity = 1m,
+            EntryTime = DateTime.UtcNow
+        });
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.ExecutionMode.Should().Be("PAPER");
+    }
+
+    [Fact]
     public async Task Handle_RepeatedExchangeFailures_ShouldTripCircuitBreaker()
     {
         var strictCircuitBreaker = new CircuitBreakerService(

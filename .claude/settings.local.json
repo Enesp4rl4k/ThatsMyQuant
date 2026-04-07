@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/thirsty-hermann/05_Tests -type f -name *Base* -o -name *Fixture* -o -name *Setup*)",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/thirsty-hermann -type f \\\\\\(-name Moq* -o -name *Mock* -o -name *Stub* \\\\\\))",
+      "Bash(find /c/Users/parlak/Downloads/ThatsMyQuant/.claude/worktrees/thirsty-hermann/05_Tests -name \"*.cs\" -type f -exec wc -l {} +)",
+      "Bash(sort -k2)"
+    ]
+  }
+}
