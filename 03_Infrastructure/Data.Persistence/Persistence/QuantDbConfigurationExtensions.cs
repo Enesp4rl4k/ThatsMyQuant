@@ -44,8 +44,8 @@ public static class QuantDbConfigurationExtensions
         DbContextOptionsBuilder optionsBuilder,
         IConfiguration configuration)
     {
-        var sqliteConnection = configuration.GetConnectionString("Quant")
-                               ?? "Data Source=quant.db;Cache=Shared";
+        var sqliteConnection = configuration.GetConnectionString("Quant");
+        sqliteConnection = QuantPathResolver.ResolveSqliteConnectionString(sqliteConnection ?? QuantPathResolver.BuildDefaultConnectionString());
         return optionsBuilder.UseSqlite(sqliteConnection);
     }
 

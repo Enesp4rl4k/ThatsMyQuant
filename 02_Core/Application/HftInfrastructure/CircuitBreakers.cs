@@ -1,4 +1,6 @@
 using ThatsMyQuant.Contracts.Interfaces;
+using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Application.Strategy;
 
 namespace ThatsMyQuant.Application.HftInfrastructure;
 
@@ -9,6 +11,7 @@ namespace ThatsMyQuant.Application.HftInfrastructure;
 public class HeartbeatMonitor
 {
     private long _lastHeartbeatTick = Environment.TickCount64;
+    private long _firstHeartbeatTick;
     private readonly TimeSpan _maxStaleThreshold;
     private readonly DeadMansSwitch _safetySwitch;
 
@@ -23,6 +26,11 @@ public class HeartbeatMonitor
     /// </summary>
     public void RecordHeartbeat()
     {
+        if (Interlocked.Read(ref _firstHeartbeatTick) == 0)
+        {
+            Interlocked.CompareExchange(ref _firstHeartbeatTick, Environment.TickCount64, 0);
+        }
+
         _lastHeartbeatTick = Environment.TickCount64;
     }
 
@@ -31,6 +39,11 @@ public class HeartbeatMonitor
     /// </summary>
     public void AuditConnection()
     {
+        if (Interlocked.Read(ref _firstHeartbeatTick) == 0)
+        {
+            return;
+        }
+
         if (Environment.TickCount64 - _lastHeartbeatTick > _maxStaleThreshold.TotalMilliseconds)
         {
             // Catastrophic latency spike or exchange failure.
@@ -46,11 +59,18 @@ public class HeartbeatMonitor
 public class DeadMansSwitch
 {
     private readonly IAuditLogger _auditLogger;
+    private readonly CircuitBreakerService _circuitBreaker;
+    private readonly ILogger<DeadMansSwitch> _logger;
     public bool IsTriggered { get; private set; }
 
-    public DeadMansSwitch(IAuditLogger auditLogger)
+    public DeadMansSwitch(
+        IAuditLogger auditLogger,
+        CircuitBreakerService circuitBreaker,
+        ILogger<DeadMansSwitch> logger)
     {
         _auditLogger = auditLogger;
+        _circuitBreaker = circuitBreaker;
+        _logger = logger;
     }
 
     public void TriggerLiquidationEvacuation(string reason)
@@ -63,8 +83,9 @@ public class DeadMansSwitch
         _auditLogger.LogSecurityEventAsync("SYSTEM", "CIRCUIT_BREAKER", "DEAD_MANS_SWITCH_ENGAGED", reason)
             .GetAwaiter().GetResult();
 
-        // 2. Transmit global halt to all IExecutionEngine instances
-        Console.WriteLine($"[CRITICAL HALT] Dead Man's Switch Activated. Reason: {reason}");
+        // 2. Immediately halt execution dispatch.
+        _circuitBreaker.Halt($"DeadManSwitch: {reason}");
+        _logger.LogCritical("Dead Man's Switch activated. Reason: {Reason}", reason);
 
         // 3. (Future) Issue asynchronous zero-allocation FIX Market Orders to flatten all inventory to Cash.
     }

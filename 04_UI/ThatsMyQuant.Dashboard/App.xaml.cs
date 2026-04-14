@@ -33,7 +33,9 @@ public partial class App : System.Windows.Application
     private static IConfiguration BuildRuntimeConfiguration()
         => new ConfigurationBuilder()
             .AddJsonFile("appsettings.json", optional: true)
+            .AddJsonFile("exchange_settings.json", optional: true)
             .AddEnvironmentVariables()
+            .ApplySharedExchangeConfiguration()
             .Build();
 
     protected override async void OnStartup(StartupEventArgs e)
@@ -146,9 +148,10 @@ public partial class App : System.Windows.Application
 
     private void ConfigureServices(IServiceCollection services)
     {
-        var geminiApiKey = Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY");
-        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Mock";
         var runtimeConfiguration = BuildRuntimeConfiguration();
+        var geminiApiKey = runtimeConfiguration["TMQ_GEMINI_API_KEY"];
+        var exchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(runtimeConfiguration);
+        var isOkxMode = exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase);
 
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
 
@@ -179,8 +182,8 @@ public partial class App : System.Windows.Application
         if (exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
             exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase))
         {
-            var binanceApiKey = Environment.GetEnvironmentVariable("TMQ_BINANCE_API_KEY");
-            var binanceApiSecret = Environment.GetEnvironmentVariable("TMQ_BINANCE_API_SECRET");
+            var binanceApiKey = runtimeConfiguration["TMQ_BINANCE_API_KEY"];
+            var binanceApiSecret = runtimeConfiguration["TMQ_BINANCE_API_SECRET"];
 
             if (!string.IsNullOrEmpty(binanceApiKey) && !string.IsNullOrEmpty(binanceApiSecret))
             {
@@ -212,9 +215,9 @@ public partial class App : System.Windows.Application
         }
         else if (exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase))
         {
-            var okxApiKey = Environment.GetEnvironmentVariable("OKX__ApiKey") ?? Environment.GetEnvironmentVariable("OKX:ApiKey");
-            var okxPassphrase = Environment.GetEnvironmentVariable("OKX__Passphrase") ?? Environment.GetEnvironmentVariable("OKX:Passphrase");
-            var okxSecret = Environment.GetEnvironmentVariable("OKX__SecretKey") ?? Environment.GetEnvironmentVariable("OKX:SecretKey");
+            var okxApiKey = runtimeConfiguration["OKX:ApiKey"];
+            var okxPassphrase = runtimeConfiguration["OKX:Passphrase"];
+            var okxSecret = runtimeConfiguration["OKX:SecretKey"];
 
             if (!string.IsNullOrWhiteSpace(okxApiKey) &&
                 !string.IsNullOrWhiteSpace(okxPassphrase) &&
@@ -261,13 +264,21 @@ public partial class App : System.Windows.Application
 
         services.AddSingleton<ITradingLoopService, TradingLoopService>();
         services.AddSingleton<IStrategyHealthStore, JsonStrategyHealthStore>();
+        services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
         services.AddSingleton<BinanceExchangeInfoProvider>();
         services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
         services.AddSingleton<IWebVitalsService, WebVitalsService>();
         services.AddSingleton<IUserPromptService, MessageBoxUserPromptService>();
         services.AddSingleton<IAuditLogger, ConsoleAuditLogger>();
 
-        services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+        if (isOkxMode)
+        {
+            services.AddSingleton<IStreamingMarketDataService, OkxWebSocketService>();
+        }
+        else
+        {
+            services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+        }
         services.AddSingleton<TickPipeline>();
         services.AddSingleton(sp => new MicrosecondPredictionEngine(
             "models/price_prediction.onnx",

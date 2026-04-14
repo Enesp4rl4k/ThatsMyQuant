@@ -653,14 +653,16 @@ public partial class MainViewModel
     private void UpdateRuntimeIntegrityStatus()
     {
         var simulationMode = string.Equals(Environment.GetEnvironmentVariable("TMQ_SIMULATION_MODE"), "true", StringComparison.OrdinalIgnoreCase);
-        var exchangeMode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Disabled";
+        var exchangeMode = string.IsNullOrWhiteSpace(ExchangeSettings.SelectedExchangeMode)
+            ? "Disabled"
+            : ExchangeSettings.SelectedExchangeMode;
         var hasGeminiKey = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_GEMINI_API_KEY"));
-        var hasBinanceKeys = !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_KEY")) &&
-                             !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TMQ_BINANCE_API_SECRET"));
+        var hasBinanceKeys = !string.IsNullOrWhiteSpace(ExchangeSettings.BinanceApiKey) &&
+                             !string.IsNullOrWhiteSpace(ExchangeSettings.BinanceApiSecret);
         var hasOkxKeys =
-            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OKX__ApiKey") ?? Environment.GetEnvironmentVariable("OKX:ApiKey")) &&
-            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OKX__Passphrase") ?? Environment.GetEnvironmentVariable("OKX:Passphrase")) &&
-            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OKX__SecretKey") ?? Environment.GetEnvironmentVariable("OKX:SecretKey"));
+            !string.IsNullOrWhiteSpace(ExchangeSettings.OkxApiKey) &&
+            !string.IsNullOrWhiteSpace(ExchangeSettings.OkxPassphrase) &&
+            !string.IsNullOrWhiteSpace(ExchangeSettings.OkxSecretKey);
 
         MarketOverview.ExecutionServiceStatus = ResolveExecutionServiceStatus(exchangeMode, simulationMode, hasBinanceKeys, hasOkxKeys);
         IsHftRuntimeAvailable = exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
@@ -675,6 +677,8 @@ public partial class MainViewModel
 
     private string ResolveExecutionServiceStatus(string exchangeMode, bool simulationMode, bool hasBinanceKeys, bool hasOkxKeys)
     {
+        var okxDemoMode = ExchangeSettings.IsDemoMode;
+
         if ((exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase) || simulationMode) && !hasBinanceKeys)
         {
             return "SIMULATION BROKER";
@@ -687,7 +691,7 @@ public partial class MainViewModel
 
         if (exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) && hasOkxKeys)
         {
-            return "OKX LIVE";
+            return okxDemoMode ? "OKX DEMO" : "OKX LIVE";
         }
 
         return "EXECUTION DISABLED";

@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Web.WebView2.Core;
+using ThatsMyQuant.Dashboard.ViewModels;
 using ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
 
 namespace ThatsMyQuant.Dashboard.Controls;
@@ -16,6 +17,7 @@ public partial class ScientificChartControl : UserControl
 
     private readonly string _chartHtml;
     private MarketOverviewViewModel? _viewModel;
+    private MainViewModel? _hostViewModel;
     private bool _webViewReady;
     private bool _pendingRefresh;
 
@@ -29,6 +31,8 @@ public partial class ScientificChartControl : UserControl
 
     private async void ScientificChartControl_Loaded(object sender, RoutedEventArgs e)
     {
+        AttachHostViewModel();
+
         if (_webViewReady)
         {
             return;
@@ -68,6 +72,26 @@ public partial class ScientificChartControl : UserControl
         ScheduleChartRefresh();
     }
 
+    private void AttachHostViewModel()
+    {
+        var hostViewModel = Window.GetWindow(this)?.DataContext as MainViewModel;
+        if (ReferenceEquals(hostViewModel, _hostViewModel))
+        {
+            return;
+        }
+
+        if (_hostViewModel is not null)
+        {
+            _hostViewModel.PropertyChanged -= HostViewModel_PropertyChanged;
+        }
+
+        _hostViewModel = hostViewModel;
+        if (_hostViewModel is not null)
+        {
+            _hostViewModel.PropertyChanged += HostViewModel_PropertyChanged;
+        }
+    }
+
     private void UnsubscribeFromViewModel()
     {
         if (_viewModel is null)
@@ -84,6 +108,23 @@ public partial class ScientificChartControl : UserControl
 
     private void ObservableCollection_CollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
         => ScheduleChartRefresh();
+
+    private void HostViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(MainViewModel.CurrentPrice)
+            or nameof(MainViewModel.StopLoss)
+            or nameof(MainViewModel.TakeProfit)
+            or nameof(MainViewModel.NearestSupport)
+            or nameof(MainViewModel.NearestResistance)
+            or nameof(MainViewModel.BBUpper)
+            or nameof(MainViewModel.BBLower)
+            or nameof(MainViewModel.RSI)
+            or nameof(MainViewModel.MACDStatus)
+            or nameof(MainViewModel.EMAStatus))
+        {
+            ScheduleChartRefresh();
+        }
+    }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -112,6 +153,12 @@ public partial class ScientificChartControl : UserControl
 
     private async void ScheduleChartRefresh()
     {
+        if (!Dispatcher.CheckAccess())
+        {
+            await Dispatcher.InvokeAsync(ScheduleChartRefresh);
+            return;
+        }
+
         _pendingRefresh = true;
         if (!_webViewReady || _viewModel is null)
         {
@@ -124,6 +171,12 @@ public partial class ScientificChartControl : UserControl
 
     private async Task DispatchChartStateAsync()
     {
+        if (!Dispatcher.CheckAccess())
+        {
+            await Dispatcher.InvokeAsync(async () => await DispatchChartStateAsync());
+            return;
+        }
+
         if (!_webViewReady || _viewModel is null || ChartWebView.CoreWebView2 is null)
         {
             return;
@@ -183,7 +236,9 @@ public partial class ScientificChartControl : UserControl
                 color = ConvertBrushToCss(m.Color),
                 direction = m.Direction,
                 toolTip = m.ToolTip
-            })
+            }),
+            orderLines = BuildOrderLines(),
+            executionMarkers = BuildExecutionMarkers()
         };
 
         ChartWebView.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(payload, JsonOptions));
@@ -265,8 +320,93 @@ public partial class ScientificChartControl : UserControl
     private async void VerticalLineTool_Click(object sender, RoutedEventArgs e)
         => await SendChartCommandAsync(new { type = "tool", tool = "vertical" });
 
+    private async void FibTool_Click(object sender, RoutedEventArgs e)
+        => await SendChartCommandAsync(new { type = "tool", tool = "fib" });
+
+    private async void RectangleTool_Click(object sender, RoutedEventArgs e)
+        => await SendChartCommandAsync(new { type = "tool", tool = "rectangle" });
+
+    private async void UndoTool_Click(object sender, RoutedEventArgs e)
+        => await SendChartCommandAsync(new { type = "undo" });
+
     private async void ResetView_Click(object sender, RoutedEventArgs e)
         => await SendChartCommandAsync(new { type = "reset" });
+
+    private IEnumerable<object> BuildOrderLines()
+    {
+        if (_hostViewModel is null)
+        {
+            return [];
+        }
+
+        var lines = new List<object>();
+        AddLineIfValid(lines, "Price", _hostViewModel.CurrentPrice, "rgba(16,183,255,0.95)", false);
+        AddLineIfValid(lines, "Stop", _hostViewModel.StopLoss, "rgba(255,51,102,0.95)", true);
+        AddLineIfValid(lines, "Target", _hostViewModel.TakeProfit, "rgba(0,255,187,0.95)", true);
+        AddLineIfValid(lines, "Support", _hostViewModel.NearestSupport, "rgba(113,201,248,0.85)", true);
+        AddLineIfValid(lines, "Resistance", _hostViewModel.NearestResistance, "rgba(255,180,92,0.85)", true);
+        AddLineIfValid(lines, "BB Upper", (decimal)_hostViewModel.BBUpper, "rgba(180,180,255,0.72)", true);
+        AddLineIfValid(lines, "BB Lower", (decimal)_hostViewModel.BBLower, "rgba(180,180,255,0.72)", true);
+        return lines;
+    }
+
+    private IEnumerable<object> BuildExecutionMarkers()
+    {
+        if (_hostViewModel is null || _viewModel is null)
+        {
+            return [];
+        }
+
+        return _hostViewModel
+            .GetSelectedSymbolTradesForChart(_viewModel.SelectedSymbol)
+            .SelectMany(trade =>
+            {
+                var markers = new List<object>
+                {
+                    new
+                    {
+                        time = trade.EntryTime,
+                        price = trade.EntryPrice,
+                        side = trade.Side.ToString(),
+                        markerType = "entry",
+                        color = trade.Side == Contracts.Enums.TradeSide.Buy ? "rgba(0,255,187,0.95)" : "rgba(255,51,102,0.95)",
+                        label = $"{trade.Side} entry"
+                    }
+                };
+
+                if (trade.ExitTime.HasValue && trade.ExitPrice > 0m)
+                {
+                    markers.Add(new
+                    {
+                        time = trade.ExitTime.Value,
+                        price = trade.ExitPrice,
+                        side = trade.Side.ToString(),
+                        markerType = "exit",
+                        color = trade.RealisedPnL >= 0 ? "rgba(88,214,141,0.95)" : "rgba(149,165,166,0.95)",
+                        label = $"{trade.Side} exit"
+                    });
+                }
+
+                return markers;
+            })
+            .ToList();
+    }
+
+    private static void AddLineIfValid(ICollection<object> lines, string label, decimal value, string color, bool dashed)
+    {
+        if (value <= 0m)
+        {
+            return;
+        }
+
+        lines.Add(new
+        {
+            label,
+            value,
+            color,
+            dashed
+        });
+    }
 
     private static double SafeRatio(double value, double total)
         => total <= 0 ? 0 : Math.Clamp(value / total, 0, 1);

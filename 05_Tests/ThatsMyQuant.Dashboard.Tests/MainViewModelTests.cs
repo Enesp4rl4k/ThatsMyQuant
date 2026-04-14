@@ -295,6 +295,59 @@ public class MainViewModelTests
     }
 
     [Fact]
+    public async Task StartTradingCommand_ShouldPromoteBestAutoDiscoveredSymbol_WhenAutoModeIsEnabled()
+    {
+        var marketDataService = Substitute.For<IMarketDataService>();
+        marketDataService.GetCandlesAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<string>())
+            .Returns(CreateCandles());
+
+        var technicalAnalysis = Substitute.For<ITechnicalAnalysisService>();
+        technicalAnalysis.ComputeIndicatorsAsync(Arg.Any<List<Candle>>()).Returns(CreateSnapshot());
+        technicalAnalysis.AnalyzeAsync(Arg.Is<Signal>(s => s.Symbol == "THYAO"), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>())
+            .Returns(new TradeDecision
+            {
+                ShouldTrade = false,
+                Confidence = 35,
+                Reasoning = "Weak setup",
+                Indicators = CreateSnapshot()
+            });
+        technicalAnalysis.AnalyzeAsync(Arg.Is<Signal>(s => s.Symbol == "GARAN"), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>())
+            .Returns(new TradeDecision
+            {
+                ShouldTrade = true,
+                Confidence = 82,
+                Reasoning = "Strong setup",
+                Indicators = CreateSnapshot()
+            });
+        technicalAnalysis.AnalyzeAsync(Arg.Any<Signal>(), Arg.Any<List<Candle>>(), Arg.Any<RiskParameters>())
+            .Returns(new TradeDecision
+            {
+                ShouldTrade = false,
+                Confidence = 20,
+                Reasoning = "Fallback",
+                Indicators = CreateSnapshot()
+            });
+
+        var loop = new ImmediateTradingLoopService();
+        var viewModel = CreateViewModel(
+            marketDataService: marketDataService,
+            technicalAnalysis: technicalAnalysis,
+            tradingLoopService: loop);
+
+        viewModel.SelectedMarket = "BIST";
+        viewModel.SelectedSymbol = "THYAO";
+        viewModel.SelectedTradeTargetMode = "Auto";
+        viewModel.BotLaunchGuardStatus = "Ready";
+        viewModel.BotRecommendedFunding = 1000m;
+
+        await viewModel.StartTradingCommand.ExecuteAsync(null);
+
+        viewModel.SelectedSymbol.Should().Be("GARAN");
+        viewModel.ActiveTradeTarget.Should().Contain("GARAN");
+        viewModel.TradeTargetDiscoveryStatus.Should().Contain("GARAN");
+    }
+
+    [Fact]
     public async Task ForceEnableStrategyCommand_ShouldMoveDisabledBucketIntoRecoveryMode()
     {
         var tradeRepository = Substitute.For<ITradeRepository>();
@@ -1703,7 +1756,8 @@ public class MainViewModelTests
         ISignalRepository? signalRepository = null,
         IUserPromptService? userPromptService = null,
         RiskAgent? riskAgent = null,
-        StrategyTuningService? strategyTuningService = null)
+        StrategyTuningService? strategyTuningService = null,
+        ITradingLoopService? tradingLoopService = null)
     {
         if (marketDataService == null)
         {
@@ -1776,12 +1830,13 @@ public class MainViewModelTests
             riskAgent ?? new RiskAgent(Substitute.For<ILogger<RiskAgent>>()),
             signalRepository,
             tradeRepository,
-            new TradingLoopService(Substitute.For<ILogger<TradingLoopService>>()),
+            tradingLoopService ?? new TradingLoopService(Substitute.For<ILogger<TradingLoopService>>()),
             strategyHealthStore,
             strategyTuningService,
             agentCoordinator,
             new FocusedBacktestViewModel(agentCoordinator, marketDataService),
             Substitute.For<IWebVitalsService>(),
+            Substitute.For<IStrategyPerformanceStore>(),
             enableBackgroundTimers: false,
             enableAutomaticAnalysis: false,
             userPromptService: userPromptService);
@@ -1857,5 +1912,21 @@ public class MainViewModelTests
             DetectedPattern = "Bullish Engulfing",
             ComputedAt = DateTime.UtcNow
         };
+    }
+
+    private sealed class ImmediateTradingLoopService : ITradingLoopService
+    {
+        public bool IsRunning { get; private set; }
+
+        public async Task StartAsync(Func<CancellationToken, Task> cycle, TimeSpan interval, CancellationToken cancellationToken = default)
+        {
+            IsRunning = true;
+            await cycle(cancellationToken);
+        }
+
+        public void Stop()
+        {
+            IsRunning = false;
+        }
     }
 }

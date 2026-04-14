@@ -25,7 +25,9 @@ using ThatsMyQuant.Application.Observability;
 PerformanceBootstrapper.OptimizeForHft();
 
 var builder = Host.CreateApplicationBuilder(args);
-var selectedExchangeMode = (builder.Configuration["TMQ_EXCHANGE_MODE"] ?? "Mock").Trim();
+builder.Configuration.AddJsonFile("exchange_settings.json", optional: true, reloadOnChange: true);
+builder.Configuration.ApplySharedExchangeConfiguration();
+var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
 var isBinanceMode =
     selectedExchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
     selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
@@ -51,8 +53,8 @@ builder.Logging.ClearProviders();
 builder.Services.AddSerilog();
 
 // --- CORE APPLICATION SERVICES ---
-builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddThatsMyQuantInfrastructure();
+builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddSingleton(new ServiceRuntimeState("QuantEngine.Worker"));
 builder.Services.AddSingleton(new OperationalTelemetry("QuantEngine.Worker"));
 
@@ -64,9 +66,18 @@ builder.Services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
 builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
 builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
 builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
-builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+// Exchange-aware streaming: OKX or Binance based on TMQ_EXCHANGE_MODE
+if (isOkxMode)
+{
+    builder.Services.AddSingleton<IStreamingMarketDataService, OkxWebSocketService>();
+}
+else
+{
+    builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+}
 builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
 builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
+builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
 
 // Safety Kernel
 if (!string.IsNullOrWhiteSpace(geminiApiKey))
@@ -116,6 +127,11 @@ if (isOkxMode && hasOkxCredentials)
             builder.Configuration,
             sp.GetService<ISharedPortfolioStateManager>(),
             sp.GetService<ThatsMyQuant.Application.Security.ApiVault>()));
+    builder.Services.AddSingleton<IExchangeExecutionSync>(sp =>
+        new OkxExecutionSync(
+            sp.GetRequiredService<ILogger<OkxExecutionSync>>(),
+            builder.Configuration,
+            sp.GetService<ThatsMyQuant.Application.Security.ApiVault>()));
 }
 else if (isBinanceMode && hasBinanceCredentials)
 {
@@ -152,6 +168,7 @@ builder.Services.AddTransient<ISignalValidator, MinVolumeValidator>();
 builder.Services.AddTransient<ISignalValidator, PriceSanityValidator>();
 
 builder.Services.AddHostedService<WorkerManagementApiHostedService>();
+builder.Services.AddHostedService<ExchangeExecutionSyncHostedService>();
 builder.Services.AddHostedService<TradeBotWorker>();
 
 var host = builder.Build();

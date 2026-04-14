@@ -7,6 +7,9 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Reference Include="System.Security.Cryptography.ProtectedData">
+      <HintPath>$(NuGetPackageRoot)system.security.cryptography.protecteddata\6.0.0\lib\net6.0\System.Security.Cryptography.ProtectedData.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <ItemGroup>

@@ -59,7 +59,7 @@ public class ExecutionWorker : BackgroundService
 
     private async Task RunSignalRecoveryLoopAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {

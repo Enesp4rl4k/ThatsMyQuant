@@ -14,6 +14,7 @@ public class QuantDbContext : DbContext
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<WebhookRequestLog> WebhookRequestLogs => Set<WebhookRequestLog>();
     public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
+    public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
 
     public QuantDbContext(DbContextOptions<QuantDbContext> options) : base(options) { }
 
@@ -155,6 +156,16 @@ public class QuantDbContext : DbContext
 
             entity.HasIndex(u => u.Username).IsUnique();
             entity.HasIndex(u => u.Email).IsUnique();
+        });
+
+        modelBuilder.Entity<AuditEntry>(entity =>
+        {
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.EventType).HasMaxLength(30);
+            entity.Property(a => a.CorrelationId).HasMaxLength(120);
+            entity.Property(a => a.Payload).HasColumnType("TEXT");
+            entity.HasIndex(a => a.CorrelationId);
+            entity.HasIndex(a => a.TimestampUtc);
         });
     }
 }

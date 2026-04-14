@@ -10,9 +10,11 @@ namespace ThatsMyQuant.Infrastructure.Services;
 /// Venue-aware, lock-free in-memory portfolio manager for execution hot paths.
 /// Balances and reservations are maintained per venue/asset using atomic scaled longs.
 /// </summary>
-public sealed class VenuePortfolioManager : ISharedPortfolioStateManager
+public sealed class VenuePortfolioManager : ISharedPortfolioStateManager, IPortfolioManager
 {
     private const long BalanceScale = 100_000_000L;
+    private long _peakEquityScaled = 0;
+    private long _initialEquityScaled = 0;
 
     private static readonly Lazy<VenuePortfolioManager> _instance =
         new(() => new VenuePortfolioManager());
@@ -156,6 +158,69 @@ public sealed class VenuePortfolioManager : ISharedPortfolioStateManager
     {
         _balances.Clear();
         _positions.Clear();
+        Interlocked.Exchange(ref _peakEquityScaled, 0);
+    }
+
+    // --- IPortfolioManager Bridge (Defaults to Binance venue) ---
+
+    public decimal GetDrawdownPercent()
+    {
+        var snapshot = GetGlobalSnapshot();
+        var totalEquityScaled = ToScaled(snapshot.TotalUsdtValue);
+        
+        long currentPeak;
+        do
+        {
+            currentPeak = Interlocked.Read(ref _peakEquityScaled);
+            if (totalEquityScaled <= currentPeak) break;
+        } while (Interlocked.CompareExchange(ref _peakEquityScaled, totalEquityScaled, currentPeak) != currentPeak);
+        
+        if (currentPeak <= 0) return 0;
+        return (decimal)(currentPeak - totalEquityScaled) / currentPeak;
+    }
+
+    public decimal GetAvailableBalance(string asset) => GetAvailableBalance(VenueKind.Binance, asset);
+    public void SetBalance(string asset, decimal amount) => SetBalance(VenueKind.Binance, asset, amount);
+    public void AddBalance(string asset, decimal delta) => AddBalanceDelta(VenueKind.Binance, asset, delta);
+    public void Lock(string asset, decimal amount) => TryReserve(VenueKind.Binance, asset, amount);
+    public void Unlock(string asset, decimal amount) => ReleaseReservation(VenueKind.Binance, asset, amount);
+    
+    public void OpenPosition(string symbol, decimal entryPrice, decimal quantity, bool isLong) 
+        => UpdatePosition(VenueKind.Binance, symbol, isLong ? quantity : -quantity);
+
+    public decimal ClosePosition(string symbol, decimal exitPrice) 
+    {
+        var key = new PositionKey(VenueKind.Binance, NormalizeSymbol(symbol));
+        _positions.TryRemove(key, out _);
+        return 0; // P&L tracking not implemented in this bridge yet
+    }
+
+    public PositionState? GetPosition(string symbol) 
+    {
+        var qty = GetPosition(VenueKind.Binance, symbol);
+        if (qty == 0) return null;
+        return new PositionState { Symbol = symbol, Quantity = Math.Abs(qty), IsLong = qty > 0 };
+    }
+
+    public IReadOnlyDictionary<string, PositionState> GetAllPositions()
+    {
+        return _positions
+            .Where(p => p.Key.Venue == VenueKind.Binance)
+            .ToDictionary(p => p.Key.Symbol, p => new PositionState 
+            { 
+                Symbol = p.Key.Symbol, 
+                Quantity = Math.Abs(p.Value.Quantity), 
+                IsLong = p.Value.Quantity > 0 
+            });
+    }
+
+    public void Reconcile(IReadOnlyDictionary<string, (decimal Total, decimal Locked)> externalBalances)
+    {
+        foreach (var (asset, state) in externalBalances)
+        {
+            SetBalance(VenueKind.Binance, asset, state.Total);
+            // Internal reservation tracking is separate from exchange locked funds in this model
+        }
     }
 
     private AtomicBalanceCell GetBalanceCell(VenueKind venue, string asset)

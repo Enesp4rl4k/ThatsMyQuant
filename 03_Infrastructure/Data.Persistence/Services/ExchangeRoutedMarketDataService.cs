@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Helpers;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Infrastructure.Persistence;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -18,6 +20,7 @@ public class ExchangeRoutedMarketDataService : IMarketDataService
     private readonly YahooFinanceMarketDataService _yahooFinanceMarketDataService;
     private readonly BorsaMarketDataService _borsaMarketDataService;
     private readonly ILogger<ExchangeRoutedMarketDataService> _logger;
+    private readonly IConfiguration _configuration;
     private readonly ConcurrentDictionary<string, (DateTime fetchedAt, List<Candle> candles)> _candleCache = new();
     private readonly ConcurrentDictionary<string, (DateTime fetchedAt, decimal price)> _priceCache = new();
 
@@ -25,11 +28,13 @@ public class ExchangeRoutedMarketDataService : IMarketDataService
         IHttpClientFactory httpClientFactory,
         YahooFinanceMarketDataService yahooFinanceMarketDataService,
         BorsaMarketDataService borsaMarketDataService,
+        IConfiguration configuration,
         ILogger<ExchangeRoutedMarketDataService> logger)
     {
         _httpClientFactory = httpClientFactory;
         _yahooFinanceMarketDataService = yahooFinanceMarketDataService;
         _borsaMarketDataService = borsaMarketDataService;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -307,9 +312,9 @@ public class ExchangeRoutedMarketDataService : IMarketDataService
         }
     }
 
-    private static string ResolveExchangeMode()
+    private string ResolveExchangeMode()
     {
-        var mode = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE");
+        var mode = SharedExchangeConfiguration.GetSelectedExchangeMode(_configuration);
         if (string.IsNullOrWhiteSpace(mode) || mode.Equals("Mock", StringComparison.OrdinalIgnoreCase))
         {
             return "Binance";

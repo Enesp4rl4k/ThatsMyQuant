@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using CommunityToolkit.Mvvm.Input;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Dashboard.Services;
 
 namespace ThatsMyQuant.Dashboard.ViewModels;
@@ -21,6 +23,11 @@ public partial class MainViewModel
                 ExecutedCount = counts.GetValueOrDefault(TradeStatus.Executed, 0);
                 FailedCount = counts.GetValueOrDefault(TradeStatus.Failed, 0);
                 DeadLetterCount = counts.GetValueOrDefault(TradeStatus.DeadLetter, 0);
+
+                if (QueuedCount > 0 || ExecutedCount > 0)
+                {
+                    AddSystemLog($"TELEMETRY: Signals Queued: {QueuedCount}, Executed: {ExecutedCount}");
+                }
 
                 if (DeadLetterCount > 0) QueueHealth = "Critical (Dead-Letter)";
                 else if (QueuedCount > 5) QueueHealth = "Congested";
@@ -50,11 +57,13 @@ public partial class MainViewModel
                     .Where(t => t.Status == TradeStatus.Executed || t.Status == TradeStatus.Failed)
                     .ToList();
 
-                if (tradeRows.Count == 0)
+                if (tradeRows.Count == 0 && recentTrades.Count == 0)
                 {
                     HandleEmptyLeaderboard();
                     return;
                 }
+                
+                RefreshOpenPositionsFromTrades(recentTrades);
 
                 _tradeCache.Clear();
                 _tradeCache.AddRange(recentTrades);
@@ -271,5 +280,95 @@ public partial class MainViewModel
 
         var trigger = _modelGovernance.EvaluateRetrainingNeed(_signalCache, _tradeCache);
         MlRetrainingTriggerSummary = trigger.Summary;
+    }
+
+    [RelayCommand]
+    private async Task RefreshBacktest()
+    {
+        try
+        {
+            var state = await _performanceStore.LoadAsync();
+            InvokeOnUi(() =>
+            {
+                BacktestBuckets.Clear();
+                foreach (var s in state.BacktestBuckets.OrderByDescending(x => x.RecordedAtUtc))
+                {
+                    BacktestBuckets.Add(s);
+                }
+
+                if (BacktestBuckets.Count > 0)
+                {
+                    TopProfitFactor = BacktestBuckets.Max(x => x.ProfitFactor);
+                    CumulativePnL = BacktestBuckets.Sum(x => x.TotalPnL);
+                    PromotionReadyCount = BacktestBuckets.Count(x => x.BacktestPass);
+                    BestSharpeRatio = BacktestBuckets.Max(x => x.SharpeRatio);
+                    BestSortinoRatio = BacktestBuckets.Max(x => x.SortinoRatio);
+                    AvgMaxDrawdown = BacktestBuckets.Average(x => x.MaxDrawdownPercent);
+                    AvgWinRate = BacktestBuckets.Average(x => x.WinRate);
+                }
+
+                AddSystemLog($"Backtest: {BacktestBuckets.Count} performance snapshots synchronized.");
+            });
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"Backtest Load Error: {ex.Message}");
+        }
+    }
+
+    [RelayCommand]
+    private async Task ExportBacktestCsv()
+    {
+        try
+        {
+            if (BacktestBuckets.Count == 0)
+            {
+                AddSystemLog("Export: No backtest data to export.");
+                return;
+            }
+
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Filter = "CSV Files (*.csv)|*.csv",
+                DefaultExt = ".csv",
+                FileName = $"backtest_report_{DateTime.Now:yyyyMMdd_HHmmss}"
+            };
+
+            if (dialog.ShowDialog() != true) return;
+
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("Timestamp,Symbol,Strategy,Regime,Trades,WinRate,ProfitFactor,NetPnL,StartingCapital,FinalEquity,SharpeRatio,SortinoRatio,MaxDrawdownPct,AvgRR,MaxConsecLosses,PboScore,StochasticDominance,PromotionStage,BacktestPass");
+
+            foreach (var b in BacktestBuckets)
+            {
+                sb.AppendLine(string.Join(",",
+                    b.RecordedAtUtc.ToString("yyyy-MM-dd HH:mm:ss"),
+                    b.Symbol,
+                    b.StrategyTag,
+                    b.RegimeTag,
+                    b.Trades,
+                    b.WinRate.ToString("F4"),
+                    b.ProfitFactor.ToString("F2"),
+                    b.TotalPnL.ToString("F2"),
+                    b.StartingCapital.ToString("F2"),
+                    b.FinalEquity.ToString("F2"),
+                    b.SharpeRatio.ToString("F4"),
+                    b.SortinoRatio.ToString("F4"),
+                    b.MaxDrawdownPercent.ToString("F2"),
+                    b.AverageRR.ToString("F2"),
+                    b.MaxConsecutiveLosses,
+                    b.PboScore.ToString("F4"),
+                    b.StochasticDominance.ToString("F4"),
+                    b.PromotionStage,
+                    b.BacktestPass));
+            }
+
+            await System.IO.File.WriteAllTextAsync(dialog.FileName, sb.ToString());
+            AddSystemLog($"Export: Backtest report saved to {dialog.FileName}");
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"Export Error: {ex.Message}");
+        }
     }
 }

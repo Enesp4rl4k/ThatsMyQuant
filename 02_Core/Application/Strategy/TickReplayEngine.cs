@@ -20,7 +20,17 @@ public sealed class TickReplayEngine
     // Simulation parameters
     private const decimal CommissionRate = 0.0005m;  // 5 bps per side
     private const double SlippageBps = 1.0;           // 1 bps average slippage
-    private const int MinTicksForEntry = 100;         // Warm-up period
+    private const int BaseMinTicksForEntry = 100;     // Minimum warm-up floor
+
+    /// <summary>
+    /// Adaptive warm-up: scales with dataset size to ensure feature pipeline stability.
+    /// Floor=100, scales to 2% of total ticks, capped at 2000.
+    /// </summary>
+    private static int ComputeAdaptiveWarmup(int totalTicks)
+    {
+        int scaled = Math.Max(BaseMinTicksForEntry, (int)(totalTicks * 0.02));
+        return Math.Min(scaled, 2000);
+    }
 
     public TickReplayEngine(
         IAgentCoordinator coordinator,
@@ -72,10 +82,11 @@ public sealed class TickReplayEngine
         IReadOnlyList<OrderBookSnapshot>? orderBooks = null,
         CancellationToken ct = default)
     {
-        if (ticks.Count < MinTicksForEntry)
+        int minTicksForEntry = ComputeAdaptiveWarmup(ticks.Count);
+        if (ticks.Count < BaseMinTicksForEntry)
         {
             _logger.LogWarning("Insufficient tick data for {Symbol}: {Count} < {Min}",
-                symbol, ticks.Count, MinTicksForEntry);
+                symbol, ticks.Count, BaseMinTicksForEntry);
             return new BacktestResult
             {
                 Symbol = symbol,
@@ -102,7 +113,8 @@ public sealed class TickReplayEngine
         decimal currentOFI = 0m;
 
         // Phase 1: Warm up the feature agent
-        int warmupEnd = Math.Min(MinTicksForEntry, ticks.Count);
+        _logger.LogInformation("Adaptive warm-up: {WarmupTicks} ticks (from {Total} total)", minTicksForEntry, ticks.Count);
+        int warmupEnd = Math.Min(minTicksForEntry, ticks.Count);
         for (int i = 0; i < warmupEnd; i++)
         {
             _featureAgent.ProcessTickNatively((double)ticks[i].Price);
@@ -211,11 +223,15 @@ public sealed class TickReplayEngine
                 Source = "TickReplay"
             };
 
+            var detectedRegime = candles.Count >= 34
+                ? MarketRegimeDetector.Detect(candles).Regime
+                : MarketRegime.Unknown;
+
             var snapshot = await _coordinator.RunFullPipelineAsync(
                 signal,
                 new List<MarketTick> { tick },
                 candles,
-                MarketRegime.Trending,
+                detectedRegime,
                 new List<Trade>(),
                 history,
                 ct);

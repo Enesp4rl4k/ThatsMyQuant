@@ -167,7 +167,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             LastUpdatedTime = DateTime.UtcNow,
             Status = fillStatus,
             LifecycleStatus = TradeLifecycleStatus.Accepted,
-            ExecutionMode = "REAL-OKX"
+            ExecutionMode = IsDemoMode ? "DEMO-OKX" : "REAL-OKX"
         };
     }
 
@@ -363,10 +363,13 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         return snapshots;
     }
 
+    private static readonly HashSet<string> SkippedFavoriteAssets =
+        new(StringComparer.OrdinalIgnoreCase) { "USDT", "USDC", "USD", "BTC", "ETH", "TRY" };
+
     public async Task<List<string>> GetFavoritesAsync()
     {
         var timestamp = GetIsoTimestamp();
-        const string path = "/api/v5/account/instruments?instType=SPOT";
+        const string path = "/api/v5/account/balance";
         var signature = ComputeSignature(timestamp, "GET", path, string.Empty);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{path}");
@@ -395,17 +398,41 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
 
         var results = new List<string>();
-        foreach (var inst in root.GetProperty("data").EnumerateArray())
+        foreach (var account in root.GetProperty("data").EnumerateArray())
         {
-            var state = inst.GetProperty("state").GetString();
-            if (state != "live") continue;
-            var instId = inst.GetProperty("instId").GetString();
-            if (string.IsNullOrEmpty(instId)) continue;
-            var canonical = SymbolNormalizer.ToCanonical(instId);
-            if (SymbolNormalizer.IsValid(canonical))
-                results.Add(canonical);
+            if (!account.TryGetProperty("details", out var details) || details.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var detail in details.EnumerateArray())
+            {
+                var asset = detail.TryGetProperty("ccy", out var ccyElement)
+                    ? ccyElement.GetString() ?? string.Empty
+                    : string.Empty;
+                if (string.IsNullOrWhiteSpace(asset) || SkippedFavoriteAssets.Contains(asset))
+                {
+                    continue;
+                }
+
+                var available = ParseDecimal(detail, "availBal");
+                var cashBalance = ParseDecimal(detail, "cashBal");
+                if (available + cashBalance <= 0m)
+                {
+                    continue;
+                }
+
+                var canonical = SymbolNormalizer.ToCanonical(asset + "USDT");
+                if (SymbolNormalizer.IsValid(canonical))
+                {
+                    results.Add(canonical);
+                }
+            }
         }
-        return results;
+
+        return results
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     /// <summary>
