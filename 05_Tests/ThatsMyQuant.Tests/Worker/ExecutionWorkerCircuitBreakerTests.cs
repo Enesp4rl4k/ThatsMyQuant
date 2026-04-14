@@ -36,7 +36,10 @@ public class ExecutionWorkerCircuitBreakerTests
         var mediator = Substitute.For<IMediator>();
         var tickLogger = Substitute.For<ITickLogger>();
         var auditLogger = Substitute.For<IAuditLogger>();
-        var heartbeatMonitor = new HeartbeatMonitor(new DeadMansSwitch(auditLogger));
+        var heartbeatMonitor = new HeartbeatMonitor(new DeadMansSwitch(
+            auditLogger,
+            MakeCircuitBreaker(),
+            NullLogger<DeadMansSwitch>.Instance));
         var tickPipeline = new TickPipeline(
             streamingService,
             NullLogger<TickPipeline>.Instance,

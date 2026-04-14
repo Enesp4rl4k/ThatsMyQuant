@@ -1,7 +1,9 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Options;
+using ThatsMyQuant.Infrastructure.Persistence;
 using ThatsMyQuant.Infrastructure.Services.Foundation;
 using ThatsMyQuant.Infrastructure.Services.Patterns;
 using ThatsMyQuant.Infrastructure.Services.Strategy;
@@ -18,11 +20,13 @@ public static class DependencyInjection
     {
         if (configuration != null)
             services.Configure<TelegramOptions>(configuration.GetSection("Telegram"));
-        services.AddSingleton<IAuditLogger, ConsoleAuditLogger>();
+        services.AddDbContextFactory<QuantDbContext>();
+        services.AddSingleton<IAuditLogger, DbAuditLogger>();
         services.AddSingleton<IBistMarketGateway, SimulatedBistMarketGateway>();
 
         services.AddSingleton(sp => VenuePortfolioManager.Instance);
         services.AddSingleton<ISharedPortfolioStateManager>(sp => sp.GetRequiredService<VenuePortfolioManager>());
+        services.AddSingleton<IPortfolioManager>(sp => sp.GetRequiredService<VenuePortfolioManager>());
 
         // Tier 1: Foundation
         services.AddScoped<IFoundationAgent, OrderBookDepthAnalyzer>();
@@ -54,6 +58,8 @@ public static class DependencyInjection
         // Exchange: Multi-exchange routing
         services.AddSingleton<ExchangeServiceResolver>();
         services.AddSingleton<IExchangeServiceResolver>(sp => sp.GetRequiredService<ExchangeServiceResolver>());
+
+        services.AddHttpClient<IHistoricalMarketDataService, OkxHistoricalDataService>();
 
         return services;
     }

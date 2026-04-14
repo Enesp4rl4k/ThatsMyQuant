@@ -396,10 +396,10 @@ public partial class MainWindow : Window
     }
 
     private string ResolveSharedSettingsPath()
-        => Path.Combine(_bundleRoot ?? AppContext.BaseDirectory, "exchange_settings.json");
+        => Path.Combine(_bundleRoot ?? _workspaceRoot, "exchange_settings.json");
 
     private string ResolveSharedCredentialsPath()
-        => Path.Combine(_bundleRoot ?? AppContext.BaseDirectory, "exchange_credentials.dpapi");
+        => Path.Combine(_bundleRoot ?? _workspaceRoot, "exchange_credentials.dpapi");
 
     private static string TryUnprotect(JsonElement root, string propertyName)
     {

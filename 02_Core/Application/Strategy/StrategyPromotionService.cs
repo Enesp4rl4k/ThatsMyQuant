@@ -121,6 +121,31 @@ public sealed class StrategyPromotionService
                 "Backtest");
         }
 
+        // Reject stale backtests older than 14 days — strategy must be re-validated regularly
+        if (!string.IsNullOrEmpty(backtestBucket.BacktestVersion) &&
+            (DateTime.UtcNow - backtestBucket.RecordedAtUtc).TotalDays > 14)
+        {
+            return new PromotionGuardResult(
+                false,
+                0m,
+                $"Backtest {backtestBucket.BacktestVersion} is stale ({(DateTime.UtcNow - backtestBucket.RecordedAtUtc).TotalDays:F0} days old). Re-run backtest for {signal.Symbol}.",
+                false,
+                0,
+                "Backtest");
+        }
+
+        // Reject if PBO score indicates overfitting
+        if (backtestBucket.PboScore > 0.5)
+        {
+            return new PromotionGuardResult(
+                false,
+                0m,
+                $"Backtest PBO={backtestBucket.PboScore:F2} indicates overfitting for {signal.Symbol} {decision.StrategyTag}. Strategy not robust enough for promotion.",
+                false,
+                0,
+                "Backtest");
+        }
+
         if (paperBucket is null || !paperBucket.PaperPass)
         {
             return new PromotionGuardResult(

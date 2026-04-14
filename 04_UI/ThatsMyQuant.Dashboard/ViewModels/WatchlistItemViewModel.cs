@@ -8,6 +8,9 @@ public partial class WatchlistItemViewModel : ObservableObject
     [ObservableProperty] private string _symbol = "";
     [ObservableProperty] private decimal _price;
     [ObservableProperty] private double _changePercent;
+    [ObservableProperty] private double _candidateScore;
+    [ObservableProperty] private string _candidateSummary = "Waiting for analysis";
+    [ObservableProperty] private bool _isAutoSelected;
     public Brush Color => ChangePercent >= 0 ? GreenBrush : RedBrush;
     public string ChangeText => $"% {(ChangePercent >= 0 ? "+" : "")}{ChangePercent:F2}";
 

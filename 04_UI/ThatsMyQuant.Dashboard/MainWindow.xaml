@@ -20,6 +20,12 @@
     <Window.Resources>
         <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
         <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
+        <converters:WinRateToColorConverter x:Key="WinRateToColorConverter" />
+        <converters:PnlToColorConverter x:Key="PnlToColorConverter" />
+        <converters:PassToBrushConverter x:Key="PassToBrushConverter" />
+        <converters:SharpeToColorConverter x:Key="SharpeToColorConverter" />
+        <converters:DrawdownToColorConverter x:Key="DrawdownToColorConverter" />
+        <converters:PboToColorConverter x:Key="PboToColorConverter" />
         
         <Style TargetType="TabControl">
             <Setter Property="Background" Value="Transparent" />
@@ -152,8 +158,8 @@
             <GradientStop Color="#0B0E13" Offset="1" />
         </LinearGradientBrush>
         
-        <DropShadowEffect x:Key="NeonGlowCyan" Color="#00FFFF" BlurRadius="12" ShadowDepth="0" Opacity="0.5" />
-        <DropShadowEffect x:Key="NeonGlowIndigo" Color="#00BFFF" BlurRadius="20" ShadowDepth="0" Opacity="0.4" />
+        <DropShadowEffect x:Key="NeonGlowCyan" Color="#38BDF8" BlurRadius="8" ShadowDepth="0" Opacity="0.3" />
+        <DropShadowEffect x:Key="NeonGlowIndigo" Color="#0284C7" BlurRadius="12" ShadowDepth="0" Opacity="0.2" />
         
         <!-- HEARTBEAT ANIMATION -->
         <Storyboard x:Key="HeartbeatPulse" RepeatBehavior="Forever">
@@ -169,7 +175,7 @@
 
         <Border Grid.Row="0" Background="{StaticResource HeaderGlassEffect}" BorderBrush="{StaticResource Accent}" BorderThickness="0,0,0,1" Padding="16,8">
             <Border.Effect>
-                <DropShadowEffect Color="#00BFFF" BlurRadius="15" ShadowDepth="1" Opacity="0.15" Direction="270" />
+                <DropShadowEffect Color="#0284C7" BlurRadius="12" ShadowDepth="1" Opacity="0.10" Direction="270" />
             </Border.Effect>
             <Border.Style>
                 <Style TargetType="Border">
@@ -271,14 +277,14 @@
                 
                 <Button Grid.Column="5" Command="{Binding ToggleZenModeCommand}" Background="#0B1630" BorderBrush="{StaticResource Accent}" BorderThickness="1" Padding="12,4" Margin="12,0,0,0">
                     <Button.Effect>
-                        <DropShadowEffect Color="#00BFFF" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
+                        <DropShadowEffect Color="#0284C7" BlurRadius="8" ShadowDepth="0" Opacity="0.2" />
                     </Button.Effect>
                     <TextBlock Text="ZEN MODE" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
                 </Button>
 
                 <Button Grid.Column="6" Command="{Binding LogoutCommand}" Background="#0B1630" BorderBrush="{StaticResource Accent}" BorderThickness="1" Padding="12,4" Margin="8,0,0,0">
                     <Button.Effect>
-                        <DropShadowEffect Color="#00BFFF" BlurRadius="10" ShadowDepth="0" Opacity="0.3" />
+                        <DropShadowEffect Color="#0284C7" BlurRadius="8" ShadowDepth="0" Opacity="0.2" />
                     </Button.Effect>
                     <TextBlock Text="LOGOUT" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Black" />
                 </Button>
@@ -500,7 +506,7 @@
                                                         <Setter.Value>
                                                             <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
                                                                 <GradientStop Color="#00FFFFFF" Offset="0" />
-                                                                <GradientStop Color="#1A00BFFF" Offset="0.5" />
+                                                                <GradientStop Color="#1A0284C7" Offset="0.5" />
                                                                 <GradientStop Color="#00FFFFFF" Offset="1" />
                                                             </LinearGradientBrush>
                                                         </Setter.Value>
@@ -1210,6 +1216,10 @@
                     </Grid>
                 </TabItem>
 
+                <TabItem Header="Backtest Lab">
+                    <controls:BacktestReportControl Margin="0,8,0,0" />
+                </TabItem>
+
                 <TabItem Header="Global Analytics">
                     <controls:MarketAnalyticsControl />
                 </TabItem>
@@ -1223,6 +1233,7 @@
                         
                         <!-- 1. API & Exchange Infrastructure -->
                         <Border Grid.Column="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,16,0">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel>
                                 <TextBlock Text="INFRASTRUCTURE &amp; SECURITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,16" />
                                 
@@ -1277,6 +1288,7 @@
 
                                 <Button Content="SAVE GLOBAL CONFIGURATION" Command="{Binding SaveSettingsCommand}" Background="{StaticResource Accent}" Foreground="White" BorderThickness="0" Padding="0,14" FontSize="14" FontWeight="Black" Margin="0,20,0,0" />
                             </StackPanel>
+                            </ScrollViewer>
                         </Border>
 
                         <!-- 2. System Status & Health -->
@@ -1314,6 +1326,7 @@
             </TabControl>
 
             <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}" Background="{StaticResource SurfaceBg}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
                         <TextBlock Text="POSITION CONTROL DECK" FontSize="14" FontWeight="Black" Foreground="{StaticResource TextMain}" />
                         <TextBlock Text="LIVE POSITIONS, RISK, AND COMMANDS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,2,0,12" />
@@ -1325,6 +1338,7 @@
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="LAUNCH" Tag="Bot Launcher" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="STUDIO" Tag="Strategy &amp; AI Studio" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="BACKTEST" Tag="Backtest Engine" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
+                            <Button Style="{StaticResource PageNavButtonStyle}" Content="LAB" Tag="Backtest Lab" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Accent}" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="LEDGER" Tag="Trade Ledger &amp; Analytics" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="ANALYTICS" Tag="Global Analytics" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" Foreground="{StaticResource Accent}" />
                             <Button Style="{StaticResource PageNavButtonStyle}" Content="SETTINGS" Tag="System Settings" Click="NavigateTabButton_Click" Height="30" Padding="10,0" FontSize="10" FontWeight="Bold" />
@@ -1418,6 +1432,7 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -1430,6 +1445,12 @@
                                 <StackPanel Grid.Row="0" Grid.Column="1" Margin="6,0,0,0">
                                     <TextBlock Text="RISK PROFILE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
                                     <ComboBox ItemsSource="{Binding Studio.RiskProfiles}" SelectedItem="{Binding Studio.SelectedRiskProfile}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                </StackPanel>
+                                <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Margin="0,10,0,0">
+                                    <TextBlock Text="TRADE TARGET MODE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" />
+                                    <ComboBox ItemsSource="{Binding Studio.TradeTargetModes}" SelectedItem="{Binding Studio.SelectedTradeTargetMode}" Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}" Margin="0,4,0,0" />
+                                    <TextBlock Text="{Binding ActiveTradeTarget}" Foreground="{StaticResource TextMain}" FontSize="10" FontWeight="SemiBold" Margin="0,6,0,0" />
+                                    <TextBlock Text="{Binding TradeTargetDiscoveryStatus}" Foreground="{StaticResource TextSoft}" FontSize="9" TextWrapping="Wrap" Margin="0,2,0,0" />
                                 </StackPanel>
                             </Grid>
                         </Border>
@@ -1491,8 +1512,12 @@
                                                            FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold"/>
                                                 <TextBlock Grid.Column="1" Text="{Binding Price, StringFormat={}{0:F2}}"
                                                            FontFamily="{StaticResource MonoFont}" FontSize="10" Margin="8,0"/>
-                                                <TextBlock Grid.Column="2" Text="{Binding ChangeText}"
-                                                           Foreground="{Binding Color}" FontSize="9"/>
+                                                <StackPanel Grid.Column="2">
+                                                    <TextBlock Text="{Binding ChangeText}"
+                                                               Foreground="{Binding Color}" FontSize="9" HorizontalAlignment="Right"/>
+                                                    <TextBlock Text="{Binding CandidateScore, StringFormat=Score {0:F1}}"
+                                                               Foreground="{StaticResource TextSoft}" FontSize="8" HorizontalAlignment="Right"/>
+                                                </StackPanel>
                                             </Grid>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
@@ -1508,6 +1533,7 @@
                             </StackPanel>
                         </Border>
                     </StackPanel>
+                    </ScrollViewer>
             </Border>
         </Grid>
     </Grid>

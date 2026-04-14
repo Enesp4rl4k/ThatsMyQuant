@@ -21,8 +21,8 @@ using ThatsMyQuant.Execution.Worker;
 
 var builder = Host.CreateApplicationBuilder(args);
 builder.Configuration.AddJsonFile("exchange_settings.json", optional: true, reloadOnChange: true);
-
-var selectedExchangeMode = (builder.Configuration["TMQ_EXCHANGE_MODE"] ?? "Mock").Trim();
+builder.Configuration.ApplySharedExchangeConfiguration();
+var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
 var isBinanceMode =
     selectedExchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
     selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
@@ -48,8 +48,8 @@ Log.Logger = new LoggerConfiguration()
 builder.Logging.ClearProviders();
 builder.Services.AddSerilog();
 
-builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddThatsMyQuantInfrastructure();
+builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddSingleton(new ServiceRuntimeState("Execution.Worker"));
 builder.Services.AddSingleton(new OperationalTelemetry("Execution.Worker"));
 
@@ -63,7 +63,15 @@ builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
 builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
 builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());
 builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
-builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+// Exchange-aware streaming: OKX or Binance based on TMQ_EXCHANGE_MODE
+if (isOkxMode)
+{
+    builder.Services.AddSingleton<IStreamingMarketDataService, OkxWebSocketService>();
+}
+else
+{
+    builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+}
 builder.Services.AddSingleton(sp =>
 {
     var vault = new ThatsMyQuant.Application.Security.ApiVault();
@@ -171,6 +179,8 @@ using (var scope = host.Services.CreateScope())
     var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
     var startupLogger = loggerFactory.CreateLogger("Execution.Worker.Startup");
     var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
+    var connString = db.Database.GetDbConnection().ConnectionString;
+    startupLogger.LogInformation("DATABASE: Using connection string: {ConnectionString}", connString);
     await SqliteCompatibilityBootstrapper.EnsureCompatibleSchemaAsync(db, builder.Configuration, startupLogger);
 
     var exchangeInfo = scope.ServiceProvider.GetRequiredService<BinanceExchangeInfoProvider>();

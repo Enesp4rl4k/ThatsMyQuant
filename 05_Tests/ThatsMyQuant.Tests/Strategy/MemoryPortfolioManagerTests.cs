@@ -116,6 +116,33 @@ public class MemoryPortfolioManagerTests
         position!.Quantity.Should().Be(0.5m);
     }
 
+    [Fact]
+    public void UpdateFromExecutionReport_ExecutedClosed_ClosesPositionAndBooksRealizedPnl()
+    {
+        var sut = new MemoryPortfolioManager();
+        sut.SetBalance("USDT", 1000m);
+        sut.OpenPosition("BTCUSDT", 50_000m, 0.1m, isLong: true);
+
+        var trade = new Trade
+        {
+            Symbol = "BTCUSDT",
+            Side = TradeSide.Buy,
+            EntryPrice = 50_000m,
+            ExitPrice = 51_500m,
+            AverageExitPrice = 51_500m,
+            Quantity = 0.1m,
+            FilledQuantity = 0.1m,
+            Status = TradeStatus.Executed,
+            LifecycleStatus = TradeLifecycleStatus.Closed
+        };
+
+        sut.UpdateFromExecutionReport(trade);
+
+        sut.GetPosition("BTCUSDT").Should().BeNull();
+        sut.RealizedPnl.Should().Be(150m);
+        sut.GetTotalBalance("USDT").Should().Be(1150m);
+    }
+
     // ── Test 6: UpdateFromExecutionReport — Rejected unlocks notional ─────────
 
     [Fact]
@@ -145,6 +172,26 @@ public class MemoryPortfolioManagerTests
 
         // After unlock, full 1000 should be available again
         sut.GetAvailableBalance("USDT").Should().Be(1000m);
+    }
+
+    [Fact]
+    public void UpdateFromExecutionReport_FailedAndClosed_RemovesExistingPosition()
+    {
+        var sut = new MemoryPortfolioManager();
+        sut.OpenPosition("ETHUSDT", 3000m, 1m, isLong: true);
+
+        var trade = new Trade
+        {
+            Symbol = "ETHUSDT",
+            EntryPrice = 3000m,
+            Quantity = 1m,
+            Status = TradeStatus.Failed,
+            LifecycleStatus = TradeLifecycleStatus.Closed
+        };
+
+        sut.UpdateFromExecutionReport(trade);
+
+        sut.GetPosition("ETHUSDT").Should().BeNull();
     }
 
     // ── Test 7: Reconcile ─────────────────────────────────────────────────────
@@ -206,5 +253,47 @@ public class MemoryPortfolioManagerTests
 
         // drawdown = (1000 - 900) / 1000 * 100 = 10%
         sut.GetDrawdownPercent().Should().Be(10m);
+    }
+
+    [Fact]
+    public void Reconcile_UpdatesTryLockedBalanceAndAvailableBalance()
+    {
+        var sut = new MemoryPortfolioManager();
+        sut.SetBalance("TRY", 10_000m);
+
+        var external = new Dictionary<string, (decimal Total, decimal Locked)>
+        {
+            ["TRY"] = (12_500m, 2_000m)
+        };
+
+        sut.Reconcile(external);
+
+        sut.GetTotalBalance("TRY").Should().Be(12_500m);
+        sut.GetAvailableBalance("TRY").Should().Be(10_500m);
+    }
+
+    [Fact]
+    public void UpdateMarketPrices_TracksFavorableAndAdverseExcursions()
+    {
+        var sut = new MemoryPortfolioManager();
+        sut.OpenPosition("BTCUSDT", 100m, 1m, isLong: true);
+
+        sut.UpdateMarketPrices(new Dictionary<string, decimal>
+        {
+            ["BTCUSDT"] = 110m,
+            ["ETHUSDT"] = 999m
+        });
+
+        sut.UpdateMarketPrices(new Dictionary<string, decimal>
+        {
+            ["BTCUSDT"] = 95m
+        });
+
+        var position = sut.GetPosition("BTCUSDT");
+        position.Should().NotBeNull();
+        position!.HighestPrice.Should().Be(110m);
+        position.LowestPrice.Should().Be(95m);
+        position.MaxFavorableExcursionPercent.Should().Be(10m);
+        position.MaxAdverseExcursionPercent.Should().Be(-5m);
     }
 }

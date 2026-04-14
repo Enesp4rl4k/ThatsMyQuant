@@ -1,0 +1,6 @@
+{
+  "ExchangeMode": "OKX",
+  "OKX": {
+    "IsDemoMode": true
+  }
+}

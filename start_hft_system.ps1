@@ -1,5 +1,6 @@
 # Start HFT Ecosystem Script
-Write-Host "Starting HFT Ecosystem Components..." -ForegroundColor Cyan
+$env:TMQ_EXCHANGE_MODE = "OKX"
+Write-Host "Starting HFT Ecosystem Components [MODE: OKX]..." -ForegroundColor Cyan
 
 # 1. Gateway API
 Write-Host "Launching Gateway API..." -ForegroundColor Yellow

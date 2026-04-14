@@ -721,36 +721,56 @@ public sealed record RiskGovernorDashboardSnapshot(
 
 internal sealed class TokenBucketRateLimiter
 {
+    private const int TokenScale = 1_000_000;
     private readonly int _capacity;
-    private readonly double _refillRate;
-    private double _tokens;
-    private long _lastRefillTick;
-    private readonly object _lock = new();
+    private readonly int _capacityScaled;
+    private readonly double _refillPerMillisecondScaled;
+    private long _state;
 
     public TokenBucketRateLimiter(int capacity, double refillRate)
     {
         _capacity = capacity;
-        _refillRate = refillRate;
-        _tokens = capacity;
-        _lastRefillTick = Environment.TickCount64;
+        _capacityScaled = checked(capacity * TokenScale);
+        _refillPerMillisecondScaled = refillRate * TokenScale / 1000.0;
+        _state = PackState((uint)Environment.TickCount64, _capacityScaled);
     }
 
     public bool TryConsume()
     {
-        lock (_lock)
+        while (true)
         {
-            var nowTick = Environment.TickCount64;
-            var elapsed = (nowTick - _lastRefillTick) / 1000.0;
-            _tokens = Math.Min(_capacity, _tokens + elapsed * _refillRate);
-            _lastRefillTick = nowTick;
+            var snapshot = Volatile.Read(ref _state);
+            var (lastTick, tokensScaled) = UnpackState(snapshot);
+            var nowTick = (uint)Environment.TickCount64;
+            var elapsedMilliseconds = unchecked(nowTick - lastTick);
+            var refilledTokens = tokensScaled;
 
-            if (_tokens >= 1.0)
+            if (elapsedMilliseconds > 0)
             {
-                _tokens -= 1.0;
-                return true;
+                var refillAmount = (int)Math.Min(
+                    _capacityScaled - tokensScaled,
+                    Math.Round(elapsedMilliseconds * _refillPerMillisecondScaled, MidpointRounding.AwayFromZero));
+
+                if (refillAmount > 0)
+                {
+                    refilledTokens = Math.Min(_capacityScaled, tokensScaled + refillAmount);
+                }
             }
 
-            return false;
+            var canConsume = refilledTokens >= TokenScale;
+            var nextTokens = canConsume ? refilledTokens - TokenScale : refilledTokens;
+            var nextState = PackState(nowTick, nextTokens);
+
+            if (Interlocked.CompareExchange(ref _state, nextState, snapshot) == snapshot)
+            {
+                return canConsume;
+            }
         }
     }
+
+    private static long PackState(uint tick, int tokensScaled)
+        => ((long)tick << 32) | (uint)tokensScaled;
+
+    private static (uint Tick, int TokensScaled) UnpackState(long state)
+        => ((uint)(state >> 32), unchecked((int)(state & 0xFFFFFFFF)));
 }

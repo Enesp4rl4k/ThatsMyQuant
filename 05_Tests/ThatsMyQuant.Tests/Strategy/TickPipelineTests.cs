@@ -14,6 +14,21 @@ namespace ThatsMyQuant.Tests.Strategy;
 
 public class TickPipelineTests
 {
+    private static DeadMansSwitch CreateDeadMansSwitch(IAuditLogger auditLogger)
+    {
+        var portfolio = Substitute.For<IPortfolioManager>();
+        portfolio.GetDrawdownPercent().Returns(0m);
+
+        var circuitBreaker = new CircuitBreakerService(
+            NullLogger<CircuitBreakerService>.Instance,
+            portfolio,
+            maxDrawdownPercent: 50m,
+            maxConsecutiveErrors: 5,
+            maxOrdersPerSecond: 100);
+
+        return new DeadMansSwitch(auditLogger, circuitBreaker, NullLogger<DeadMansSwitch>.Instance);
+    }
+
     [Fact]
     public async Task Start_WhenTickArrives_LogsTickAndRecordsHeartbeat()
     {
@@ -22,7 +37,7 @@ public class TickPipelineTests
         mediator.Send(Arg.Any<ProcessSignalCommand>(), Arg.Any<CancellationToken>()).Returns(true);
         var tickLogger = Substitute.For<ITickLogger>();
         var auditLogger = Substitute.For<IAuditLogger>();
-        var deadMansSwitch = new DeadMansSwitch(auditLogger);
+        var deadMansSwitch = CreateDeadMansSwitch(auditLogger);
         var heartbeatMonitor = new HeartbeatMonitor(deadMansSwitch, maxStaleMilliseconds: 1000);
 
         await using var sut = new TickPipeline(
@@ -55,7 +70,7 @@ public class TickPipelineTests
         mediator.Send(Arg.Any<ProcessSignalCommand>(), Arg.Any<CancellationToken>()).Returns(true);
         var tickLogger = Substitute.For<ITickLogger>();
         var auditLogger = Substitute.For<IAuditLogger>();
-        var heartbeatMonitor = new HeartbeatMonitor(new DeadMansSwitch(auditLogger), maxStaleMilliseconds: 1000);
+        var heartbeatMonitor = new HeartbeatMonitor(CreateDeadMansSwitch(auditLogger), maxStaleMilliseconds: 1000);
 
         await using var sut = new TickPipeline(
             streamingService,

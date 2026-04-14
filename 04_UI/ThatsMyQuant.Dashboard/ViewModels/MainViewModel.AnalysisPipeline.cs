@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Globalization;
 using System.Windows.Media;
 using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Contracts.Enums;
@@ -61,7 +62,7 @@ public partial class MainViewModel
 
         InvokeOnUi(() =>
         {
-            UpdateWatchlistAndChart(symbol, indicators, candles);
+            UpdateWatchlistAndChart(symbol, indicators, candles, decision);
             RefreshIndicatorProperties(indicators);
             RefreshDecisionProperties(decision);
 
@@ -69,14 +70,68 @@ public partial class MainViewModel
             {
                 LogAnalysisResults(symbol, decision, indicators, market);
             }
-            else
+            else if (_enableAutomaticAnalysis) // Only log skips if in auto-mode to avoid spamming user
             {
                 var reasoning = decision.Reasoning.Length > 80 ? decision.Reasoning[..80] + "..." : decision.Reasoning;
                 AddSystemLog($"SKIP: {symbol} - {reasoning}");
             }
         });
 
+        if (decision.ShouldTrade && CanExecuteTrades)
+        {
+            _ = DispatchSignalForExecutionAsync(symbol, market, decision, indicators);
+        }
+
         await Task.CompletedTask;
+    }
+
+    private async Task DispatchSignalForExecutionAsync(string symbol, string market, TradeDecision decision, IndicatorSnapshot indicators)
+    {
+        try
+        {
+            // Guard: Don't double-entry if position already exists in the deck
+            bool alreadyInDeck = false;
+            InvokeOnUi(() => alreadyInDeck = ActivePositions.Any(p => p.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase)));
+            
+            if (alreadyInDeck)
+            {
+                AddSystemLog($"DRY RUN: Signal for {symbol} suppressed - Position already open.");
+                return;
+            }
+
+            var exchangeMode = string.IsNullOrWhiteSpace(ExchangeSettings.SelectedExchangeMode)
+                ? "Mock"
+                : ExchangeSettings.SelectedExchangeMode;
+            
+            var signal = new Signal
+            {
+                Symbol = symbol,
+                Side = decision.Side,
+                Price = indicators.CurrentPrice,
+                Status = TradeStatus.Queued, // ExecutionWorker polls for Queued status
+                Quantity = decision.PositionSizePercent * 10.0m, // Dummy sizing for demo if not using Kelly
+                Confidence = decision.Confidence,
+                Reasoning = decision.Reasoning,
+                StrategyTag = decision.StrategyTag ?? "DashboardManual",
+                RegimeTag = decision.RegimeTag ?? "Unknown",
+                MarketType = market == "BIST" ? MarketType.BIST : MarketType.Crypto,
+                Exchange = exchangeMode,
+                Timestamp = DateTime.UtcNow,
+                Source = "Dashboard Orhcestrator"
+            };
+
+            // Set metadata for the swarm/execution logic
+            signal.Metadata["DashboardDriven"] = "true";
+            signal.Metadata["StopLoss"] = decision.StopLoss.ToString(CultureInfo.InvariantCulture);
+            signal.Metadata["TakeProfit"] = decision.TakeProfit.ToString(CultureInfo.InvariantCulture);
+
+            await _signalRepository.AddAsync(signal);
+            AddSystemLog($"SENT: {decision.Side} {symbol} signal dispatched to execution worker ({exchangeMode}).");
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"DISPATCH ERROR: {ex.Message}");
+        }
     }
 
     private async Task ExecutePostAnalysisTasksAsync(string symbol, string market, List<Candle> candles, TradeDecision decision)
@@ -117,7 +172,7 @@ public partial class MainViewModel
         }
     }
 
-    private void UpdateWatchlistAndChart(string symbol, IndicatorSnapshot indicators, List<Candle> candles)
+    private void UpdateWatchlistAndChart(string symbol, IndicatorSnapshot indicators, List<Candle> candles, TradeDecision decision)
     {
         var watchlistItem = WatchlistItems.FirstOrDefault(w => w.Symbol == symbol);
         if (watchlistItem != null)
@@ -125,6 +180,8 @@ public partial class MainViewModel
             watchlistItem.Price = indicators.CurrentPrice;
             var startPrice = candles.First().Close;
             watchlistItem.ChangePercent = (double)((indicators.CurrentPrice - startPrice) / startPrice * 100);
+            watchlistItem.CandidateScore = CalculateTradeCandidateScore(decision);
+            watchlistItem.CandidateSummary = BuildTradeCandidateSummary(decision);
         }
 
         MarketOverview.NormalizeChart(candles);

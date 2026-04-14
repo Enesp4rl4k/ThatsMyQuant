@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Application.Observability;
 using ThatsMyQuant.Application.Strategy;
@@ -16,6 +17,7 @@ public static class DependencyInjection
     {
         services.AddOptions();
         services.AddOptions<RiskGovernorOptions>();
+        services.TryAddSingleton<IAuditLogger, NullAuditLogger>();
         services.AddSingleton(new ServiceRuntimeState());
         services.AddSingleton(new OperationalTelemetry());
 
@@ -24,7 +26,7 @@ public static class DependencyInjection
         services.AddSingleton<InferenceAgent>();
         services.AddSingleton<FeatureEngineeringAgent>();
         services.AddSingleton<MemoryPortfolioManager>();
-        services.AddSingleton<IPortfolioManager>(sp => sp.GetRequiredService<MemoryPortfolioManager>());
+        services.TryAddSingleton<IPortfolioManager>(sp => sp.GetRequiredService<MemoryPortfolioManager>());
         services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
         services.AddSingleton<NewsFeedSim>();
         services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
@@ -41,6 +43,7 @@ public static class DependencyInjection
             logger: sp.GetService<ILogger<FeatureDriftMonitor>>()));
         services.AddSingleton<DeadMansSwitch>();
         services.AddSingleton<HeartbeatMonitor>();
+        services.AddHostedService<HeartbeatWatchdogHostedService>();
         services.AddSingleton<MultiTimeframeConfluenceService>();
         services.AddSingleton<PortfolioRebalancingScheduler>();
         services.AddHostedService<ThatsMyQuant.Application.Risk.RiskSupervisorService>();
@@ -59,6 +62,9 @@ public static class DependencyInjection
         services.AddScoped<TradeExecutionSyncService>();
         services.AddScoped<HftExecutionService>();
         services.AddScoped<TickReplayEngine>();
+        services.AddScoped<BacktestEngineApp>();
+        services.AddScoped<BacktestOrchestrator>();
+        services.AddScoped<WalkForwardEngine>();
         services.AddScoped<DynamicSymbolUniverseService>();
         services.AddScoped<IHftMarketDataService, HftMarketDataService>();
         services.AddScoped<IHftSignalGenerationService, HftSignalGenerationService>();

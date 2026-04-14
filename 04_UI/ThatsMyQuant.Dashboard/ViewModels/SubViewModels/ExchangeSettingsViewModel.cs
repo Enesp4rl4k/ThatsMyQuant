@@ -233,7 +233,7 @@ public partial class ExchangeSettingsViewModel : ObservableObject
         Environment.SetEnvironmentVariable("OKX__IsDemoMode", IsDemoMode ? "true" : "false", EnvironmentVariableTarget.Process);
     }
 
-    private static string ResolveSharedConfigRoot()
+    internal static string ResolveSharedConfigRoot()
     {
         var directory = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
         while (directory is not null)
@@ -246,9 +246,17 @@ public partial class ExchangeSettingsViewModel : ObservableObject
                 return directory.FullName;
             }
 
+            if (File.Exists(Path.Combine(directory.FullName, "ThatsMyQuant.sln")))
+            {
+                return directory.FullName;
+            }
+
             directory = directory.Parent;
         }
 
         return AppDomain.CurrentDomain.BaseDirectory;
     }
+
+    internal static string ResolveSharedConfigPath(string fileName)
+        => Path.Combine(ResolveSharedConfigRoot(), fileName);
 }

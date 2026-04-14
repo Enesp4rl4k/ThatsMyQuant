@@ -69,6 +69,14 @@ public class OkxExecutionServiceTests
         }
     }
 
+    private sealed class SingleResponseHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(response);
+    }
+
     private static IConfiguration BuildConfig(
         string secretKey = "test-secret",
         string apiKey = "test-api-key",
@@ -185,6 +193,42 @@ public class OkxExecutionServiceTests
         handler.LastRequest.Should().NotBeNull();
         handler.FirstRequest!.Headers.Contains("x-simulated-trading").Should().BeFalse(
             "live mode must not send the simulated-trading header");
+    }
+
+    [Fact]
+    public async Task GetFavoritesAsync_WhenBalanceContainsTradableAssets_ReturnsCanonicalHeldSymbolsOnly()
+    {
+        var handler = new SingleResponseHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {
+                  "code":"0",
+                  "data":[
+                    {
+                      "details":[
+                        {"ccy":"USDT","availBal":"1000","cashBal":"1000"},
+                        {"ccy":"BTC","availBal":"0.10","cashBal":"0.10"},
+                        {"ccy":"SOL","availBal":"2.50","cashBal":"2.50"},
+                        {"ccy":"ETH","availBal":"0","cashBal":"0"}
+                      ]
+                    }
+                  ]
+                }
+                """,
+                Encoding.UTF8,
+                "application/json")
+        });
+
+        var svc = new OkxExecutionService(
+            Substitute.For<ILogger<OkxExecutionService>>(),
+            new HttpClient(handler),
+            BuildConfig(),
+            Substitute.For<ISharedPortfolioStateManager>());
+
+        var favorites = await svc.GetFavoritesAsync();
+
+        favorites.Should().BeEquivalentTo(["SOLUSDT"]);
     }
 
     /// <summary>

@@ -14,7 +14,13 @@ public static class SqliteCompatibilityBootstrapper
         "FilledQuantity",
         "RemainingQuantity",
         "LifecycleStatus",
-        "MlModelVersion"
+        "MlModelVersion",
+        "RegimeTag",
+        "StrategyTag",
+        "ExitPolicyTag",
+        "EdgeScore",
+        "ExecutionLatencyMs",
+        "EntryTime"
     ];
 
     private static readonly string[] RequiredSignalColumns =
@@ -25,7 +31,11 @@ public static class SqliteCompatibilityBootstrapper
         "Confidence",
         "Reasoning",
         "ExecutionAction",
-        "PriceActionSignal"
+        "PriceActionSignal",
+        "RegimeTag",
+        "StrategyTag",
+        "Volume24h",
+        "ReasonFlags"
     ];
 
     public static async Task EnsureCompatibleSchemaAsync(

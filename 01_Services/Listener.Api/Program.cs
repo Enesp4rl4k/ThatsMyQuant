@@ -22,10 +22,17 @@ using Listener.Api.Hubs;
 using Listener.Api.Services;
 using Serilog;
 using ThatsMyQuant.Application.Observability;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 PerformanceBootstrapper.OptimizeForHft();
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.ApplySharedExchangeConfiguration();
+var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
+var isOkxMode = selectedExchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase);
+var isBinanceMode =
+    selectedExchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
+    selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
 
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
@@ -71,10 +78,8 @@ builder.Services.AddHttpClient("Binance");
 builder.Services.AddHttpClient("OKX");
 
 // --- CORE APPLICATION SERVICES ---
-builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddThatsMyQuantInfrastructure();
-builder.Services.AddSingleton(new ServiceRuntimeState("Listener.Api"));
-builder.Services.AddSingleton(new OperationalTelemetry("Listener.Api"));
+builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddSingleton(new ServiceRuntimeState("Listener.Api"));
 builder.Services.AddSingleton(new OperationalTelemetry("Listener.Api"));
 
@@ -86,10 +91,63 @@ builder.Services.AddScoped<IReasoningProvider, DeepSeekReasoningService>();
 builder.Services.AddScoped<IAiAnalystService, AiAnalystService>();
 builder.Services.AddScoped<ISentimentService, GeminiSentimentService>();
 builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
-builder.Services.AddSingleton<IExchangeService, MockBrokerService>();
+var hasOkxCredentials =
+    !string.IsNullOrWhiteSpace(builder.Configuration["OKX:ApiKey"]) &&
+    !string.IsNullOrWhiteSpace(builder.Configuration["OKX:Passphrase"]) &&
+    !string.IsNullOrWhiteSpace(builder.Configuration["OKX:SecretKey"]);
+var hasBinanceCredentials =
+    !string.IsNullOrWhiteSpace(builder.Configuration["TMQ_BINANCE_API_KEY"]) &&
+    !string.IsNullOrWhiteSpace(builder.Configuration["TMQ_BINANCE_API_SECRET"]);
+
+if (isOkxMode && hasOkxCredentials)
+{
+    builder.Services.AddSingleton<ApiVault>(sp =>
+    {
+        var vault = new ApiVault();
+        vault.SecureInboundKey(builder.Configuration["OKX:SecretKey"] ?? "");
+        return vault;
+    });
+    builder.Services.AddSingleton<IExchangeService>(sp =>
+        new OkxExecutionService(
+            sp.GetRequiredService<ILogger<OkxExecutionService>>(),
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("OKX"),
+            builder.Configuration,
+            sp.GetService<ISharedPortfolioStateManager>(),
+            sp.GetRequiredService<ApiVault>()));
+}
+else if (isBinanceMode && hasBinanceCredentials)
+{
+    builder.Services.AddSingleton<IExchangeService>(sp =>
+    {
+        var keyVault = new ApiVault();
+        var secretVault = new ApiVault();
+        keyVault.SecureInboundKey(builder.Configuration["TMQ_BINANCE_API_KEY"]!);
+        secretVault.SecureInboundKey(builder.Configuration["TMQ_BINANCE_API_SECRET"]!);
+
+        return new BinanceExecutionService(
+            sp.GetRequiredService<ILogger<BinanceExecutionService>>(),
+            sp.GetRequiredService<IHttpClientFactory>().CreateClient("Binance"),
+            keyVault,
+            secretVault,
+            sp.GetRequiredService<IStreamingMarketDataService>(),
+            sp.GetService<ISharedPortfolioStateManager>());
+    });
+}
+else
+{
+    builder.Services.AddSingleton<IExchangeService, MockBrokerService>();
+}
 builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
-builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
-builder.Services.AddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
+// Exchange-aware streaming: OKX or Binance based on TMQ_EXCHANGE_MODE
+if (isOkxMode)
+{
+    builder.Services.AddSingleton<IStreamingMarketDataService, OkxWebSocketService>();
+}
+else
+{
+    builder.Services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
+}
+builder.Services.TryAddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
 builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
 builder.Services.AddSingleton<BinanceExchangeInfoProvider>();
 builder.Services.AddSingleton<IExchangeInfoProvider>(sp => sp.GetRequiredService<BinanceExchangeInfoProvider>());

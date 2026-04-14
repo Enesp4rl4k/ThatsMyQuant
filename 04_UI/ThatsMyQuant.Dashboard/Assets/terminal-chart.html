@@ -168,11 +168,15 @@
       const candleBodyWidth = Math.max(3, candleGap * 0.65);
 
       drawGrid(padding, plotWidth, plotHeight);
+      const indicators = computeIndicators(items);
+      drawIndicatorOverlays(indicators, padding, plotWidth, plotHeight, min, range);
+      drawOrderLines(padding, plotWidth, plotHeight, min, range);
       drawOverlays(padding, plotWidth, plotHeight);
       drawCandles(items, padding, plotWidth, plotHeight, min, range, candleBodyWidth, candleGap);
+      drawExecutionMarkers(items, start, padding, plotWidth, plotHeight, min, range, candleGap);
       drawMarkers(padding, plotWidth, plotHeight);
       drawDrawings(padding, plotWidth, plotHeight);
-      drawCrosshair(items, start, padding, plotWidth, plotHeight, min, range);
+      drawCrosshair(items, start, padding, plotWidth, plotHeight, min, range, indicators);
     }
 
     function drawGrid(padding, plotWidth, plotHeight) {
@@ -241,6 +245,96 @@
       });
     }
 
+    function drawOrderLines(padding, plotWidth, plotHeight, min, range) {
+      (state.orderLines || []).forEach(line => {
+        const y = padding.top + plotHeight - ((line.value - min) / range) * plotHeight;
+        if (y < padding.top || y > padding.top + plotHeight) return;
+
+        ctx.save();
+        ctx.strokeStyle = line.color || state.theme.accent;
+        ctx.lineWidth = 1;
+        ctx.setLineDash(line.dashed ? [6, 4] : [2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + plotWidth, y);
+        ctx.stroke();
+        ctx.restore();
+
+        ctx.save();
+        ctx.fillStyle = "#111824";
+        ctx.strokeStyle = line.color || state.theme.accent;
+        ctx.lineWidth = 1;
+        roundRect(ctx, padding.left + plotWidth - 124, y - 10, 118, 20, 4, true, true);
+        ctx.fillStyle = line.color || state.theme.text;
+        ctx.font = "700 10px Segoe UI";
+        ctx.fillText(`${line.label}: ${Number(line.value).toFixed(2)}`, padding.left + plotWidth - 116, y + 4);
+        ctx.restore();
+      });
+    }
+
+    function drawIndicatorOverlays(indicators, padding, plotWidth, plotHeight, min, range) {
+      const lines = [
+        { values: indicators.ema20, color: "rgba(255,196,0,0.92)", width: 1.4 },
+        { values: indicators.ema50, color: "rgba(114,181,255,0.92)", width: 1.2 },
+        { values: indicators.bbUpper, color: "rgba(186,162,255,0.72)", width: 1.0 },
+        { values: indicators.bbLower, color: "rgba(186,162,255,0.72)", width: 1.0 }
+      ];
+
+      lines.forEach(line => {
+        if (!line.values.length) return;
+        ctx.save();
+        ctx.strokeStyle = line.color;
+        ctx.lineWidth = line.width;
+        ctx.beginPath();
+        line.values.forEach((value, index) => {
+          if (value == null) return;
+          const x = padding.left + (index / Math.max(line.values.length - 1, 1)) * plotWidth;
+          const y = padding.top + plotHeight - ((value - min) / range) * plotHeight;
+          if (index === 0 || line.values[index - 1] == null) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+        ctx.restore();
+      });
+
+      ctx.save();
+      ctx.fillStyle = "rgba(12,16,24,0.88)";
+      ctx.strokeStyle = "rgba(122,136,152,0.24)";
+      roundRect(ctx, padding.left + 10, padding.top + 10, 210, 46, 6, true, true);
+      ctx.fillStyle = state.theme.text;
+      ctx.font = "700 10px Segoe UI";
+      ctx.fillText(`EMA20 ${formatIndicator(indicators.lastEma20)}  EMA50 ${formatIndicator(indicators.lastEma50)}`, padding.left + 18, padding.top + 28);
+      ctx.fillStyle = state.theme.muted;
+      ctx.font = "10px Segoe UI";
+      ctx.fillText(`BB ${formatIndicator(indicators.lastBbLower)} / ${formatIndicator(indicators.lastBbUpper)}  RSI ${formatIndicator(indicators.lastRsi, 1)}`, padding.left + 18, padding.top + 43);
+      ctx.restore();
+    }
+
+    function drawExecutionMarkers(items, start, padding, plotWidth, plotHeight, min, range, candleGap) {
+      (state.executionMarkers || []).forEach(marker => {
+        const index = findMarkerIndex(items, marker.time);
+        if (index < 0) return;
+
+        const x = padding.left + (index * candleGap) + (candleGap * 0.5);
+        const y = padding.top + plotHeight - ((marker.price - min) / range) * plotHeight;
+        ctx.save();
+        ctx.fillStyle = marker.color || state.theme.accent;
+
+        if (marker.markerType === "entry") {
+          drawTriangle(x, y - 10, marker.side === "Buy" ? -1 : 1, marker.color || state.theme.accent);
+        } else {
+          ctx.beginPath();
+          ctx.rect(x - 4, y - 4, 8, 8);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = state.theme.text;
+        ctx.font = "700 9px Segoe UI";
+        ctx.fillText(marker.label || marker.markerType, x + 8, y - 8);
+        ctx.restore();
+      });
+    }
+
     function drawMarkers(padding, plotWidth, plotHeight) {
       state.backtestMarkers.forEach(marker => {
         const x = padding.left + marker.x * plotWidth;
@@ -278,13 +372,23 @@
           ctx.moveTo(x, padding.top);
           ctx.lineTo(x, padding.top + plotHeight);
           ctx.stroke();
+        } else if (item.type === "rectangle") {
+          const x = padding.left + Math.min(item.x1, item.x2) * plotWidth;
+          const y = padding.top + Math.min(item.y1, item.y2) * plotHeight;
+          const width = Math.abs(item.x2 - item.x1) * plotWidth;
+          const height = Math.abs(item.y2 - item.y1) * plotHeight;
+          ctx.fillStyle = "rgba(16,183,255,0.10)";
+          ctx.strokeRect(x, y, width, height);
+          ctx.fillRect(x, y, width, height);
+        } else if (item.type === "fib") {
+          drawFib(item, padding, plotWidth, plotHeight);
         }
 
         ctx.restore();
       });
     }
 
-    function drawCrosshair(items, start, padding, plotWidth, plotHeight, min, range) {
+    function drawCrosshair(items, start, padding, plotWidth, plotHeight, min, range, indicators) {
       if (!state.pointer) return;
       if (state.tool === "pan" || state.tool === "crosshair" || state.tool === "trendline" || state.tool === "horizontal" || state.tool === "vertical") {
         const { x, y } = state.pointer;
@@ -320,7 +424,7 @@
         ctx.fillText(candle ? `${formatDate(candle.time)}` : "", x + 18, padding.top + 28);
         ctx.fillStyle = state.theme.muted;
         ctx.font = "11px Segoe UI";
-        ctx.fillText(`Price ${price.toFixed(2)}`, x + 18, padding.top + 44);
+        ctx.fillText(`Price ${price.toFixed(2)} · RSI ${formatIndicator(indicators.lastRsi, 1)}`, x + 18, padding.top + 44);
         ctx.restore();
       }
     }
@@ -370,6 +474,8 @@
 
       if (state.tool === "trendline") {
         drawingStart = point;
+      } else if (state.tool === "rectangle" || state.tool === "fib") {
+        drawingStart = point;
       } else if (state.tool === "horizontal") {
         state.drawings.push({ type: "horizontal", y1: point.y, color: state.theme.accent });
         draw();
@@ -403,6 +509,17 @@
         const point = pointToNormalized(event);
         state.drawings.push({
           type: "trendline",
+          x1: drawingStart.x,
+          y1: drawingStart.y,
+          x2: point.x,
+          y2: point.y,
+          color: state.theme.accent
+        });
+        drawingStart = null;
+      } else if ((state.tool === "rectangle" || state.tool === "fib") && drawingStart) {
+        const point = pointToNormalized(event);
+        state.drawings.push({
+          type: state.tool,
           x1: drawingStart.x,
           y1: drawingStart.y,
           x2: point.x,
@@ -444,9 +561,162 @@
         state.tool = raw.tool || "pan";
         badge.textContent = `Tool: ${state.tool}`;
         draw();
+      } else if (raw.type === "undo") {
+        state.drawings.pop();
+        draw();
       } else if (raw.type === "reset") {
         resetView();
       }
+    }
+
+    function computeIndicators(items) {
+      const closes = items.map(item => Number(item.close));
+      const ema20 = computeEma(closes, 20);
+      const ema50 = computeEma(closes, 50);
+      const bb = computeBollinger(closes, 20, 2);
+      const rsi = computeRsi(closes, 14);
+      return {
+        ema20,
+        ema50,
+        bbUpper: bb.upper,
+        bbLower: bb.lower,
+        lastEma20: lastNonNull(ema20),
+        lastEma50: lastNonNull(ema50),
+        lastBbUpper: lastNonNull(bb.upper),
+        lastBbLower: lastNonNull(bb.lower),
+        lastRsi: lastNonNull(rsi)
+      };
+    }
+
+    function computeEma(values, period) {
+      if (!values.length) return [];
+      const k = 2 / (period + 1);
+      const ema = [];
+      let seed = null;
+      for (let i = 0; i < values.length; i++) {
+        const value = values[i];
+        if (i < period - 1) {
+          ema.push(null);
+          continue;
+        }
+        if (seed == null) {
+          const slice = values.slice(i - period + 1, i + 1);
+          seed = slice.reduce((sum, current) => sum + current, 0) / slice.length;
+          ema.push(seed);
+        } else {
+          seed = (value * k) + (seed * (1 - k));
+          ema.push(seed);
+        }
+      }
+      return ema;
+    }
+
+    function computeBollinger(values, period, multiplier) {
+      const upper = [];
+      const lower = [];
+      for (let i = 0; i < values.length; i++) {
+        if (i < period - 1) {
+          upper.push(null);
+          lower.push(null);
+          continue;
+        }
+        const slice = values.slice(i - period + 1, i + 1);
+        const mean = slice.reduce((sum, current) => sum + current, 0) / slice.length;
+        const variance = slice.reduce((sum, current) => sum + ((current - mean) ** 2), 0) / slice.length;
+        const std = Math.sqrt(variance);
+        upper.push(mean + std * multiplier);
+        lower.push(mean - std * multiplier);
+      }
+      return { upper, lower };
+    }
+
+    function computeRsi(values, period) {
+      const result = Array(values.length).fill(null);
+      if (values.length <= period) return result;
+
+      let gains = 0;
+      let losses = 0;
+      for (let i = 1; i <= period; i++) {
+        const delta = values[i] - values[i - 1];
+        if (delta >= 0) gains += delta;
+        else losses -= delta;
+      }
+      let avgGain = gains / period;
+      let avgLoss = losses / period;
+      result[period] = avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
+
+      for (let i = period + 1; i < values.length; i++) {
+        const delta = values[i] - values[i - 1];
+        const gain = Math.max(delta, 0);
+        const loss = Math.max(-delta, 0);
+        avgGain = ((avgGain * (period - 1)) + gain) / period;
+        avgLoss = ((avgLoss * (period - 1)) + loss) / period;
+        result[i] = avgLoss === 0 ? 100 : 100 - (100 / (1 + (avgGain / avgLoss)));
+      }
+
+      return result;
+    }
+
+    function lastNonNull(values) {
+      for (let i = values.length - 1; i >= 0; i--) {
+        if (values[i] != null) return values[i];
+      }
+      return null;
+    }
+
+    function findMarkerIndex(items, time) {
+      if (!time) return -1;
+      const markerTime = new Date(time).getTime();
+      if (Number.isNaN(markerTime)) return -1;
+
+      let closestIndex = -1;
+      let smallestDistance = Number.MAX_SAFE_INTEGER;
+      items.forEach((item, index) => {
+        const candleTime = new Date(item.time).getTime();
+        const distance = Math.abs(candleTime - markerTime);
+        if (distance < smallestDistance) {
+          smallestDistance = distance;
+          closestIndex = index;
+        }
+      });
+      return closestIndex;
+    }
+
+    function drawTriangle(x, y, direction, color) {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x, y + (direction < 0 ? -6 : 6));
+      ctx.lineTo(x - 6, y + (direction < 0 ? 6 : -6));
+      ctx.lineTo(x + 6, y + (direction < 0 ? 6 : -6));
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawFib(item, padding, plotWidth, plotHeight) {
+      const ratios = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+      const top = padding.top + Math.min(item.y1, item.y2) * plotHeight;
+      const bottom = padding.top + Math.max(item.y1, item.y2) * plotHeight;
+      const left = padding.left + Math.min(item.x1, item.x2) * plotWidth;
+      const right = padding.left + Math.max(item.x1, item.x2) * plotWidth;
+      const height = bottom - top;
+
+      ratios.forEach(ratio => {
+        const y = bottom - (height * ratio);
+        ctx.beginPath();
+        ctx.moveTo(left, y);
+        ctx.lineTo(right, y);
+        ctx.stroke();
+        ctx.fillStyle = state.theme.text;
+        ctx.font = "9px Segoe UI";
+        ctx.fillText(ratio.toFixed(3), right + 6, y + 3);
+      });
+    }
+
+    function formatIndicator(value, decimals = 2) {
+      if (value == null || Number.isNaN(value)) return "--";
+      return Number(value).toFixed(decimals);
     }
 
     canvas.addEventListener("mousedown", onPointerDown);

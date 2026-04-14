@@ -6,9 +6,15 @@
     <Application.Resources>
         <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
         <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter" />
+        <converters:WinRateToColorConverter x:Key="WinRateToColorConverter" />
+        <converters:PnlToColorConverter x:Key="PnlToColorConverter" />
+        <converters:PassToBrushConverter x:Key="PassToBrushConverter" />
+        <converters:SharpeToColorConverter x:Key="SharpeToColorConverter" />
+        <converters:DrawdownToColorConverter x:Key="DrawdownToColorConverter" />
+        <converters:PboToColorConverter x:Key="PboToColorConverter" />
         
         <!-- INSTITUTIONAL GLASS DESIGN SYSTEM (OBSIDIAN/CYAN) -->
-        <Color x:Key="AccentColor">#00BFFF</Color>
+        <Color x:Key="AccentColor">#0284C7</Color>
         <Color x:Key="SurfaceColor">#090B10</Color>
         <Color x:Key="BorderColorValue">#1F2430</Color>
 
@@ -84,11 +90,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="true">
-                                <Setter Property="Background" TargetName="border" Value="#1A00BFFF" />
+                                <Setter Property="Background" TargetName="border" Value="#1A0284C7" />
                                 <Setter Property="BorderBrush" TargetName="border" Value="{StaticResource Accent}" />
                                 <Setter TargetName="border" Property="Effect">
                                     <Setter.Value>
-                                        <DropShadowEffect Color="#00BFFF" BlurRadius="15" ShadowDepth="0" Opacity="0.5" />
+                                        <DropShadowEffect Color="#0284C7" BlurRadius="12" ShadowDepth="0" Opacity="0.3" />
                                     </Setter.Value>
                                 </Setter>
                             </Trigger>
@@ -103,15 +109,15 @@
         </Style>
 
         <Style x:Key="InstitutionalActionButton" TargetType="Button" BasedOn="{StaticResource InstitutionalGlassButton}">
-            <Setter Property="Background" Value="#1A00BFFF" />
-            <Setter Property="BorderBrush" Value="#4000BFFF" />
+            <Setter Property="Background" Value="#1A0284C7" />
+            <Setter Property="BorderBrush" Value="#400284C7" />
             <Setter Property="Foreground" Value="#E0F7FF" />
             <Style.Triggers>
                 <EventTrigger RoutedEvent="Loaded">
                     <BeginStoryboard>
                         <Storyboard>
                             <ColorAnimation Storyboard.TargetProperty="(Button.BorderBrush).(SolidColorBrush.Color)"
-                                            From="#4000BFFF" To="#8000BFFF" Duration="0:0:1.5"
+                                            From="#400284C7" To="#800284C7" Duration="0:0:1.5"
                                             AutoReverse="True" RepeatBehavior="Forever" />
                         </Storyboard>
                     </BeginStoryboard>
@@ -197,7 +203,7 @@
                                     <Border.Background>
                                         <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
                                             <GradientStop Color="{StaticResource AccentColor}" Offset="0" />
-                                            <GradientStop Color="#8000BFFF" Offset="1" />
+                                            <GradientStop Color="#800284C7" Offset="1" />
                                         </LinearGradientBrush>
                                     </Border.Background>
                                 </Border>
@@ -248,7 +254,7 @@
                                 <Setter Property="Background" TargetName="border" Value="#15FFFFFF" />
                                 <Setter TargetName="border" Property="Effect">
                                     <Setter.Value>
-                                        <DropShadowEffect Color="#00BFFF" BlurRadius="8" ShadowDepth="0" Opacity="0.3" />
+                                        <DropShadowEffect Color="#0284C7" BlurRadius="8" ShadowDepth="0" Opacity="0.3" />
                                     </Setter.Value>
                                 </Setter>
                             </Trigger>

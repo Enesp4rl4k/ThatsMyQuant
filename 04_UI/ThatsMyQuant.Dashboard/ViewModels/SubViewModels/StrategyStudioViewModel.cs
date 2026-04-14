@@ -53,17 +53,19 @@ public partial class StrategyStudioViewModel : ObservableObject
     [ObservableProperty] private string _selectedRiskProfile = "Moderate";
 
     // --- BOT CONFIG ---
-    public ObservableCollection<string> BotStrategies { get; } = new() { "Swarm Orchestrator (Multi-Agent)", "Trend Confluence", "Breakout Hunter", "Range Reversion", "HFT Micro Edge" };
+    public ObservableCollection<string> BotStrategies { get; } = new() { "Swarm Orchestrator (Multi-Agent)", "Trend Confluence", "Breakout Hunter", "Range Reversion", "Grid Runner", "HFT Micro Edge" };
     public ObservableCollection<string> BotObjectives { get; } = new() { "Capital Growth", "Income Flow", "Low Drawdown", "Fast Rotation" };
     public ObservableCollection<string> BotBaseAssets { get; } = new() { "BTC", "ETH", "USDT", "TRY" };
     public ObservableCollection<string> BotQuoteAssets { get; } = new() { "USDC", "USDT", "TRY", "USD" };
     public ObservableCollection<string> BotPresets { get; } = new() { "Trend Attack", "Safe Income", "Recovery Probe", "HFT Probe" };
+    public ObservableCollection<string> TradeTargetModes { get; } = new() { "Hybrid", "Manual", "Auto" };
     public ObservableCollection<int> GridDensityOptions { get; } = new() { 6, 8, 10, 12, 16, 20 };
 
     [ObservableProperty] private string _selectedBotStrategy = "Trend Confluence";
     [ObservableProperty] private string _selectedBotObjective = "Capital Growth";
     [ObservableProperty] private string _selectedBotBaseAsset = "BTC";
     [ObservableProperty] private string _selectedBotQuoteAsset = "USDT";
+    [ObservableProperty] private string _selectedTradeTargetMode = "Hybrid";
     [ObservableProperty] private decimal _botFundingAmount = 2000m;
     [ObservableProperty] private int _gridDensity = 12;
     [ObservableProperty] private double _gridUpperLimit = 14;
@@ -75,6 +77,8 @@ public partial class StrategyStudioViewModel : ObservableObject
     [ObservableProperty] private Brush _botLaunchGuardColor = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));
     [ObservableProperty] private string _botLaunchGuardReason = "Waiting for strategy and session context.";
     [ObservableProperty] private string _botProfitabilityFocus = "Profitability guidance will appear after analytics refresh.";
+    [ObservableProperty] private string _tradeTargetDiscoveryStatus = "Hybrid mode keeps your selected symbol in play while auto-discovery can surface stronger pairs.";
+    [ObservableProperty] private string _activeTradeTarget = "Trade target pending.";
     
     [ObservableProperty] private string _botProductivityScore = "Setup score --";
     [ObservableProperty] private Brush _botProductivityColor = new SolidColorBrush(Color.FromRgb(0x8B, 0x94, 0x9E));

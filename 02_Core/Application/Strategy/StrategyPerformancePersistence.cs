@@ -126,6 +126,16 @@ public sealed class StrategyBucketPerformanceSnapshot
     public double CriticalFeatureDriftRate { get; set; }
     public double SizeTrimmedByDriftRate { get; set; }
     public decimal AverageFeatureDriftMaxZScore { get; set; }
+    public double SharpeRatio { get; set; }
+    public double MaxDrawdownPercent { get; set; }
+    public double AverageRR { get; set; }
+    public int MaxConsecutiveLosses { get; set; }
+    public double PboScore { get; set; } = -1;
+    public double StochasticDominance { get; set; }
+    public decimal StartingCapital { get; set; }
+    public decimal FinalEquity { get; set; }
+    public string BacktestVersion { get; set; } = string.Empty;
+    public string BacktestHash { get; set; } = string.Empty;
     public bool BacktestPass { get; set; }
     public bool PaperPass { get; set; }
     public bool LiveProbePass { get; set; }

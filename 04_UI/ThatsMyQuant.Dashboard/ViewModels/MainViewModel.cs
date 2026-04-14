@@ -35,6 +35,7 @@ public partial class MainViewModel : ObservableObject
     private readonly StrategyTuningService _strategyTuningService;
     private readonly IAgentCoordinator _agentCoordinator;
     private readonly IUserPromptService _userPromptService;
+    private readonly IStrategyPerformanceStore _performanceStore;
     private readonly bool _enableAutomaticAnalysis;
     private readonly IAuditLogger? _auditLogger;
 
@@ -151,9 +152,11 @@ public partial class MainViewModel : ObservableObject
     // --- Watchlist Sync State (Requirements: 3.2, 3.6) ---
     [ObservableProperty] private bool _isSyncingWatchlist = false;
     [ObservableProperty] private string _syncStatusMessage = string.Empty;
+    [ObservableProperty] private bool _suppressAutomaticSymbolAnalysis = false;
 
     // --- Collections ---
     public ObservableCollection<WatchlistItemViewModel> WatchlistItems { get; } = new();
+    private string? _lastResolvedTradeTargetSymbol;
 
     // --- collections ---
 
@@ -219,6 +222,16 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _worstEdgeFailureSummary = "No edge failures detected.";
     [ObservableProperty] private string _bestEdgeZoneSummary = "Awaiting edge discovery.";
     [ObservableProperty] private string _strategyLeaderboardStatus = "Rankings updated.";
+    
+    // --- Backtest Lab Metrics ---
+    public ObservableCollection<StrategyBucketPerformanceSnapshot> BacktestBuckets { get; } = new();
+    [ObservableProperty] private double _topProfitFactor = 0;
+    [ObservableProperty] private decimal _cumulativePnL = 0;
+    [ObservableProperty] private int _promotionReadyCount = 0;
+    [ObservableProperty] private double _bestSharpeRatio = 0;
+    [ObservableProperty] private double _bestSortinoRatio = 0;
+    [ObservableProperty] private double _avgMaxDrawdown = 0;
+    [ObservableProperty] private double _avgWinRate = 0;
     
     // --- Legacy / Test Compatibility Proxies ---
     public string SessionSummary { get => AiAnalystView.SessionSummary; set => AiAnalystView.SessionSummary = value; }
@@ -354,6 +367,28 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    public string SelectedTradeTargetMode
+    {
+        get => Studio.SelectedTradeTargetMode;
+        set
+        {
+            Studio.SelectedTradeTargetMode = value;
+            UpdateBotLaunchSummary();
+        }
+    }
+
+    public string TradeTargetDiscoveryStatus
+    {
+        get => Studio.TradeTargetDiscoveryStatus;
+        set => Studio.TradeTargetDiscoveryStatus = value;
+    }
+
+    public string ActiveTradeTarget
+    {
+        get => Studio.ActiveTradeTarget;
+        set => Studio.ActiveTradeTarget = value;
+    }
+
     public decimal BotFundingAmount
     {
         get => Studio.BotFundingAmount;
@@ -445,6 +480,8 @@ public partial class MainViewModel : ObservableObject
     private System.Windows.Threading.DispatcherTimer? _queueTimer;
     private string _lastTuningStrategyKey = string.Empty;
     private readonly ModelGovernanceService _modelGovernance = new();
+    private int _liveMarketRefreshCounter = 0;
+    private bool _isRefreshingLiveMarketSnapshot;
 
     // Zen Mode
 
@@ -516,7 +553,8 @@ public partial class MainViewModel : ObservableObject
         StrategyTuningService strategyTuningService,
         IAgentCoordinator agentCoordinator,
         FocusedBacktestViewModel focusBacktest,
-        IWebVitalsService webVitalsService, // New
+        IWebVitalsService webVitalsService,
+        IStrategyPerformanceStore performanceStore,
         bool enableBackgroundTimers = true,
         bool enableAutomaticAnalysis = true,
         IUserPromptService? userPromptService = null,
@@ -536,6 +574,7 @@ public partial class MainViewModel : ObservableObject
         _agentCoordinator = agentCoordinator;
         _userPromptService = userPromptService ?? new MessageBoxUserPromptService();
         _focusBacktest = focusBacktest;
+        _performanceStore = performanceStore;
         _enableAutomaticAnalysis = enableAutomaticAnalysis;
         _auditLogger = auditLogger;
 
@@ -598,6 +637,7 @@ public partial class MainViewModel : ObservableObject
             {
                 await RefreshQueueStats();
                 await RefreshStrategyLeaderboard();
+                await RefreshLiveMarketSnapshotAsync();
             };
             _queueTimer.Start();
         }
@@ -617,13 +657,16 @@ public partial class MainViewModel : ObservableObject
                     UpdateTradingMode(); // Adjust labels for BIST vs Crypto
                 }
                 
-                _ = AnalyzeSymbol(MarketOverview.SelectedSymbol, MarketOverview.SelectedMarket, MarketOverview.SelectedTimeframe);
+                if (!SuppressAutomaticSymbolAnalysis)
+                {
+                    _ = AnalyzeSymbol(MarketOverview.SelectedSymbol, MarketOverview.SelectedMarket, MarketOverview.SelectedTimeframe);
+                }
             }
         };
 
         Studio.PropertyChanged += (s, e) =>
         {
-            if (e.PropertyName is nameof(Studio.SelectedBotStrategy) or nameof(Studio.SelectedRiskProfile))
+            if (e.PropertyName is nameof(Studio.SelectedBotStrategy) or nameof(Studio.SelectedRiskProfile) or nameof(Studio.SelectedTradeTargetMode))
             {
                 UpdateBotLaunchSummary();
                 EvaluateStrategyThrottle();
@@ -666,6 +709,133 @@ public partial class MainViewModel : ObservableObject
             AddSystemLog($"Persistence Error: {ex.Message}");
         }
     }
+
+    private async Task RefreshLiveMarketSnapshotAsync()
+    {
+        if (_isRefreshingLiveMarketSnapshot)
+        {
+            return;
+        }
+
+        _isRefreshingLiveMarketSnapshot = true;
+        try
+        {
+            await RefreshWatchlistPricesAsync();
+            await RefreshOpenPositionPricesAsync();
+
+            _liveMarketRefreshCounter++;
+            if (_liveMarketRefreshCounter % 3 == 0)
+            {
+                await RefreshSelectedChartAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"Live market refresh error: {ex.Message}");
+        }
+        finally
+        {
+            _isRefreshingLiveMarketSnapshot = false;
+        }
+    }
+
+    private async Task RefreshWatchlistPricesAsync()
+    {
+        var items = WatchlistItems.Take(12).ToList();
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        var market = ResolveUiMarketLabel();
+        foreach (var item in items)
+        {
+            var latestPrice = await _marketDataService.GetLivePriceAsync(item.Symbol, market);
+            if (latestPrice <= 0m)
+            {
+                continue;
+            }
+
+            var previousPrice = item.Price;
+            InvokeOnUi(() =>
+            {
+                item.Price = latestPrice;
+                if (previousPrice > 0m)
+                {
+                    item.ChangePercent = (double)((latestPrice - previousPrice) / previousPrice * 100m);
+                }
+            });
+        }
+    }
+
+    private async Task RefreshOpenPositionPricesAsync()
+    {
+        var positions = PortfolioView.ActivePositions.ToList();
+        if (positions.Count == 0)
+        {
+            InvokeOnUi(() => PortfolioView.UnrealizedPnL = 0m);
+            return;
+        }
+
+        decimal unrealizedTotal = 0m;
+        foreach (var position in positions)
+        {
+            var latestPrice = await _marketDataService.GetLivePriceAsync(position.Symbol, "Crypto");
+            if (latestPrice <= 0m)
+            {
+                latestPrice = position.MarkPrice;
+            }
+
+            var pnl = position.Side == "SHORT"
+                ? (position.EntryPrice - latestPrice) * position.Size
+                : (latestPrice - position.EntryPrice) * position.Size;
+            var notional = Math.Max(0.00000001m, position.EntryPrice * Math.Max(position.Size, 0m));
+            var roe = (double)(pnl / notional * 100m);
+
+            unrealizedTotal += pnl;
+
+            InvokeOnUi(() =>
+            {
+                position.MarkPrice = latestPrice;
+                position.UnrealisedPnL = pnl;
+                position.Roe = roe;
+            });
+        }
+
+        InvokeOnUi(() => PortfolioView.UnrealizedPnL = unrealizedTotal);
+    }
+
+    private async Task RefreshSelectedChartAsync()
+    {
+        var symbol = MarketOverview.SelectedSymbol;
+        if (string.IsNullOrWhiteSpace(symbol))
+        {
+            return;
+        }
+
+        var market = ResolveUiMarketLabel();
+        var candles = await _marketDataService.GetCandlesAsync(
+            symbol,
+            120,
+            market,
+            MarketOverview.SelectedTimeframe);
+
+        if (candles.Count == 0)
+        {
+            return;
+        }
+
+        InvokeOnUi(() =>
+        {
+            MarketOverview.NormalizeChart(candles);
+            CurrentPrice = candles[^1].Close;
+        });
+    }
+
+    private string ResolveUiMarketLabel()
+        => MarketOverview.SelectedMarket.Equals("Crypto", StringComparison.OrdinalIgnoreCase)
+            ? "Crypto"
+            : MarketOverview.SelectedMarket;
 
     private void RefreshSessionPerformance(IEnumerable<Trade> trades)
     {
@@ -2708,13 +2878,13 @@ public partial class MainViewModel : ObservableObject
                 }
                 else if (e.PropertyName == nameof(MarketOverviewViewModel.SelectedSymbol))
                 {
-                    if (_enableAutomaticAnalysis)
+                    if (_enableAutomaticAnalysis && !SuppressAutomaticSymbolAnalysis)
                         _ = AnalyzeSymbol(value.SelectedSymbol, value.SelectedMarket, value.SelectedTimeframe);
                     UpdatePlainEnglishTranslation();
                 }
                 else if (e.PropertyName == nameof(MarketOverviewViewModel.SelectedTimeframe))
                 {
-                    if (_enableAutomaticAnalysis)
+                    if (_enableAutomaticAnalysis && !SuppressAutomaticSymbolAnalysis)
                         _ = AnalyzeSymbol(value.SelectedSymbol, value.SelectedMarket, value.SelectedTimeframe);
                     UpdatePlainEnglishTranslation();
                 }
@@ -2731,6 +2901,7 @@ public partial class MainViewModel : ObservableObject
                 if (e.PropertyName == nameof(StrategyStudioViewModel.SelectedBotBaseAsset) ||
                     e.PropertyName == nameof(StrategyStudioViewModel.SelectedBotQuoteAsset) ||
                     e.PropertyName == nameof(StrategyStudioViewModel.SelectedBotStrategy) ||
+                    e.PropertyName == nameof(StrategyStudioViewModel.SelectedTradeTargetMode) ||
                     e.PropertyName == nameof(StrategyStudioViewModel.SelectedBotObjective) ||
                     e.PropertyName == nameof(StrategyStudioViewModel.BotFundingAmount) ||
                     e.PropertyName == nameof(StrategyStudioViewModel.GridUpperLimit) ||
@@ -3201,10 +3372,19 @@ public partial class MainViewModel : ObservableObject
         foreach (var s in symbols)
         {
             MarketOverview.Symbols.Add(s);
-            WatchlistItems.Add(new WatchlistItemViewModel { Symbol = s, Price = 0, ChangePercent = 0 });
+            WatchlistItems.Add(new WatchlistItemViewModel { Symbol = s, Price = 0, ChangePercent = 0, CandidateSummary = "Waiting for discovery" });
         }
         
         MarketOverview.SelectedSymbol = symbols.FirstOrDefault() ?? "";
+        ActiveTradeTarget = string.IsNullOrWhiteSpace(MarketOverview.SelectedSymbol)
+            ? "Trade target pending."
+            : $"{MarketOverview.SelectedSymbol} via Manual";
+        TradeTargetDiscoveryStatus = Studio.SelectedTradeTargetMode switch
+        {
+            "Manual" => "Manual mode locks onto your selected symbol.",
+            "Auto" => "Auto mode will scan the watchlist and promote the strongest pair.",
+            _ => "Hybrid mode keeps your selected symbol in play while auto-discovery can promote stronger pairs."
+        };
     }
 
     [RelayCommand]
@@ -3325,6 +3505,10 @@ public partial class MainViewModel : ObservableObject
         
         var result = await _backtestEngine.RunAsync(candles, s, 100000);
         
+        decimal returnPct = result.StartingCapital > 0
+            ? (result.FinalEquity - result.StartingCapital) / result.StartingCapital * 100
+            : 0;
+
         return new GlobalBacktestResultViewModel
         {
             Symbol = s,
@@ -3332,7 +3516,16 @@ public partial class MainViewModel : ObservableObject
             WinRate = result.WinRate,
             TotalPnL = (decimal)result.TotalPnL,
             ProfitFactor = (decimal)result.ProfitFactor,
-            PnLColor = result.TotalPnL >= 0 ? GreenBrush : RedBrush
+            SharpeRatio = result.SharpeRatio,
+            SortinoRatio = result.SortinoRatio,
+            MaxDrawdownPercent = result.MaxDrawdownPercent,
+            AverageRR = result.AverageRR,
+            MaxConsecutiveLosses = result.MaxConsecutiveLosses,
+            StartingCapital = result.StartingCapital,
+            FinalEquity = result.FinalEquity,
+            ReturnPercent = $"{returnPct:F2}%",
+            PnLColor = result.TotalPnL >= 0 ? GreenBrush : RedBrush,
+            BacktestPass = result.TotalPnL > 0 && result.ProfitFactor > 1.2 && result.SharpeRatio > 0.5
         };
     }
 
@@ -3358,6 +3551,198 @@ public partial class MainViewModel : ObservableObject
             _ => 365
         };
 
+    private sealed record TradeTargetCandidate(
+        string Symbol,
+        string Market,
+        string Timeframe,
+        bool ShouldTrade,
+        double Score,
+        string Summary,
+        string Source);
+
+    private double CalculateTradeCandidateScore(TradeDecision decision)
+    {
+        var indicators = decision.Indicators;
+        if (indicators == null)
+        {
+            return 0;
+        }
+
+        double score = Math.Clamp((double)decision.Confidence, 0d, 100d);
+
+        if (decision.ShouldTrade)
+        {
+            score += 15;
+        }
+
+        if ((indicators.VolumeRatio ?? 0) >= 1.2)
+        {
+            score += Math.Min(10d, (indicators.VolumeRatio ?? 0) * 3d);
+        }
+
+        if (indicators.AlphaTrend?.IsBullish == true)
+        {
+            score += 5;
+        }
+
+        if ((indicators.MACDHistogram ?? 0) > 0)
+        {
+            score += 4;
+        }
+
+        if ((indicators.RSI ?? 50) is >= 45 and <= 70)
+        {
+            score += 3;
+        }
+
+        return Math.Round(Math.Min(score, 100d), 1);
+    }
+
+    private static string BuildTradeCandidateSummary(TradeDecision decision)
+    {
+        var posture = decision.ShouldTrade ? "Trade-ready" : "Watch-only";
+        var strategy = string.IsNullOrWhiteSpace(decision.StrategyTag) ? "Confluence" : decision.StrategyTag;
+        return $"{posture} | {strategy} | Confidence {decision.Confidence}/100";
+    }
+
+    private IEnumerable<string> GetTradeTargetUniverse()
+    {
+        return WatchlistItems
+            .Select(item => item.Symbol)
+            .Concat(MarketOverview.Symbols)
+            .Concat(string.IsNullOrWhiteSpace(MarketOverview.SelectedSymbol) ? Array.Empty<string>() : new[] { MarketOverview.SelectedSymbol })
+            .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(10);
+    }
+
+    private async Task<TradeTargetCandidate> EvaluateTradeTargetCandidateAsync(string symbol, string market, string timeframe, string source, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var candles = await _marketDataService.GetCandlesAsync(symbol, 120, market, timeframe);
+            if (candles.Count == 0)
+            {
+                return new TradeTargetCandidate(symbol, market, timeframe, false, 0, "No candles available.", source);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            var decision = ApplyStrategyThrottle(await _technicalAnalysis.AnalyzeAsync(new Signal { Symbol = symbol }, candles, ResolveRiskParameters(Studio.SelectedRiskProfile)));
+            return new TradeTargetCandidate(symbol, market, timeframe, decision.ShouldTrade, CalculateTradeCandidateScore(decision), BuildTradeCandidateSummary(decision), source);
+        }
+        catch (Exception ex)
+        {
+            return new TradeTargetCandidate(symbol, market, timeframe, false, 0, $"Discovery failed: {ex.Message}", source);
+        }
+    }
+
+    private async Task<TradeTargetCandidate> ResolveTradeTargetCandidateAsync(CancellationToken cancellationToken)
+    {
+        var market = MarketOverview.SelectedMarket;
+        var timeframe = MarketOverview.SelectedTimeframe;
+        var mode = Studio.SelectedTradeTargetMode;
+        var manualSymbol = MarketOverview.SelectedSymbol;
+        var symbols = GetTradeTargetUniverse().ToArray();
+
+        if (symbols.Length == 0)
+        {
+            return new TradeTargetCandidate(manualSymbol, market, timeframe, false, 0, "No candidate symbols are available.", "Manual");
+        }
+
+        var evaluations = await Task.WhenAll(symbols.Select(symbol =>
+            EvaluateTradeTargetCandidateAsync(symbol, market, timeframe, string.Equals(symbol, manualSymbol, StringComparison.OrdinalIgnoreCase) ? "Manual" : "Auto", cancellationToken)));
+
+        var manualCandidate = evaluations.FirstOrDefault(candidate =>
+            string.Equals(candidate.Symbol, manualSymbol, StringComparison.OrdinalIgnoreCase));
+        var bestAutoCandidate = evaluations
+            .Where(candidate => !string.Equals(candidate.Symbol, manualSymbol, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(candidate => candidate.ShouldTrade)
+            .ThenByDescending(candidate => candidate.Score)
+            .FirstOrDefault();
+
+        TradeTargetCandidate selected = mode switch
+        {
+            "Manual" => manualCandidate ?? evaluations.OrderByDescending(candidate => candidate.Score).First(),
+            "Auto" => bestAutoCandidate ?? manualCandidate ?? evaluations.OrderByDescending(candidate => candidate.Score).First(),
+            _ => ResolveHybridTradeTarget(manualCandidate, bestAutoCandidate, evaluations)
+        };
+
+        ApplyTradeTargetDiscovery(selected, evaluations);
+        return selected;
+    }
+
+    private static TradeTargetCandidate ResolveHybridTradeTarget(
+        TradeTargetCandidate? manualCandidate,
+        TradeTargetCandidate? bestAutoCandidate,
+        IReadOnlyCollection<TradeTargetCandidate> evaluations)
+    {
+        if (manualCandidate is not null && manualCandidate.ShouldTrade &&
+            (bestAutoCandidate is null || manualCandidate.Score >= bestAutoCandidate.Score - 5))
+        {
+            return manualCandidate with { Source = "Manual priority" };
+        }
+
+        if (bestAutoCandidate is not null)
+        {
+            return bestAutoCandidate with { Source = "Auto-discovered" };
+        }
+
+        return manualCandidate ?? evaluations.OrderByDescending(candidate => candidate.Score).First();
+    }
+
+    private void ApplyTradeTargetDiscovery(TradeTargetCandidate selected, IEnumerable<TradeTargetCandidate> evaluations)
+    {
+        var evaluationMap = evaluations.ToDictionary(candidate => candidate.Symbol, StringComparer.OrdinalIgnoreCase);
+        foreach (var item in WatchlistItems)
+        {
+            if (evaluationMap.TryGetValue(item.Symbol, out var candidate))
+            {
+                item.CandidateScore = candidate.Score;
+                item.CandidateSummary = candidate.Summary;
+                item.IsAutoSelected = string.Equals(candidate.Symbol, selected.Symbol, StringComparison.OrdinalIgnoreCase);
+            }
+            else
+            {
+                item.IsAutoSelected = false;
+            }
+        }
+
+        ActiveTradeTarget = $"{selected.Symbol} via {selected.Source}";
+        TradeTargetDiscoveryStatus = selected.ShouldTrade
+            ? $"{selected.Symbol} is leading discovery with score {selected.Score:F1}. {selected.Summary}"
+            : $"{selected.Symbol} is the fallback focus with score {selected.Score:F1}. {selected.Summary}";
+    }
+
+    private void ApplyResolvedTradeTarget(TradeTargetCandidate candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate.Symbol))
+        {
+            return;
+        }
+
+        if (!string.Equals(MarketOverview.SelectedSymbol, candidate.Symbol, StringComparison.OrdinalIgnoreCase))
+        {
+            SuppressAutomaticSymbolAnalysis = true;
+            try
+            {
+                MarketOverview.SelectedSymbol = candidate.Symbol;
+            }
+            finally
+            {
+                SuppressAutomaticSymbolAnalysis = false;
+            }
+
+            UpdatePlainEnglishTranslation();
+            RefreshRiskPanel();
+        }
+
+        if (!string.Equals(_lastResolvedTradeTargetSymbol, candidate.Symbol, StringComparison.OrdinalIgnoreCase))
+        {
+            AddSystemLog($"TARGET DISCOVERY: {candidate.Symbol} selected via {candidate.Source}. {candidate.Summary}");
+            _lastResolvedTradeTargetSymbol = candidate.Symbol;
+        }
+    }
+
     [RelayCommand]
     private Task StartTrading()
     {
@@ -3376,14 +3761,19 @@ public partial class MainViewModel : ObservableObject
 
         Status = IsPaperMode ? "PAPER LOOP" : "LIVE LOOP";
         StatusColor = IsPaperMode ? OrangeBrush : GreenBrush;
-        AddSystemLog($"{TradingModeLabel} trading orchestrator started. Monitoring {MarketOverview.SelectedMarket} - {MarketOverview.SelectedSymbol}...");
+        AddSystemLog($"{TradingModeLabel} trading orchestrator started. Monitoring {MarketOverview.SelectedMarket} with {Studio.SelectedTradeTargetMode.ToLowerInvariant()} target discovery...");
         if (Studio.BotRecommendedFunding < Studio.BotFundingAmount)
         {
             AddSystemLog($"LAUNCH GUARD: Recommended capital is {Studio.BotRecommendedFunding:N0} {Studio.SelectedBotQuoteAsset} instead of {Studio.BotFundingAmount:N0}.");
         }
 
         return _tradingLoopService.StartAsync(
-            _ => AnalyzeSymbol(MarketOverview.SelectedSymbol, MarketOverview.SelectedMarket, MarketOverview.SelectedTimeframe),
+            async token =>
+            {
+                var target = await ResolveTradeTargetCandidateAsync(token);
+                ApplyResolvedTradeTarget(target);
+                await AnalyzeSymbol(target.Symbol, target.Market, target.Timeframe);
+            },
             TimeSpan.FromSeconds(5));
     }
 
@@ -3410,8 +3800,10 @@ public partial class MainViewModel : ObservableObject
             {
                if (_enableAutomaticAnalysis)
                {
-                   AddSystemLog($"ORCHESTRATOR: Running cycle for {SelectedBotStrategy} @ {SelectedSymbol}");
-                   await _agentCoordinator.ResetAllAgentsAsync(SelectedSymbol, token);
+                   var target = await ResolveTradeTargetCandidateAsync(token);
+                   ApplyResolvedTradeTarget(target);
+                   AddSystemLog($"ORCHESTRATOR: Running cycle for {SelectedBotStrategy} @ {target.Symbol}");
+                   await _agentCoordinator.ResetAllAgentsAsync(target.Symbol, token);
                    
                    // To actually run the full swarm, one would resolve the tick arrays,
                    // but for this UI mapping hook, we are simulating the hook trigger to validate telemetry linkages.
@@ -3560,8 +3952,23 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private void VerifyConnection()
     {
-        AddSystemLog("INFRA: Testing connectivity to Binance/BIST endpoints...");
-        AddSystemLog("INFRA: API Handshake successful. Latency: 42ms.");
+        var exchangeMode = ExchangeSettings.SelectedExchangeMode;
+        var hasOkxCredentials =
+            !string.IsNullOrWhiteSpace(ExchangeSettings.OkxApiKey) &&
+            !string.IsNullOrWhiteSpace(ExchangeSettings.OkxSecretKey) &&
+            !string.IsNullOrWhiteSpace(ExchangeSettings.OkxPassphrase);
+
+        if (exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase))
+        {
+            AddSystemLog($"INFRA: OKX mode selected. Demo={ExchangeSettings.IsDemoMode}.");
+            AddSystemLog(hasOkxCredentials
+                ? "INFRA: OKX credentials are loaded in the dashboard session."
+                : "INFRA: OKX credentials are missing. Save settings after filling ApiKey, SecretKey, and Passphrase.");
+            AddSystemLog("INFRA: Verify Connection is currently a readiness check, not a live OKX API ping.");
+            return;
+        }
+        AddSystemLog($"INFRA: {exchangeMode} mode selected.");
+        AddSystemLog("INFRA: Verify Connection currently checks local readiness only.");
     }
 
     [RelayCommand]
@@ -3570,14 +3977,16 @@ public partial class MainViewModel : ObservableObject
         AddSystemLog("AI: Intelligence core recalibration started...");
         AddSystemLog($"AI: Tuned FVG Sensitivity to {Studio.FvgSensitivity:F0}%.");
         AddSystemLog($"AI: Threshold synchronized at {Studio.AiConfidenceThreshold:F0}%.");
-        AddSystemLog($"AI: Threshold synchronized at {Studio.AiConfidenceThreshold:F0}%.");
         AddSystemLog("AI: Calibration successful. Model ready for next signal.");
     }
 
     private void AddSystemLog(string message)
     {
-        SystemLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {message}");
-        if (SystemLogs.Count > 100) SystemLogs.RemoveAt(100);
+        InvokeOnUi(() =>
+        {
+            SystemLogs.Insert(0, $"[{DateTime.Now:HH:mm:ss}] {message}");
+            if (SystemLogs.Count > 100) SystemLogs.RemoveAt(100);
+        });
     }
 
     [RelayCommand]
@@ -3597,21 +4006,24 @@ public partial class MainViewModel : ObservableObject
             : trade.Confidence >= 55
                 ? "Moderate-confidence setup"
                 : "Low-confidence setup";
+
         var timingHint = trade.Confidence >= 75
             ? "Execution likely had enough confirmation, so focus on improving exits and scaling."
             : "Wait for stronger candle close confirmation before committing full size.";
+
         var outcomeHint = trade.Status.Contains("Approved", StringComparison.OrdinalIgnoreCase)
             ? "The setup qualified, but review whether the liquidity sweep or displacement had fully printed first."
             : "The journal status suggests the setup stayed in review, so respect patience over forcing an entry.";
+
         var driftContext = string.IsNullOrWhiteSpace(trade.MlDriftSummary)
             ? string.Empty
             : $" ML drift context: {trade.MlDriftSummary}.";
 
         SelectedTradeReviewTitle = $"{trade.Symbol} {trade.Side} review";
-        SelectedTradeReview =
-            $"{confidenceTone}. {outcomeHint} {timingHint} " +
+        SelectedTradeReview = $"{confidenceTone}. {outcomeHint} {timingHint} " +
             $"Audit trail: {BuildAuditTrail("; ", trade.EdgeSummary, trade.ExitSummary, trade.MlDriftImpact, trade.ExactBucketImpact, trade.ConcordanceImpact, trade.StageExplanation, trade.AllocatorImpact, trade.VenueImpact)}. " +
             $"{(string.IsNullOrWhiteSpace(trade.MlModelVersion) ? string.Empty : $"Model: {trade.MlModelVersion}. ")}Context: {trade.Reasoning}.{driftContext} Logged at {trade.Time:dd MMM HH:mm}.";
+
         return Task.CompletedTask;
     }
 
@@ -3619,7 +4031,6 @@ public partial class MainViewModel : ObservableObject
     {
         var builder = new StringBuilder();
         builder.AppendLine("Time,Symbol,Mode,ModelVersion,Side,PromotionStage,StageExplanation,Edge,Exit,MlDrift,Concordance,Venue,Allocator,PnL,Reasoning");
-
         foreach (var journalEntry in TradeJournal)
         {
             var entry = ResolveStoredTruthJournalEntry(journalEntry);
@@ -3640,7 +4051,6 @@ public partial class MainViewModel : ObservableObject
                 CsvEscape(entry.PnL.ToString("F2", CultureInfo.InvariantCulture)),
                 CsvEscape(entry.Reasoning)));
         }
-
         return builder.ToString();
     }
 
@@ -3741,7 +4151,7 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        Studio.SelectedBotStrategy = strategy;
+        Studio.SelectedBotStrategy = NormalizeBotStrategyLabel(strategy);
         UpdateBotLaunchSummary();
     }
 
@@ -3783,7 +4193,7 @@ public partial class MainViewModel : ObservableObject
                 Studio.GridSlopeBias = 45;
                 break;
             case "HFT Probe":
-                Studio.SelectedBotStrategy = "HFT Scout";
+                Studio.SelectedBotStrategy = "HFT Micro Edge";
                 Studio.SelectedBotObjective = "Fast Rotation";
                 Studio.SelectedRiskProfile = "Moderate";
                 Studio.GridDensity = 20;
@@ -3801,8 +4211,9 @@ public partial class MainViewModel : ObservableObject
     private void AutoTuneBotSetup()
     {
         var activeSession = SessionContexts.FirstOrDefault(context => context.IsActive)?.Name ?? "Unknown";
+        var selectedBotStrategy = NormalizeBotStrategyLabel(Studio.SelectedBotStrategy);
 
-        if (Studio.SelectedBotStrategy == "HFT Scout")
+        if (selectedBotStrategy == "HFT Micro Edge")
         {
             Studio.SelectedBotObjective = "Fast Rotation";
             Studio.GridDensity = 20;
@@ -3810,7 +4221,7 @@ public partial class MainViewModel : ObservableObject
             Studio.GridUpperLimit = activeSession == "London Killzone" ? 6.0 : 7.0;
             Studio.GridSlopeBias = Telemetry.HftExecutionBias == "Ready" ? 62 : 50;
         }
-        else if (Studio.SelectedBotStrategy == "Grid Runner")
+        else if (selectedBotStrategy == "Grid Runner")
         {
             Studio.SelectedBotObjective = "Income Flow";
             Studio.GridDensity = 16;
@@ -3818,7 +4229,7 @@ public partial class MainViewModel : ObservableObject
             Studio.GridUpperLimit = activeSession is "London Killzone" or "NY Killzone" ? 11.5 : 9.5;
             Studio.GridSlopeBias = 50;
         }
-        else if (Studio.SelectedBotStrategy == "Range Reversion")
+        else if (selectedBotStrategy == "Range Reversion")
         {
             Studio.SelectedBotObjective = "Low Drawdown";
             Studio.GridDensity = 10;
@@ -3826,7 +4237,7 @@ public partial class MainViewModel : ObservableObject
             Studio.GridUpperLimit = 8.5;
             Studio.GridSlopeBias = 42;
         }
-        else if (Studio.SelectedBotStrategy == "Breakout Hunter")
+        else if (selectedBotStrategy == "Breakout Hunter")
         {
             Studio.SelectedBotObjective = "Capital Growth";
             Studio.GridDensity = 8;
@@ -3852,7 +4263,7 @@ public partial class MainViewModel : ObservableObject
         {
             Studio.SelectedRiskProfile = "Low";
         }
-        else if (Studio.SelectedBotStrategy == "HFT Scout")
+        else if (selectedBotStrategy == "HFT Micro Edge")
         {
             Studio.SelectedRiskProfile = "Moderate";
         }
@@ -3860,6 +4271,13 @@ public partial class MainViewModel : ObservableObject
         AddSystemLog($"AUTO-TUNE: Optimized {Studio.SelectedBotStrategy} for {activeSession} with {Studio.SelectedRiskProfile} risk.");
         UpdateBotLaunchSummary();
     }
+
+    private static string NormalizeBotStrategyLabel(string? strategy)
+        => strategy?.Trim() switch
+        {
+            "HFT Scout" => "HFT Micro Edge",
+            _ => strategy?.Trim() ?? string.Empty
+        };
 
     [RelayCommand]
     private async Task KillStrategy()
@@ -4084,6 +4502,15 @@ public partial class MainViewModel : ObservableObject
     }
 
     private static decimal Clamp(decimal value, decimal min, decimal max) => Math.Clamp(value, min, max);
+
+    public IReadOnlyList<Trade> GetSelectedSymbolTradesForChart(string symbol)
+    {
+        return _tradeCache
+            .Where(t => string.Equals(t.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(t => t.EntryTime)
+            .Take(50)
+            .ToList();
+    }
 
     private LogicTreeNode LegacyBuildMomentumNode(IndicatorSnapshot ind)
     {
