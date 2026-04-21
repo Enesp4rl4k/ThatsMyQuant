@@ -26,4 +26,7 @@ public sealed class RiskGovernorOptions
     public decimal SoftLiquidity24hVolume { get; set; } = 1_000_000m;
     public decimal HardLiquidity24hVolume { get; set; } = 250_000m;
     public int MaxTrackedTrades { get; set; } = 500;
+    public decimal MaxRequestedLeverage { get; set; } = 3m;
+    public decimal MaxRequestedLeverageCross { get; set; } = 2m;
+    public decimal MaxRequestedLeverageIsolated { get; set; } = 3m;
 }

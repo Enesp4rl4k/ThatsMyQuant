@@ -31,6 +31,8 @@
 
         <FontFamily x:Key="PrimaryFont">Segoe UI, Segoe UI Variable Display, sans-serif</FontFamily>
         <FontFamily x:Key="MonoFont">Roboto Mono, Consolas, Courier New, monospace</FontFamily>
+        <!-- P3: Segoe MDL2 Assets (Windows 10+); deck nav + small affordances -->
+        <FontFamily x:Key="IconFont">Segoe MDL2 Assets</FontFamily>
 
         <!-- GLOBAL SCROLLBAR OVERHAUL (MINIMALIST GLASS) -->
         <Style x:Key="InstitutionalScrollBarThumb" TargetType="Thumb">
@@ -108,38 +110,17 @@
             </Setter>
         </Style>
 
+        <!-- P3: no infinite border/opacity loops (reduced-motion friendly default). -->
         <Style x:Key="InstitutionalActionButton" TargetType="Button" BasedOn="{StaticResource InstitutionalGlassButton}">
             <Setter Property="Background" Value="#1A0284C7" />
-            <Setter Property="BorderBrush" Value="#400284C7" />
+            <Setter Property="BorderBrush" Value="#600284C7" />
             <Setter Property="Foreground" Value="#E0F7FF" />
-            <Style.Triggers>
-                <EventTrigger RoutedEvent="Loaded">
-                    <BeginStoryboard>
-                        <Storyboard>
-                            <ColorAnimation Storyboard.TargetProperty="(Button.BorderBrush).(SolidColorBrush.Color)"
-                                            From="#400284C7" To="#800284C7" Duration="0:0:1.5"
-                                            AutoReverse="True" RepeatBehavior="Forever" />
-                        </Storyboard>
-                    </BeginStoryboard>
-                </EventTrigger>
-            </Style.Triggers>
         </Style>
 
         <Style x:Key="InstitutionalPanicButton" TargetType="Button" BasedOn="{StaticResource InstitutionalGlassButton}">
             <Setter Property="Background" Value="#26EF4444" />
-            <Setter Property="BorderBrush" Value="#40EF4444" />
+            <Setter Property="BorderBrush" Value="#60EF4444" />
             <Setter Property="Foreground" Value="#FCA5A5" />
-            <Style.Triggers>
-                <EventTrigger RoutedEvent="Loaded">
-                    <BeginStoryboard>
-                        <Storyboard>
-                            <DoubleAnimation Storyboard.TargetProperty="Opacity"
-                                             From="1" To="0.7" Duration="0:0:0.8"
-                                             AutoReverse="True" RepeatBehavior="Forever" />
-                        </Storyboard>
-                    </BeginStoryboard>
-                </EventTrigger>
-            </Style.Triggers>
         </Style>
 
         <!-- INSTITUTIONAL GLASS COMBOBOX -->
@@ -173,7 +154,7 @@
                                               ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
                                               ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
                                               Margin="10,3,30,3" VerticalAlignment="Center" />
-                            <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                            <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="None">
                                 <Grid Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
                                     <Border x:Name="DropDownBorder" Background="#E6161B22" BorderThickness="1" BorderBrush="{StaticResource Accent}" CornerRadius="0,0,4,4" />
                                     <ScrollViewer Margin="4,6,4,6" SnapsToDevicePixels="True">

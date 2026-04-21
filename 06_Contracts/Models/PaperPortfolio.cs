@@ -15,7 +15,7 @@ public class PaperPortfolio
     public decimal DailyPnL { get; set; }
     public DateTime DailyPnLResetDate { get; set; } = DateTime.UtcNow.Date;
 
-    public decimal TotalEquity => Cash + OpenPositions.Sum(p => p.MarketValue);
+    public decimal TotalEquity => Cash + OpenPositions.Sum(p => p.IsLeveragedPaperPosition ? p.UnrealizedPnL : p.MarketValue);
     public decimal TotalPnL => TotalEquity - InitialBalance;
     public double TotalPnLPercent => InitialBalance > 0 ? (double)(TotalPnL / InitialBalance * 100) : 0;
     public int TotalTrades => ClosedPositions.Count;
@@ -55,6 +55,7 @@ public class PaperPosition
     public string ExecutionMode { get; set; } = "PAPER";
     public string PromotionStage { get; set; } = "Paper";
     public decimal TrailingStopPrice { get; set; }
+    public decimal InitialStopDistance { get; set; }
     public decimal OptimalPriceSinceEntry { get; set; }
     public decimal WorstPriceSinceEntry { get; set; }
     public decimal MaxFavorableExcursionPercent { get; set; }
@@ -65,8 +66,21 @@ public class PaperPosition
     public string ExitReason { get; set; } = "";
     public string Reasoning { get; set; } = "";
     public int Confidence { get; set; }
+    public decimal OpenedQuantity { get; set; }
+    public decimal Leverage { get; set; } = 1m;
+    public MarginMode MarginMode { get; set; } = MarginMode.Isolated;
+    public decimal InitialMargin { get; set; }
+    public decimal RemainingMargin { get; set; }
+    public decimal MaintenanceMarginRate { get; set; } = 0.005m;
+    public decimal LiquidationPrice { get; set; }
+    public bool IsLeveragedPaperPosition { get; set; }
+    public decimal NetFunding { get; set; }
+    /// <summary>True when entry was filled as a passive maker limit (no spread/slippage, maker fee).</summary>
+    public bool IsMakerEntry { get; set; }
 
-    public decimal MarketValue => Quantity * CurrentPrice;
+    public decimal MarketValue => Side == TradeSide.Buy
+        ? Quantity * CurrentPrice
+        : -(Quantity * CurrentPrice);
     public decimal UnrealizedPnL => Side == TradeSide.Buy
         ? (CurrentPrice - EntryPrice) * Quantity
         : (EntryPrice - CurrentPrice) * Quantity;

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -11,6 +12,7 @@ using ThatsMyQuant.Contracts.Exceptions;
 using ThatsMyQuant.Contracts.Helpers;
 using System.Net.Http.Headers;
 using ThatsMyQuant.Application.Security;
+using ThatsMyQuant.Application.Observability;
 
 namespace ThatsMyQuant.Infrastructure.Services;
 
@@ -19,7 +21,7 @@ namespace ThatsMyQuant.Infrastructure.Services;
 /// Uses OKX REST API v5 with HMAC-SHA256 + Base64 signature scheme.
 /// Symbol normalization: BTCUSDT → BTC-USDT (OKX uses hyphenated format).
 /// </summary>
-public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateProvider, IDisposable
+public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateProvider, IVenueTradeFeeProvider, IDisposable
 {
     private readonly ILogger<OkxExecutionService> _logger;
     private readonly IConfiguration _configuration;
@@ -33,30 +35,73 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     private string ApiKey => _configuration["OKX:ApiKey"] ?? string.Empty;
     private string Passphrase => _configuration["OKX:Passphrase"] ?? string.Empty;
     private bool IsDemoMode => _configuration.GetValue<bool>("OKX:IsDemoMode");
+    private bool IsSwapMode
+    {
+        get
+        {
+            var mode = _configuration["TMQ_EXCHANGE_MODE"];
+            return !string.IsNullOrWhiteSpace(mode) &&
+                   mode.Contains("SWAP", StringComparison.OrdinalIgnoreCase);
+        }
+    }
 
     private readonly ConcurrentDictionary<string, OrderBookSnapshot> _latestOrderBooks = new();
     private readonly ISharedPortfolioStateManager _portfolio;
+    private readonly OperationalTelemetry? _telemetry;
 
     public OkxExecutionService(
         ILogger<OkxExecutionService> logger,
         HttpClient httpClient,
         IConfiguration configuration,
-        ISharedPortfolioStateManager? portfolioStateManager = null,
-        ApiVault? apiVault = null)
+        ISharedPortfolioStateManager portfolioStateManager,
+        ApiVault? apiVault = null,
+        OperationalTelemetry? operationalTelemetry = null,
+        IStreamingMarketDataService? streamingService = null)
     {
         _logger = logger;
         _httpClient = httpClient;
         _configuration = configuration;
         _apiVault = apiVault;
-        _portfolio = portfolioStateManager ?? VenuePortfolioManager.Instance;
+        _portfolio = portfolioStateManager;
+        _telemetry = operationalTelemetry;
 
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+        if (streamingService is OkxWebSocketService owss)
+        {
+            owss.OnOrderBookUpdated += snapshot =>
+            {
+                var keyInstrument = ResolveOkxInstrumentId(snapshot.Symbol);
+                _latestOrderBooks[keyInstrument] = snapshot;
+                if (!string.Equals(keyInstrument, snapshot.Symbol, StringComparison.OrdinalIgnoreCase))
+                    _latestOrderBooks[snapshot.Symbol] = snapshot;
+            };
+        }
+    }
+
+    public bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book)
+    {
+        if (_latestOrderBooks.TryGetValue(ResolveOkxInstrumentId(symbol), out var b))
+        {
+            book = b;
+            return true;
+        }
+
+        if (_latestOrderBooks.TryGetValue(symbol, out b))
+        {
+            book = b;
+            return true;
+        }
+
+        book = default;
+        return false;
     }
 
     public async Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side)
     {
-        var okxSymbol = NormalizeToOkx(symbol);
-        if (!_latestOrderBooks.TryGetValue(okxSymbol, out var book))
+        var okxSymbol = ResolveOkxInstrumentId(symbol);
+        if (!_latestOrderBooks.TryGetValue(okxSymbol, out var book) &&
+            !_latestOrderBooks.TryGetValue(symbol, out book))
         {
             return 0;
         }
@@ -66,29 +111,52 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
 
     public async Task<Trade> ExecuteOrderAsync(Signal signal)
     {
-        // Institutional Guard: Local balance check via MemoryPortfolioManager
-        var requiredNotional = signal.Quantity * signal.Price;
-        if (!_portfolio.TryReserve(Venue, "USDT", requiredNotional))
+        var clientOrderId = ExecutionOrderIdentity.EnsureClientOrderId(signal);
+
+        if (!IsSwapMode)
         {
-            _logger.LogWarning("OKX: Insufficient localized funds (MemoryPortfolio) for {Symbol}", signal.Symbol);
-            throw new InvalidOperationException("Insufficient localized funds.");
+            // Institutional Guard: Local balance check via MemoryPortfolioManager
+            var requiredNotional = signal.Quantity * signal.Price;
+            var reserved = _portfolio.TryReserveForOrder(Venue, "USDT", clientOrderId, requiredNotional);
+            if (!reserved)
+            {
+                // Backward compatibility for tests/mocks that still only configure TryReserve.
+                reserved = _portfolio.TryReserve(Venue, "USDT", requiredNotional);
+            }
+
+            if (!reserved)
+            {
+                _logger.LogWarning("OKX: Insufficient localized funds (MemoryPortfolio) for {Symbol}", signal.Symbol);
+                throw new InvalidOperationException("Insufficient localized funds.");
+            }
         }
 
-        var okxSymbol = NormalizeToOkx(signal.Symbol);
-        var clientOrderId = ExecutionOrderIdentity.EnsureClientOrderId(signal);
+        var okxSymbol = ResolveOkxInstrumentId(signal.Symbol);
         _logger.LogInformation("Executing OKX order for {Symbol} (→{OkxSymbol}) @ {Price} [DEMO:{IsDemo}]",
             signal.Symbol, okxSymbol, signal.Price, IsDemoMode);
+        var reduceOnly = signal.Metadata.TryGetValue("ReduceOnly", out var reduceOnlyRaw) &&
+                         bool.TryParse(reduceOnlyRaw, out var reduceOnlyParsed) &&
+                         reduceOnlyParsed;
+        var leverage = ResolveLeverage(signal);
+        var marginMode = ResolveMarginMode(signal);
+        var tdMode = IsSwapMode
+            ? (marginMode == MarginMode.Cross ? "cross" : "isolated")
+            : "cash";
+        var posSide = IsSwapMode ? ResolveSwapPosSide(signal.Side, reduceOnly) : null;
+        bool? reduceOnlyField = IsSwapMode ? reduceOnly : null;
 
         // OKX v5 order request body
         var orderBody = new
         {
             instId = okxSymbol,
-            tdMode = "cash",      // cash for spot
+            tdMode,
             side = signal.Side == TradeSide.Buy ? "buy" : "sell",
             ordType = "limit",
             clOrdId = clientOrderId,
             px = signal.Price.ToString("F8"),
-            sz = signal.Quantity.ToString("F8")
+            sz = signal.Quantity.ToString("F8"),
+            posSide,
+            reduceOnly = reduceOnlyField
         };
 
         var bodyJson = JsonSerializer.Serialize(orderBody);
@@ -113,6 +181,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
 
         if (!response.IsSuccessStatusCode)
         {
+            TrackHttpFailure(response);
             var error = await response.Content.ReadAsStringAsync();
             _logger.LogError("OKX execution failed: {Error}", error);
             throw new InvalidOperationException($"OKX execution failed: {error}");
@@ -146,10 +215,14 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         decimal remainingQty = signal.Quantity;
         var fillStatus = TradeStatus.Pending;
 
+        decimal fillFeeSigned = 0m;
         if (!string.IsNullOrEmpty(ordId))
         {
-            (filledQty, remainingQty, fillStatus) = await PollFillStatusAsync(ordId, okxSymbol, signal.Quantity);
+            (filledQty, remainingQty, fillStatus, fillFeeSigned) = await PollFillStatusAsync(ordId, okxSymbol, signal.Quantity);
         }
+
+        // OKX fillFee: positive = fee paid (quote); negative = rebate (cash in).
+        var feePaid = fillFeeSigned > 0m ? fillFeeSigned : 0m;
 
         return new Trade
         {
@@ -167,15 +240,44 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             LastUpdatedTime = DateTime.UtcNow,
             Status = fillStatus,
             LifecycleStatus = TradeLifecycleStatus.Accepted,
-            ExecutionMode = IsDemoMode ? "DEMO-OKX" : "REAL-OKX"
+            ExecutionMode = IsSwapMode
+                ? (IsDemoMode ? "DEMO-OKX-SWAP" : "REAL-OKX-SWAP")
+                : (IsDemoMode ? "DEMO-OKX" : "REAL-OKX"),
+            Leverage = leverage,
+            MarginMode = marginMode,
+            TotalFeesPaid = feePaid,
+            NetFunding = 0m
         };
+    }
+
+    private static decimal ResolveLeverage(Signal signal)
+    {
+        if (signal.Metadata.TryGetValue("Leverage", out var leverageRaw) &&
+            decimal.TryParse(leverageRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var leverage) &&
+            leverage > 0m)
+        {
+            return leverage;
+        }
+
+        return 1m;
+    }
+
+    private static MarginMode ResolveMarginMode(Signal signal)
+    {
+        if (signal.Metadata.TryGetValue("MarginMode", out var marginRaw) &&
+            Enum.TryParse<MarginMode>(marginRaw, true, out var marginMode))
+        {
+            return marginMode;
+        }
+
+        return MarginMode.Isolated;
     }
 
     /// <summary>
     /// Polls OKX GET /api/v5/trade/order for fill status.
     /// Max 3 attempts with 500ms delay. Returns (0, requestedQty, Pending) on any failure.
     /// </summary>
-    private async Task<(decimal FilledQty, decimal RemainingQty, TradeStatus Status)> PollFillStatusAsync(
+    private async Task<(decimal FilledQty, decimal RemainingQty, TradeStatus Status, decimal FillFeeSigned)> PollFillStatusAsync(
         string ordId,
         string instId,
         decimal requestedQty,
@@ -202,6 +304,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 var response = await _httpClient.SendAsync(request, cancellationToken);
                 if (!response.IsSuccessStatusCode)
                 {
+                    TrackHttpFailure(response);
                     _logger.LogError("OKX fill poll HTTP {Status} for ordId={OrdId}", response.StatusCode, ordId);
                     if (attempt < maxAttempts) await Task.Delay(delayMs, cancellationToken);
                     continue;
@@ -218,13 +321,14 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
 
                 var order = data[0];
                 var fillSz = ParseDecimal(order, "fillSz");
+                var fillFeeSigned = ParseDecimal(order, "fillFee");
                 var state  = order.TryGetProperty("state", out var stateEl) ? stateEl.GetString() : "live";
 
                 return state switch
                 {
-                    "filled"           => (fillSz, 0m, TradeStatus.Executed),
-                    "partially_filled" => (fillSz, requestedQty - fillSz, TradeStatus.Pending),
-                    _                  => (0m, requestedQty, TradeStatus.Pending)
+                    "filled"           => (fillSz, 0m, TradeStatus.Executed, fillFeeSigned),
+                    "partially_filled" => (fillSz, requestedQty - fillSz, TradeStatus.Pending, fillFeeSigned),
+                    _                  => (0m, requestedQty, TradeStatus.Pending, 0m)
                 };
             }
             catch (Exception ex)
@@ -234,7 +338,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             }
         }
 
-        return (0m, requestedQty, TradeStatus.Pending);
+        return (0m, requestedQty, TradeStatus.Pending, 0m);
     }
 
     public async Task<Account> GetAccountStatusAsync()
@@ -265,6 +369,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
 
         if (!response.IsSuccessStatusCode)
         {
+            TrackHttpFailure(response);
             var error = await response.Content.ReadAsStringAsync();
             throw new InvalidOperationException($"Failed to fetch OKX account status: {error}");
         }
@@ -304,7 +409,9 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     public async Task<IReadOnlyList<OpenOrderSnapshot>> GetOpenOrdersAsync(CancellationToken cancellationToken = default)
     {
         var timestamp = GetIsoTimestamp();
-        const string path = "/api/v5/trade/orders-pending?instType=SPOT";
+        var path = IsSwapMode
+            ? "/api/v5/trade/orders-pending?instType=SWAP"
+            : "/api/v5/trade/orders-pending?instType=SPOT";
         var signature = ComputeSignature(timestamp, "GET", path, string.Empty);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{path}");
@@ -320,6 +427,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         var response = await _httpClient.SendAsync(request, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
+            TrackHttpFailure(response);
             var error = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new InvalidOperationException($"Failed to fetch OKX open orders: {error}");
         }
@@ -382,6 +490,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         var response = await _httpClient.SendAsync(request);
         if (!response.IsSuccessStatusCode)
         {
+            TrackHttpFailure(response);
             var error = await response.Content.ReadAsStringAsync();
             throw new ExchangeSyncException("OKX", $"HTTP {(int)response.StatusCode}: {error}");
         }
@@ -510,6 +619,80 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     public static string NormalizeFromOkx(string okxSymbol)
         => okxSymbol.Replace("-", string.Empty);
 
+    private string ResolveOkxInstrumentId(string symbol)
+    {
+        var normalized = NormalizeToOkx(symbol);
+        if (!IsSwapMode)
+        {
+            return normalized;
+        }
+
+        return normalized.EndsWith("-SWAP", StringComparison.OrdinalIgnoreCase)
+            ? normalized
+            : $"{normalized}-SWAP";
+    }
+
+    private static string ResolveSwapPosSide(TradeSide side, bool reduceOnly)
+    {
+        if (reduceOnly)
+        {
+            return side == TradeSide.Sell ? "long" : "short";
+        }
+
+        return side == TradeSide.Buy ? "long" : "short";
+    }
+
+    /// <inheritdoc />
+    public async Task<decimal?> GetTakerCommissionPercentPerSideAsync(string symbol, CancellationToken cancellationToken = default)
+    {
+        var instId = ResolveOkxInstrumentId(symbol);
+        var instType = IsSwapMode ? "SWAP" : "SPOT";
+        var path = $"/api/v5/account/trade-fee?instType={instType}&instId={Uri.EscapeDataString(instId)}";
+        var timestamp = GetIsoTimestamp();
+        var signature = ComputeSignature(timestamp, "GET", path, string.Empty);
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{path}");
+            request.Headers.Add("OK-ACCESS-KEY", ApiKey);
+            request.Headers.Add("OK-ACCESS-SIGN", signature);
+            request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
+            request.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+            if (IsDemoMode)
+                request.Headers.Add("x-simulated-trading", "1");
+
+            var response = await _httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                TrackHttpFailure(response);
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.GetProperty("code").GetString() != "0")
+                return null;
+
+            var data = doc.RootElement.GetProperty("data");
+            if (data.GetArrayLength() == 0)
+                return null;
+
+            var row = data[0];
+            if (!row.TryGetProperty("taker", out var takerEl))
+                return null;
+
+            var ts = takerEl.ValueKind == JsonValueKind.String ? takerEl.GetString() : takerEl.ToString();
+            if (decimal.TryParse(ts, NumberStyles.Any, CultureInfo.InvariantCulture, out var rate))
+                return rate * 100m;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "OKX trade fee lookup failed for {Symbol}", symbol);
+            return null;
+        }
+    }
+
     public async Task<int> CancelAllOrdersAsync(CancellationToken cancellationToken = default)
     {
         int cancelledCount = 0;
@@ -517,7 +700,9 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         {
             // OKX v5: Get pending orders
             var timestamp = GetIsoTimestamp();
-            const string pendingPath = "/api/v5/trade/orders-pending?instType=SPOT";
+            var pendingPath = IsSwapMode
+                ? "/api/v5/trade/orders-pending?instType=SWAP"
+                : "/api/v5/trade/orders-pending?instType=SPOT";
             var signature = ComputeSignature(timestamp, "GET", pendingPath, string.Empty);
 
             using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{pendingPath}");
@@ -530,6 +715,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             var response = await _httpClient.SendAsync(request, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
+                TrackHttpFailure(response);
                 var error = await response.Content.ReadAsStringAsync(cancellationToken);
                 _logger.LogError("OKX: Failed to fetch pending orders for emergency cancel: {Error}", error);
                 return 0;
@@ -573,6 +759,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                     }
                     else
                     {
+                        TrackHttpFailure(cancelResp);
                         var cancelErr = await cancelResp.Content.ReadAsStringAsync(cancellationToken);
                         _logger.LogError("Failed to cancel OKX order {OrderId}: {Error}", ordId, cancelErr);
                     }
@@ -592,6 +779,13 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         return cancelledCount;
     }
 
+    private void TrackHttpFailure(HttpResponseMessage response)
+    {
+        if (response.IsSuccessStatusCode)
+            return;
+        _telemetry?.RecordVenueHttpFailure("okx");
+    }
+
     private static decimal ParseDecimal(JsonElement element, string propertyName, decimal fallback = 0m)
     {
         if (!element.TryGetProperty(propertyName, out var property))
@@ -599,13 +793,18 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             return fallback;
         }
 
-        return decimal.TryParse(
-            property.GetString(),
-            System.Globalization.NumberStyles.Any,
-            System.Globalization.CultureInfo.InvariantCulture,
-            out var parsed)
-            ? parsed
-            : fallback;
+        return property.ValueKind switch
+        {
+            JsonValueKind.Number => property.TryGetDecimal(out var d) ? d : fallback,
+            JsonValueKind.String => decimal.TryParse(
+                property.GetString(),
+                System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var parsed)
+                ? parsed
+                : fallback,
+            _ => fallback
+        };
     }
 
     private static DateTime ResolveOkxTimestamp(JsonElement element)

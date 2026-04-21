@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ThatsMyQuant.Contracts.Exceptions;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
@@ -47,10 +48,17 @@ public class TradeRepository : ITradeRepository
 
     public async Task AddAsync(Trade trade)
     {
-        await _db.Trades.AddAsync(trade);
-        await _db.SaveChangesAsync();
-        _cache.AddOrUpdateTrade(trade); // O(1) Ram pointer tracking
-        _riskAgent?.NotifyTradeUpdate(trade);
+        try
+        {
+            await _db.Trades.AddAsync(trade);
+            await _db.SaveChangesAsync();
+            _cache.AddOrUpdateTrade(trade); // O(1) Ram pointer tracking
+            _riskAgent?.NotifyTradeUpdate(trade);
+        }
+        catch (DbUpdateException ex) when (IsDuplicateSignalInsert(ex))
+        {
+            throw new DuplicateSignalTradeException(trade.SignalId, ex);
+        }
     }
 
     public async Task UpdateAsync(Trade trade)
@@ -59,5 +67,21 @@ public class TradeRepository : ITradeRepository
         await _db.SaveChangesAsync();
         _cache.AddOrUpdateTrade(trade); // O(1) Ram pointer tracking
         _riskAgent?.NotifyTradeUpdate(trade);
+    }
+
+    private static bool IsDuplicateSignalInsert(DbUpdateException ex)
+    {
+        return ContainsDuplicateSignalIdMarker(ex.Message) ||
+               (ex.InnerException is not null && ContainsDuplicateSignalIdMarker(ex.InnerException.Message));
+    }
+
+    private static bool ContainsDuplicateSignalIdMarker(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        return message.Contains("SignalId", StringComparison.OrdinalIgnoreCase) &&
+               (message.Contains("UNIQUE", StringComparison.OrdinalIgnoreCase) ||
+                message.Contains("duplicate", StringComparison.OrdinalIgnoreCase));
     }
 }

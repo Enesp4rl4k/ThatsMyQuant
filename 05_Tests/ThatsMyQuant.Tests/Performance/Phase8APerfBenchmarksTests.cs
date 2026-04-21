@@ -11,6 +11,7 @@ using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Infrastructure.Persistence;
 using ThatsMyQuant.Infrastructure.Repositories;
 using ThatsMyQuant.Infrastructure.Services;
+using ThatsMyQuant.Tests.TestInfrastructure;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -548,29 +549,32 @@ public sealed class Phase8APerfBenchmarksTests : IDisposable
 
     private static void BuildTestModel(string modelPath)
     {
-        var trainer = new AlphaModelTrainer(NullLogger<AlphaModelTrainer>.Instance);
-        var data = Enumerable.Range(0, 192)
-            .Select(i =>
-            {
-                var positive = i % 2 == 0;
-                var baseValue = positive ? 1.35f : -1.25f;
-
-                return new CandleMlData
+        TestModelCache.EnsureModel(modelPath, "phase8a-perf-v1", cachePath =>
+        {
+            var trainer = new AlphaModelTrainer(NullLogger<AlphaModelTrainer>.Instance);
+            var data = Enumerable.Range(0, 192)
+                .Select(i =>
                 {
-                    NextClosePrice = positive ? 1f : -1f,
-                    Features =
-                    [
-                        baseValue,
-                        baseValue * 0.82f,
-                        baseValue * 0.61f,
-                        baseValue * 0.43f,
-                        baseValue * 0.24f
-                    ]
-                };
-            })
-            .ToList();
+                    var positive = i % 2 == 0;
+                    var baseValue = positive ? 1.35f : -1.25f;
 
-        trainer.TrainAndSaveModel(data, modelPath);
+                    return new CandleMlData
+                    {
+                        NextClosePrice = positive ? 1f : -1f,
+                        Features =
+                        [
+                            baseValue,
+                            baseValue * 0.82f,
+                            baseValue * 0.61f,
+                            baseValue * 0.43f,
+                            baseValue * 0.24f
+                        ]
+                    };
+                })
+                .ToList();
+
+            trainer.TrainAndSaveModel(data, cachePath);
+        });
     }
 
     private void EnsureModelBuilt()

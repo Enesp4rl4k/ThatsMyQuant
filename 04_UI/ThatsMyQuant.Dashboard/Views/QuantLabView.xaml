@@ -1,0 +1,226 @@
+<UserControl x:Class="ThatsMyQuant.Dashboard.Views.QuantLabView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:ThatsMyQuant.Dashboard.Converters">
+    <UserControl.Resources>
+        <converters:StrategyEvidenceVisualModeEqualsToVisibilityConverter x:Key="StrategyEvidenceModeToVisLocal" />
+        <BooleanToVisibilityConverter x:Key="BoolToVisLocal" />
+    </UserControl.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Margin="0,8,0,0">
+        <StackPanel MaxWidth="1100">
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="QUANT LAB" FontSize="15" FontWeight="Black" Foreground="{StaticResource TextMain}" />
+                    <TextBlock Text="Desk-grade charts from your closed book: cumulative PnL, Monte Carlo bootstrap, edge score &amp; band mix, regime mix, plus mode-aware context (Grid / HFT / standard)."
+                               Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding StrategyEvidenceVisualCaption}" Foreground="{StaticResource Accent}" FontSize="10" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding StrategyEvidenceNarrative}" Foreground="{StaticResource TextSoft}" FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                        <TextBlock Text="Strategy (Studio)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,10,0" />
+                        <ComboBox ItemsSource="{Binding Studio.BotStrategies}"
+                                  SelectedItem="{Binding Studio.SelectedBotStrategy}"
+                                  Width="200"
+                                  Background="{StaticResource AppBg}"
+                                  Foreground="White"
+                                  BorderBrush="{StaticResource BorderColor}" />
+                        <TextBlock Text="Desk" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="16,0,8,0" />
+                        <ComboBox ItemsSource="{Binding Studio.EvidenceDeskOptions}"
+                                  SelectedItem="{Binding Studio.EvidenceDeskMode}"
+                                  Width="120"
+                                  VerticalAlignment="Center"
+                                  Background="{StaticResource AppBg}"
+                                  Foreground="White"
+                                  BorderBrush="{StaticResource BorderColor}" />
+                        <Button Content="REFRESH CHARTS"
+                                Command="{Binding RefreshStrategyEvidenceCommand}"
+                                Margin="16,0,0,0"
+                                Padding="16,8"
+                                FontSize="10"
+                                FontWeight="Black"
+                                Background="{StaticResource Accent}"
+                                Foreground="White"
+                                BorderThickness="0" />
+                    </StackPanel>
+                    <CheckBox Content="Auto-refresh Monte Carlo (~0.75s after strategy or desk change)"
+                              IsChecked="{Binding StrategyEvidenceAutoRefreshMonteCarlo}"
+                              Foreground="{StaticResource TextSoft}"
+                              FontSize="10"
+                              Margin="0,10,0,0" />
+                    <TextBlock Text="{Binding StrategyEvidenceTradeLine}" Foreground="{StaticResource TextMuted}" FontFamily="{StaticResource MonoFont}" FontSize="10" Margin="0,10,0,0" TextWrapping="Wrap" />
+                    <ProgressBar Height="3" Margin="0,8,0,0" IsIndeterminate="True" Visibility="{Binding IsStrategyEvidenceBusy, Converter={StaticResource BoolToVisLocal}}" />
+                </StackPanel>
+            </Border>
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.1*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,12,0">
+                    <StackPanel>
+                        <TextBlock Text="CUMULATIVE REALIZED PnL (SELECTED STRATEGY)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,8" />
+                        <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Height="168">
+                            <Viewbox Stretch="Uniform" HorizontalAlignment="Stretch">
+                                <Canvas Width="520" Height="140" SnapsToDevicePixels="True">
+                                    <Polyline Canvas.ZIndex="0"
+                                              Points="{Binding StrategyEvidencePnlZeroLinePoints}"
+                                              Stroke="#5C6570"
+                                              StrokeDashArray="3 3"
+                                              StrokeThickness="1" />
+                                    <Polyline Canvas.ZIndex="1"
+                                              Points="{Binding StrategyEvidenceCumulativePnlPoints}"
+                                              Stroke="{StaticResource Accent}"
+                                              StrokeThickness="2" />
+                                </Canvas>
+                            </Viewbox>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}">
+                    <StackPanel>
+                        <TextBlock Text="MONTE CARLO · FINAL EQUITY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,8" />
+                        <TextBlock Text="{Binding StrategyEvidenceMonteCarloSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,10" />
+                        <UniformGrid Columns="3" Margin="0,0,0,12">
+                            <StackPanel Margin="0,0,8,0">
+                                <TextBlock Text="MEDIAN EQUITY" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                                <TextBlock Text="{Binding StrategyEvidenceMedianEquity}" FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel Margin="0,0,8,0">
+                                <TextBlock Text="5TH PCT EQUITY" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                                <TextBlock Text="{Binding StrategyEvidenceP5Equity}" FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                            </StackPanel>
+                            <StackPanel>
+                                <TextBlock Text="99TH PCT MAX DD" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                                <TextBlock Text="{Binding StrategyEvidenceP99Drawdown}" FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Black" Foreground="{StaticResource SellColor}" Margin="0,4,0,0" />
+                            </StackPanel>
+                        </UniformGrid>
+                        <TextBlock Text="HISTOGRAM (SIMULATED TERMINAL EQUITY)" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" Margin="0,0,0,6" />
+                        <ItemsControl ItemsSource="{Binding StrategyEvidenceHistogramBars}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Width="22" Margin="0,0,4,0" VerticalAlignment="Bottom" ToolTip="{Binding Label}">
+                                        <StackPanel VerticalAlignment="Bottom">
+                                            <Border Height="{Binding BarHeight}" MinHeight="2" CornerRadius="2,2,0,0" Background="{Binding BarBrush}" VerticalAlignment="Bottom" />
+                                            <TextBlock Text="{Binding Count}" HorizontalAlignment="Center" Foreground="{StaticResource TextMuted}" FontSize="7" FontFamily="{StaticResource MonoFont}" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
+                    <StackPanel>
+                        <TextBlock Text="EDGE SCORE (CLOSED TRADES)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="20-point buckets · trades with EdgeScore &gt; 0 or a stored EdgeBand." Foreground="{StaticResource TextSoft}" FontSize="8" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <ItemsControl ItemsSource="{Binding QuantLabEdgeScoreBars}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Width="26" Margin="0,0,4,0" VerticalAlignment="Bottom" ToolTip="{Binding Label}">
+                                        <StackPanel VerticalAlignment="Bottom">
+                                            <Border Height="{Binding BarHeight}" MinHeight="2" CornerRadius="2,2,0,0" Background="{Binding BarBrush}" VerticalAlignment="Bottom" />
+                                            <TextBlock Text="{Binding Count}" HorizontalAlignment="Center" Foreground="{StaticResource TextMuted}" FontSize="7" FontFamily="{StaticResource MonoFont}" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
+                    <StackPanel>
+                        <TextBlock Text="EDGE BAND (TOP)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="Up to 10 bands by trade count." Foreground="{StaticResource TextSoft}" FontSize="8" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <ItemsControl ItemsSource="{Binding QuantLabEdgeBandBars}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Width="36" Margin="0,0,4,0" VerticalAlignment="Bottom" ToolTip="{Binding Label}">
+                                        <StackPanel VerticalAlignment="Bottom">
+                                            <Border Height="{Binding BarHeight}" MinHeight="2" CornerRadius="2,2,0,0" Background="{Binding BarBrush}" VerticalAlignment="Bottom" />
+                                            <TextBlock Text="{Binding Count}" HorizontalAlignment="Center" Foreground="{StaticResource TextMuted}" FontSize="7" FontFamily="{StaticResource MonoFont}" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2" Style="{StaticResource TerminalCardStyle}">
+                    <StackPanel>
+                        <TextBlock Text="REGIME TAG" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="All closed trades on this strategy slice." Foreground="{StaticResource TextSoft}" FontSize="8" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <ItemsControl ItemsSource="{Binding QuantLabRegimeBars}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Width="40" Margin="0,0,4,0" VerticalAlignment="Bottom" ToolTip="{Binding Label}">
+                                        <StackPanel VerticalAlignment="Bottom">
+                                            <Border Height="{Binding BarHeight}" MinHeight="2" CornerRadius="2,2,0,0" Background="{Binding BarBrush}" VerticalAlignment="Bottom" />
+                                            <TextBlock Text="{Binding Count}" HorizontalAlignment="Center" Foreground="{StaticResource TextMuted}" FontSize="7" FontFamily="{StaticResource MonoFont}" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0"
+                    Visibility="{Binding StrategyEvidenceVisualMode, Converter={StaticResource StrategyEvidenceModeToVisLocal}, ConverterParameter=Grid}">
+                <StackPanel>
+                    <TextBlock Text="GRID · INVENTORY / STREAK CONTEXT" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding StrategyEvidenceGridStreakLine}" Foreground="{StaticResource TextSoft}" FontSize="11" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0"
+                    Visibility="{Binding StrategyEvidenceVisualMode, Converter={StaticResource StrategyEvidenceModeToVisLocal}, ConverterParameter=Hft}">
+                <StackPanel>
+                    <TextBlock Text="HFT · EXECUTION LATENCY (CLOSED BOOK)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding StrategyEvidenceHftLatencyLine}" Foreground="{StaticResource TextSoft}" FontSize="11" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0"
+                    Visibility="{Binding StrategyEvidenceVisualMode, Converter={StaticResource StrategyEvidenceModeToVisLocal}, ConverterParameter=Standard}">
+                <StackPanel>
+                    <TextBlock Text="BOOK · WIN RATE &amp; MEAN TRADE" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding StrategyEvidenceStandardInsightLine}" Foreground="{StaticResource TextSoft}" FontSize="11" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

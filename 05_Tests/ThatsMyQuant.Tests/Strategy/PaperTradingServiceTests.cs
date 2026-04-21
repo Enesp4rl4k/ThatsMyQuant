@@ -21,7 +21,7 @@ public class PaperTradingServiceTests
             var marketData = Substitute.For<IMarketDataService>();
             var logger = Substitute.For<ILogger<PaperTradingService>>();
 
-            marketData.GetCandlesAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>())
+            marketData.GetCandlesAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<string>())
                 .Returns(CreateCandles(100m, 104.5m));
 
             var service = new PaperTradingService(

@@ -23,6 +23,7 @@ public partial class MainViewModel
 
         if (closedTrades.Count == 0)
         {
+            ApplyPortfolioWindowCosts(Array.Empty<Trade>());
             SetEmptyGrowthState(baseline);
             return;
         }
@@ -33,11 +34,23 @@ public partial class MainViewModel
         var tradesInWindow = closedTrades.Where(t => t.ExitTime!.Value >= windowStart).ToList();
         if (tradesInWindow.Count == 0)
         {
+            ApplyPortfolioWindowCosts(Array.Empty<Trade>());
             SetEmptyWindowGrowthState(baseline, summary);
             return;
         }
 
+        ApplyPortfolioWindowCosts(tradesInWindow);
         ProcessAndApplyGrowth(tradesInWindow, labelSelector, baseline);
+    }
+
+    private void ApplyPortfolioWindowCosts(IReadOnlyList<Trade> tradesInWindow)
+    {
+        var fees = tradesInWindow.Sum(t => t.TotalFeesPaid);
+        var funding = tradesInWindow.Sum(t => t.NetFunding);
+        PortfolioView.PortfolioWindowFeesPaid = fees;
+        PortfolioView.PortfolioWindowNetFunding = funding;
+        PortfolioView.PortfolioWindowFeesBrush = fees > 0m ? RedBrush : GrayBrush;
+        PortfolioView.PortfolioWindowFundingBrush = funding >= 0m ? GreenBrush : RedBrush;
     }
 
     private void UpdatePortfolioStageUi(List<Trade> closedTrades)
@@ -164,8 +177,8 @@ public partial class MainViewModel
         var height = 220d;
         var points = new PointCollection();
 
-        PortfolioXAxisLabels.Clear();
-        PortfolioYAxisLabels.Clear();
+        PortfolioView.PortfolioXAxisLabels.Clear();
+        PortfolioView.PortfolioYAxisLabels.Clear();
 
         for (var i = 0; i < values.Count; i++)
         {
@@ -173,7 +186,7 @@ public partial class MainViewModel
             var y = height - ((values[i] - min) / range * height);
             points.Add(new Point(x, y));
 
-            PortfolioXAxisLabels.Add(new ChartAxisLabel
+            PortfolioView.PortfolioXAxisLabels.Add(new SubViewModels.ChartAxisLabel
             {
                 Text = labels[i],
                 X = x - 8,
@@ -185,7 +198,7 @@ public partial class MainViewModel
         {
             var value = max - ((max - min) * step / 4d);
             var y = height * step / 4d;
-            PortfolioYAxisLabels.Add(new ChartAxisLabel
+            PortfolioView.PortfolioYAxisLabels.Add(new SubViewModels.ChartAxisLabel
             {
                 Text = value.ToString("N0"),
                 X = width + 16,
@@ -193,7 +206,7 @@ public partial class MainViewModel
             });
         }
 
-        PortfolioGrowthPoints = points;
+        PortfolioView.PortfolioGrowthPoints = points;
     }
 
     private void PopulateChartScales(List<Candle> candles, decimal min, decimal max, double canvasWidth, double canvasHeight)

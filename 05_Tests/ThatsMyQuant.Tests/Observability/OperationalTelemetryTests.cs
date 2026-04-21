@@ -18,6 +18,8 @@ public class OperationalTelemetryTests
         sut.RecordTradeFailed("XRPUSDT");
         sut.RecordDeadLetter("ADAUSDT");
         sut.RecordLifecycleSupervision(3);
+        sut.RecordEntrySlippagePercent(0.5m, "BTCUSDT");
+        sut.RecordEntrySlippagePercent(-1.5m, "BTCUSDT");
 
         var snapshot = sut.GetSnapshot();
 
@@ -30,5 +32,8 @@ public class OperationalTelemetryTests
         snapshot.LifecycleSupervisionPasses.Should().Be(3);
         snapshot.AverageExecutionLatencyMs.Should().Be(100);
         snapshot.LastExecutionLatencyMs.Should().Be(75);
+        snapshot.EntrySlippageSamples.Should().Be(2);
+        snapshot.AverageAbsEntrySlippagePercent.Should().Be(1);
+        snapshot.LastAbsEntrySlippagePercent.Should().Be(1.5);
     }
 }

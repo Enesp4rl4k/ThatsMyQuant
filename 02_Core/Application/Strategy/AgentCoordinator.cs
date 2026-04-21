@@ -183,13 +183,13 @@ public class AgentCoordinator : IAgentCoordinator
 
             if (!result.Approved)
             {
-                _logger.LogWarning("RiskGuard [{GuardId}] vetoed {Symbol}: {Reason}",
+                _logger.LogDebug("RiskGuard [{GuardId}] vetoed {Symbol}: {Reason}",
                     guard.GuardId, signal.Symbol, result.Reason);
                 return result;
             }
 
             if (result.SizeMultiplier < 1m)
-                _logger.LogInformation("RiskGuard [{GuardId}] scaled size to {Mult:P0} for {Symbol}",
+                _logger.LogDebug("RiskGuard [{GuardId}] scaled size to {Mult:P0} for {Symbol}",
                     guard.GuardId, result.SizeMultiplier, signal.Symbol);
         }
 

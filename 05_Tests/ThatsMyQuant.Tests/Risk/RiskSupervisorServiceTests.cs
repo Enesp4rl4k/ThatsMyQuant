@@ -15,6 +15,8 @@ namespace ThatsMyQuant.Tests.Risk;
 
 public class RiskSupervisorServiceTests
 {
+    /// <summary>Fast loop for tests — production default is 1s via Risk:Supervisor:MonitoringIntervalMs.</summary>
+    private static readonly TimeSpan TestMonitoringInterval = TimeSpan.FromMilliseconds(50);
     // ── generators ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -117,11 +119,10 @@ public class RiskSupervisorServiceTests
             var exchange = Substitute.For<IExchangeService>();
             var logger = NullLogger<RiskSupervisorService>.Instance;
 
-            var svc = new RiskSupervisorService(logger, exchange, portfolio, maxDrawdownPercent: 99m);
+            var svc = new RiskSupervisorService(logger, exchange, portfolio, maxDrawdownPercent: 99m, monitoringInterval: TestMonitoringInterval);
 
             // Run the service for just long enough to complete the desired iterations,
-            // then cancel. Each loop iteration has a 1-second Task.Delay, so we use a
-            // very short delay and rely on cancellation to stop the loop cleanly.
+            // then cancel. Loop uses TestMonitoringInterval (50ms) in this test class.
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(iterations * 50 + 200));
 
             // ExecuteAsync must complete without throwing — the loop must survive all exceptions.
@@ -153,7 +154,7 @@ public class RiskSupervisorServiceTests
         var exchange = Substitute.For<IExchangeService>();
         exchange.CancelAllOrdersAsync().Returns(Task.FromResult(0));
         var svc = new RiskSupervisorService(
-            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdown);
+            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdown, TestMonitoringInterval);
         return (svc, exchange, portfolio);
     }
 
@@ -201,13 +202,12 @@ public class RiskSupervisorServiceTests
         portfolio.GetAvailableBalance("USDT").Returns(_ => callCount++ == 0 ? 1000m : 800m);
 
         var svc = new RiskSupervisorService(
-            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 5m);
+            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 5m, TestMonitoringInterval);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         await svc.StartAsync(cts.Token);
 
-        // Give the loop time to fire at least once (1-second delay + buffer)
-        await Task.Delay(1500);
+        await Task.Delay(200);
         await cts.CancelAsync();
         await svc.StopAsync(CancellationToken.None);
 
@@ -226,11 +226,11 @@ public class RiskSupervisorServiceTests
         portfolio.GetAvailableBalance("USDT").Returns(0m);
 
         var svc = new RiskSupervisorService(
-            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 5m);
+            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 5m, TestMonitoringInterval);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         await svc.StartAsync(cts.Token);
-        await Task.Delay(1500);
+        await Task.Delay(200);
         await cts.CancelAsync();
         await svc.StopAsync(CancellationToken.None);
 
@@ -250,11 +250,11 @@ public class RiskSupervisorServiceTests
         portfolio.GetAvailableBalance("USDT").Returns(_ => callCount++ == 0 ? 500m : 600m);
 
         var svc = new RiskSupervisorService(
-            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 5m);
+            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 5m, TestMonitoringInterval);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         await svc.StartAsync(cts.Token);
-        await Task.Delay(1500);
+        await Task.Delay(200);
         await cts.CancelAsync();
         await svc.StopAsync(CancellationToken.None);
 

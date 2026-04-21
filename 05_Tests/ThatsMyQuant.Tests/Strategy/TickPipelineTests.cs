@@ -2,6 +2,8 @@ using FluentAssertions;
 using MediatR;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using NSubstitute.Exceptions;
+using System.Diagnostics;
 using ThatsMyQuant.Application.HftInfrastructure;
 using ThatsMyQuant.Application.MachineLearning;
 using ThatsMyQuant.Application.Strategy;
@@ -14,6 +16,28 @@ namespace ThatsMyQuant.Tests.Strategy;
 
 public class TickPipelineTests
 {
+    private static async Task WaitForAssertionAsync(Func<Task> assertion, int timeoutMs = 3000, int pollMs = 50)
+    {
+        var timeout = TimeSpan.FromMilliseconds(timeoutMs);
+        var stopwatch = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                await assertion();
+                return;
+            }
+            catch (ReceivedCallsException) when (stopwatch.Elapsed < timeout)
+            {
+                await Task.Delay(Math.Min(pollMs, 25));
+            }
+            catch (OperationCanceledException) when (stopwatch.Elapsed < timeout)
+            {
+                await Task.Delay(Math.Min(pollMs, 25));
+            }
+        }
+    }
+
     private static DeadMansSwitch CreateDeadMansSwitch(IAuditLogger auditLogger)
     {
         var portfolio = Substitute.For<IPortfolioManager>();
@@ -54,9 +78,8 @@ public class TickPipelineTests
         var tick = new MarketTick("BTCUSDT", 65000m, 0.25m, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), false);
         streamingService.OnTickReceived += Raise.Event<Action<MarketTick>>(tick);
 
-        await Task.Delay(150);
-
-        await tickLogger.Received(1).LogTickAsync(Arg.Is<MarketTick>(logged => logged.Symbol == "BTCUSDT"));
+        await WaitForAssertionAsync(async () => await tickLogger.Received(1).LogTickAsync(
+            Arg.Is<MarketTick>(logged => logged.Symbol == "BTCUSDT")));
 
         heartbeatMonitor.AuditConnection();
         deadMansSwitch.IsTriggered.Should().BeFalse();
@@ -91,13 +114,11 @@ public class TickPipelineTests
 
         streamingService.OnOrderBookUpdated += Raise.Event<Action<OrderBookSnapshot>>(orderBook);
 
-        await Task.Delay(150);
-
-        await mediator.Received(1).Send(
+        await WaitForAssertionAsync(() => mediator.Received(1).Send(
             Arg.Is<ProcessSignalCommand>(command =>
                 command.Signal.Symbol == "BTCUSDT" &&
                 command.Signal.BestBid > 0 &&
                 command.Signal.BestAsk > 0),
-            Arg.Any<CancellationToken>());
+            Arg.Any<CancellationToken>()));
     }
 }

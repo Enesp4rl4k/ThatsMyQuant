@@ -25,11 +25,11 @@ public class MainViewModelTests
         await viewModel.SubmitPromptCommand.ExecuteAsync(null);
 
         viewModel.SelectedMarket.Should().Be("Crypto");
-        viewModel.SelectedSymbol.Should().Be("BTC-USD");
+        viewModel.SelectedSymbol.Should().Be("BTCUSDT");
         viewModel.SelectedRiskProfile.Should().Be("Aggressive");
         viewModel.SelectedTimeframe.Should().Be("1m");
         viewModel.PlainEnglishTranslation.Should().Contain("aggressively");
-        viewModel.PlainEnglishTranslation.Should().Contain("BTC-USD");
+        viewModel.PlainEnglishTranslation.Should().Contain("BTCUSDT");
     }
 
     [Fact]

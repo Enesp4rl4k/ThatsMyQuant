@@ -20,20 +20,23 @@ public partial class MainViewModel
             InvokeOnUi(() =>
             {
                 QueuedCount = counts.GetValueOrDefault(TradeStatus.Queued, 0);
+                ProcessingCount = counts.GetValueOrDefault(TradeStatus.Processing, 0);
                 ExecutedCount = counts.GetValueOrDefault(TradeStatus.Executed, 0);
                 FailedCount = counts.GetValueOrDefault(TradeStatus.Failed, 0);
                 DeadLetterCount = counts.GetValueOrDefault(TradeStatus.DeadLetter, 0);
+                var inFlightCount = QueuedCount + ProcessingCount;
 
-                if (QueuedCount > 0 || ExecutedCount > 0)
+                if (inFlightCount > 0 || ExecutedCount > 0)
                 {
-                    AddSystemLog($"TELEMETRY: Signals Queued: {QueuedCount}, Executed: {ExecutedCount}");
+                    AddSystemLog($"TELEMETRY: Signals Queued: {QueuedCount}, Processing: {ProcessingCount}, Executed: {ExecutedCount}");
                 }
 
                 if (DeadLetterCount > 0) QueueHealth = "Critical (Dead-Letter)";
-                else if (QueuedCount > 5) QueueHealth = "Congested";
+                else if (inFlightCount > 5) QueueHealth = "Congested";
                 else QueueHealth = "Optimal";
 
                 UpdateHftWorkspace();
+                RefreshOpsStripExecutionLine();
             });
         }
         catch (Exception ex)

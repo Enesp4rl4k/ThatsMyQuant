@@ -53,12 +53,12 @@ public sealed class KellyPositionSizerAgent : IRiskGuardAgent
                 $"Negative expectancy (Kelly={fullKelly:F2})"));
         }
 
-        // 0.5x fractional Kelly capped at 20% position
-        var halfKelly = fullKelly * 0.5;
-        var finalFraction = (decimal)Math.Min(halfKelly, 0.20);
+        var fractionalKelly = fullKelly * FractionalKelly;
+        var finalFraction = (decimal)Math.Min(fractionalKelly, MaxPositionFraction);
 
         // SizeMultiplier is relative to the initial decision size
-        var multiplier = finalFraction / decision.PositionSizePercent;
+        var baseFraction = decision.PositionSizePercent > 0m ? decision.PositionSizePercent : finalFraction;
+        var multiplier = baseFraction > 0m ? finalFraction / baseFraction : 0m;
 
         return Task.FromResult(RiskGuardResult.Pass(GuardId, Math.Clamp(multiplier, 0.0m, 1.0m)));
     }

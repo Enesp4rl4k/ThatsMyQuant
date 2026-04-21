@@ -14,12 +14,12 @@ internal static class SignalPersistenceBatchWriter
     private const string UpsertSql = """
         INSERT INTO Signals (
             Id, Source, Symbol, Side, Price, Status, RetryCount, Quantity, Confidence, Reasoning,
-            StrategyTag, RegimeTag, MarketType, Exchange, Timestamp, Volume24h, OrderFlowImbalance,
+            StrategyTag, RegimeTag, MarketType, Exchange, Timestamp, ClaimedAtUtc, ClaimedBy, Volume24h, OrderFlowImbalance,
             BestBid, BestAsk, WallAgeMs, ExecutionAction, PriceActionSignal, ReasonFlags, Metadata
         )
         VALUES (
             $Id, $Source, $Symbol, $Side, $Price, $Status, $RetryCount, $Quantity, $Confidence, $Reasoning,
-            $StrategyTag, $RegimeTag, $MarketType, $Exchange, $Timestamp, $Volume24h, $OrderFlowImbalance,
+            $StrategyTag, $RegimeTag, $MarketType, $Exchange, $Timestamp, $ClaimedAtUtc, $ClaimedBy, $Volume24h, $OrderFlowImbalance,
             $BestBid, $BestAsk, $WallAgeMs, $ExecutionAction, $PriceActionSignal, $ReasonFlags, $Metadata
         )
         ON CONFLICT(Id) DO UPDATE SET
@@ -37,6 +37,8 @@ internal static class SignalPersistenceBatchWriter
             MarketType = excluded.MarketType,
             Exchange = excluded.Exchange,
             Timestamp = excluded.Timestamp,
+            ClaimedAtUtc = excluded.ClaimedAtUtc,
+            ClaimedBy = excluded.ClaimedBy,
             Volume24h = excluded.Volume24h,
             OrderFlowImbalance = excluded.OrderFlowImbalance,
             BestBid = excluded.BestBid,
@@ -92,6 +94,8 @@ internal static class SignalPersistenceBatchWriter
             MarketType = signal.MarketType,
             Exchange = signal.Exchange,
             Timestamp = signal.Timestamp,
+            ClaimedAtUtc = signal.ClaimedAtUtc,
+            ClaimedBy = signal.ClaimedBy,
             Volume24h = signal.Volume24h,
             OrderFlowImbalance = signal.OrderFlowImbalance,
             BestBid = signal.BestBid,
@@ -127,6 +131,8 @@ internal static class SignalPersistenceBatchWriter
         AddParameter(command, "$MarketType");
         AddParameter(command, "$Exchange");
         AddParameter(command, "$Timestamp");
+        AddParameter(command, "$ClaimedAtUtc");
+        AddParameter(command, "$ClaimedBy");
         AddParameter(command, "$Volume24h");
         AddParameter(command, "$OrderFlowImbalance");
         AddParameter(command, "$BestBid");
@@ -157,6 +163,8 @@ internal static class SignalPersistenceBatchWriter
         SetParameter(command, "$MarketType", (int)signal.MarketType);
         SetParameter(command, "$Exchange", signal.Exchange);
         SetParameter(command, "$Timestamp", signal.Timestamp);
+        SetParameter(command, "$ClaimedAtUtc", signal.ClaimedAtUtc);
+        SetParameter(command, "$ClaimedBy", signal.ClaimedBy);
         SetParameter(command, "$Volume24h", signal.Volume24h);
         SetParameter(command, "$OrderFlowImbalance", signal.OrderFlowImbalance);
         SetParameter(command, "$BestBid", signal.BestBid);

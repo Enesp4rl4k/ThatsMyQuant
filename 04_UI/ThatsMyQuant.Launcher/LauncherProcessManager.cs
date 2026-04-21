@@ -11,6 +11,7 @@ public sealed class LauncherProcessManager : IDisposable
     private readonly string? _bundleRoot;
     private readonly HttpClient _httpClient;
     private readonly Dictionary<string, ManagedProcess> _processes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _sync = new();
 
     public LauncherProcessManager(string workspaceRoot, string? bundleRoot)
     {
@@ -24,10 +25,24 @@ public sealed class LauncherProcessManager : IDisposable
 
     public event Action<string>? OutputReceived;
 
-    public IReadOnlyCollection<string> RunningKeys => _processes.Keys;
+    public IReadOnlyCollection<string> RunningKeys
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _processes.Keys.ToArray();
+            }
+        }
+    }
 
     public bool IsRunning(string displayName)
-        => _processes.TryGetValue(displayName, out var process) && !process.Process.HasExited;
+    {
+        lock (_sync)
+        {
+            return _processes.TryGetValue(displayName, out var process) && !process.Process.HasExited;
+        }
+    }
 
     public async Task StartAsync(LauncherServiceDefinition definition, CancellationToken cancellationToken = default)
     {
@@ -55,7 +70,10 @@ public sealed class LauncherProcessManager : IDisposable
         process.Exited += (_, _) =>
         {
             OutputReceived?.Invoke($"[{definition.DisplayName}] process exited with code {process.ExitCode}.");
-            _processes.Remove(definition.DisplayName);
+            lock (_sync)
+            {
+                _processes.Remove(definition.DisplayName);
+            }
             process.Dispose();
         };
 
@@ -70,7 +88,10 @@ public sealed class LauncherProcessManager : IDisposable
             process.BeginErrorReadLine();
         }
 
-        _processes[definition.DisplayName] = new ManagedProcess(definition, process);
+        lock (_sync)
+        {
+            _processes[definition.DisplayName] = new ManagedProcess(definition, process);
+        }
         OutputReceived?.Invoke($"[{definition.DisplayName}] started.");
 
         if (!string.IsNullOrWhiteSpace(definition.HealthUrl))
@@ -81,9 +102,13 @@ public sealed class LauncherProcessManager : IDisposable
 
     public async Task StopAsync(string displayName, CancellationToken cancellationToken = default)
     {
-        if (!_processes.TryGetValue(displayName, out var managed))
+        ManagedProcess? managed;
+        lock (_sync)
         {
-            return;
+            if (!_processes.TryGetValue(displayName, out managed))
+            {
+                return;
+            }
         }
 
         var process = managed.Process;
@@ -113,7 +138,10 @@ public sealed class LauncherProcessManager : IDisposable
         }
         finally
         {
-            _processes.Remove(displayName);
+            lock (_sync)
+            {
+                _processes.Remove(displayName);
+            }
             process.Dispose();
             OutputReceived?.Invoke($"[{displayName}] stopped.");
         }
@@ -121,7 +149,13 @@ public sealed class LauncherProcessManager : IDisposable
 
     public async Task StopAllAsync(CancellationToken cancellationToken = default)
     {
-        foreach (var displayName in _processes.Keys.ToArray().Reverse())
+        string[] running;
+        lock (_sync)
+        {
+            running = _processes.Keys.ToArray();
+        }
+
+        foreach (var displayName in running.Reverse())
         {
             await StopAsync(displayName, cancellationToken);
         }
@@ -223,11 +257,17 @@ public sealed class LauncherProcessManager : IDisposable
     public void Dispose()
     {
         _httpClient.Dispose();
-        foreach (var process in _processes.Values)
+        ManagedProcess[] running;
+        lock (_sync)
+        {
+            running = _processes.Values.ToArray();
+            _processes.Clear();
+        }
+
+        foreach (var process in running)
         {
             process.Process.Dispose();
         }
-        _processes.Clear();
     }
 
     private sealed record ManagedProcess(LauncherServiceDefinition Definition, Process Process);

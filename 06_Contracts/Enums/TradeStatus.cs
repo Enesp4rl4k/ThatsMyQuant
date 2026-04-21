@@ -4,6 +4,7 @@ public enum TradeStatus
 {
     Pending,
     Queued,
+    Processing,
     Executed,
     Rejected,
     Failed,

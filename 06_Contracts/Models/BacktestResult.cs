@@ -47,6 +47,11 @@ public record BacktestResult
     public DateTime StartDate { get; init; }
     public DateTime EndDate { get; init; }
     public string Reasoning { get; init; } = "";
+    public DecisionCoverageFlags CoverageFlags { get; init; } = DecisionCoverageFlags.None;
+    public string CoverageSummary { get; init; } = "";
+    public Dictionary<string, int> EntryRejectReasons { get; init; } = new();
+    public bool InferenceModelAvailable { get; init; }
+    public bool InferencePredictionValid { get; init; }
 }
 
 public record BacktestTradeResult
@@ -66,4 +71,10 @@ public record BacktestTradeResult
     public int Confidence { get; init; }
     public string ExitReason { get; init; } = ""; // SL, TP, TrailingSL, Signal
     public string Reasoning { get; init; } = "";
+
+    /// <summary>Round-trip fees charged for this trade in the simulation.</summary>
+    public decimal TotalFeesPaid { get; init; }
+
+    /// <summary>Net funding (perp); spot-style engines leave this at zero.</summary>
+    public decimal NetFunding { get; init; }
 }

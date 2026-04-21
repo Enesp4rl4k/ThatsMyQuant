@@ -132,4 +132,55 @@ public class TradeExecutionSyncServiceTests
             trade.RemainingQuantity == 0m &&
             trade.EntryPrice == 101.2m));
     }
+
+    [Fact]
+    public async Task ApplyExecutionReportAsync_SellFill_ShouldSetCloseTimestampsAndRealizedPnl()
+    {
+        var tradeRepository = Substitute.For<ITradeRepository>();
+        var logger = Substitute.For<ILogger<TradeExecutionSyncService>>();
+        var signalId = Guid.NewGuid();
+        var ts = DateTime.UtcNow;
+        Trade? updatedTrade = null;
+        tradeRepository.When(x => x.UpdateAsync(Arg.Any<Trade>()))
+            .Do(callInfo => updatedTrade = callInfo.Arg<Trade>());
+        tradeRepository.GetBySignalIdAsync(signalId).Returns(new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signalId,
+            Symbol = "BTCUSDT",
+            Side = TradeSide.Sell,
+            EntryPrice = 110m,
+            RequestedQuantity = 1m,
+            RemainingQuantity = 1m,
+            Status = TradeStatus.Pending,
+            LifecycleStatus = TradeLifecycleStatus.Accepted
+        });
+
+        var sut = new TradeExecutionSyncService(tradeRepository, logger);
+
+        var applied = await sut.ApplyExecutionReportAsync(new ExecutionReport(
+            "BTCUSDT",
+            ExecutionOrderIdentity.CreateClientOrderId(signalId),
+            "12345",
+            1m,
+            0m,
+            100m,
+            100m,
+            1m,
+            "FILLED",
+            42,
+            ts));
+
+        applied.Should().BeTrue();
+        await tradeRepository.Received(1).UpdateAsync(Arg.Any<Trade>());
+        updatedTrade.Should().NotBeNull();
+        updatedTrade!.SignalId.Should().Be(signalId);
+        updatedTrade.Status.Should().Be(TradeStatus.Executed);
+        updatedTrade.LifecycleStatus.Should().Be(TradeLifecycleStatus.Closed);
+        updatedTrade.ExitTime.Should().NotBeNull();
+        updatedTrade.AverageExitPrice.Should().Be(100m);
+        updatedTrade.ClosedQuantity.Should().Be(1m);
+        updatedTrade.ExecutionLatencyMs.Should().Be(42);
+        updatedTrade.RealisedPnL.Should().Be(10m);
+    }
 }

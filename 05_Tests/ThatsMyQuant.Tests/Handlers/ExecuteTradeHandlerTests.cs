@@ -1,13 +1,16 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
 using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Contracts.Exceptions;
 using ThatsMyQuant.Application.Handlers;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
+using ThatsMyQuant.Contracts.Options;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Handlers;
@@ -50,7 +53,13 @@ public class ExecuteTradeHandlerTests
             _exchangeResolver,
             new MarketExecutionProfileService());
 
-        _handler = new ExecuteTradeHandler(_logger, _tradeRepository, _circuitBreaker, _positionSupervisor, _adaptiveExecutionOrchestrator);
+        _handler = new ExecuteTradeHandler(
+            _logger,
+            _tradeRepository,
+            _circuitBreaker,
+            _positionSupervisor,
+            _adaptiveExecutionOrchestrator,
+            Options.Create(new OrderBookExecutionOptions()));
     }
 
 
@@ -139,6 +148,57 @@ public class ExecuteTradeHandlerTests
         result.RemainingQuantity.Should().Be(1.5m);
         result.RequestedQuantity.Should().Be(1.5m);
         result.PositionSizePercent.Should().Be(0.03m);
+    }
+
+    [Fact]
+    public async Task Handle_SuccessfulExecution_ShouldPersistProfitLeakMetadata()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Quantity = 1m,
+            Source = "Manual"
+        };
+        signal.Metadata["ProfitLeakAuditSummary"] = "Exit policy leak is soft but persistent.";
+        signal.Metadata["ProfitLeakWorstBucketLabel"] = "ExitPolicy";
+        signal.Metadata["ProfitLeakWorstBucketBeforeLiveChange"] = "ExitPolicy: EV -12.50, PF 0.84, WR 40.0%, n=5";
+        signal.Metadata["ProfitLeakWorstBucketAfterLiveChange"] = "Reduced to 0.82x after live change. ExitPolicy: EV -12.50, PF 0.84, WR 40.0%, n=5";
+        signal.Metadata["ProfitLeakAuditSizeMultiplier"] = "0.82";
+        signal.Metadata["ProfitLeakExactNetExpectancy"] = "-4.50";
+        signal.Metadata["ProfitLeakExitPolicyNetExpectancy"] = "-12.50";
+        signal.Metadata["ProfitLeakRegimeNetExpectancy"] = "-6.75";
+        signal.Metadata["ProfitLeakVenueNetExpectancy"] = "-2.10";
+        signal.Metadata["ProfitLeakReducedSizeNetExpectancy"] = "-9.30";
+        signal.Metadata["ProfitLeakReducedSizeNoise"] = "true";
+        signal.Metadata["ProfitLeakLoserClusterRate"] = "0.67";
+        signal.Metadata["ProfitLeakDominantLosingExitPolicy"] = "TrendRunner";
+
+        var expectedTrade = new Trade
+        {
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            Side = signal.Side,
+            EntryPrice = 100.2m,
+            Quantity = 1m,
+            EntryTime = DateTime.UtcNow,
+            Status = TradeStatus.Executed
+        };
+
+        _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>()).Returns(expectedTrade);
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.ProfitLeakWorstBucketLabel.Should().Be("ExitPolicy");
+        result.ProfitLeakWorstBucketBeforeLiveChange.Should().Contain("ExitPolicy");
+        result.ProfitLeakWorstBucketAfterLiveChange.Should().Contain("Reduced to 0.82x");
+        result.ProfitLeakAuditSizeMultiplier.Should().Be(0.82m);
+        result.ProfitLeakExitPolicyNetExpectancy.Should().Be(-12.50m);
+        result.ProfitLeakReducedSizeNoise.Should().BeTrue();
+        result.ProfitLeakLoserClusterRate.Should().Be(0.67m);
+        result.ProfitLeakDominantLosingExitPolicy.Should().Be("TrendRunner");
     }
 
     [Fact]
@@ -726,13 +786,59 @@ public class ExecuteTradeHandlerTests
     }
 
     [Fact]
+    public async Task Handle_WhenConcurrentInsertLosesRace_ShouldReturnExistingTradeAndSkipVenue()
+    {
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            Source = "Manual"
+        };
+
+        var existingTrade = new Trade
+        {
+            Id = Guid.NewGuid(),
+            SignalId = signal.Id,
+            Symbol = signal.Symbol,
+            Side = signal.Side,
+            EntryPrice = 100m,
+            Quantity = 1m,
+            Status = TradeStatus.Executed,
+            LifecycleStatus = TradeLifecycleStatus.Active,
+            EntryTime = DateTime.UtcNow
+        };
+
+        _tradeRepository.GetBySignalIdAsync(signal.Id)
+            .Returns(
+                Task.FromResult<Trade?>(null),
+                Task.FromResult<Trade?>(existingTrade));
+        _tradeRepository.AddAsync(Arg.Any<Trade>())
+            .ThrowsAsync(new DuplicateSignalTradeException(signal.Id));
+
+        var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.Should().BeSameAs(existingTrade);
+        await _exchangeService.DidNotReceive().ExecuteOrderAsync(Arg.Any<Signal>());
+        await _tradeRepository.Received(1).AddAsync(Arg.Any<Trade>());
+        await _tradeRepository.DidNotReceive().UpdateAsync(Arg.Any<Trade>());
+    }
+
+    [Fact]
     public async Task Handle_RepeatedExchangeFailures_ShouldTripCircuitBreaker()
     {
         var strictCircuitBreaker = new CircuitBreakerService(
             _circuitBreakerLogger,
             _portfolio,
             maxConsecutiveErrors: 3);
-        var strictHandler = new ExecuteTradeHandler(_logger, _tradeRepository, strictCircuitBreaker, _positionSupervisor, _adaptiveExecutionOrchestrator);
+        var strictHandler = new ExecuteTradeHandler(
+            _logger,
+            _tradeRepository,
+            strictCircuitBreaker,
+            _positionSupervisor,
+            _adaptiveExecutionOrchestrator,
+            Options.Create(new OrderBookExecutionOptions()));
 
         _exchangeService.ExecuteOrderAsync(Arg.Any<Signal>())
             .ThrowsAsync(new Exception("Venue rejected request"));

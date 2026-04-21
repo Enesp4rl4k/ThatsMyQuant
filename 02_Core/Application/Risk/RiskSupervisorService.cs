@@ -18,6 +18,7 @@ public sealed class RiskSupervisorService : BackgroundService
     private readonly IPortfolioManager _portfolio;
 
     private readonly decimal _maxDrawdownPercent;
+    private readonly TimeSpan _monitoringInterval;
     private volatile bool _isHalted;
     private decimal _initialBalance;
     private decimal _peakBalance;
@@ -29,12 +30,17 @@ public sealed class RiskSupervisorService : BackgroundService
         ILogger<RiskSupervisorService> logger,
         IExchangeService execution,
         IPortfolioManager portfolio,
-        decimal maxDrawdownPercent = 5.0m)
+        decimal maxDrawdownPercent = 5.0m,
+        TimeSpan? monitoringInterval = null)
     {
         _logger = logger;
         _execution = execution;
         _portfolio = portfolio;
         _maxDrawdownPercent = maxDrawdownPercent;
+        var interval = monitoringInterval ?? TimeSpan.FromSeconds(1);
+        if (interval < TimeSpan.FromMilliseconds(100))
+            interval = TimeSpan.FromMilliseconds(100);
+        _monitoringInterval = interval;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -46,7 +52,7 @@ public sealed class RiskSupervisorService : BackgroundService
         {
             try
             {
-                await Task.Delay(1000, stoppingToken);
+                await Task.Delay(_monitoringInterval, stoppingToken);
 
                 var currentBalance = _portfolio.GetAvailableBalance("USDT");
                 _peakBalance = Math.Max(_peakBalance, currentBalance);

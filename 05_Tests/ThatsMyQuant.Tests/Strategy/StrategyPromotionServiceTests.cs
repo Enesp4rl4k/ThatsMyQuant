@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
@@ -8,6 +9,70 @@ namespace ThatsMyQuant.Tests.Strategy;
 
 public class StrategyPromotionServiceTests
 {
+    [Fact]
+    public async Task Evaluate_ShouldBlock_WhenBacktestThresholdsAreRaisedViaConfiguration()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var config = BuildPromotionConfig(
+            backtestMinTrades: 12,
+            backtestMinProfitFactor: 2,
+            backtestMinWinRate: 1,
+            paperMinTrades: 8,
+            paperMinProfitFactor: 1,
+            paperMinWinRate: 0);
+        var service = new StrategyPromotionService(store, configuration: config);
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(120m),
+            CreatePaperPosition(110m),
+            CreatePaperPosition(90m),
+            CreatePaperPosition(100m),
+            CreatePaperPosition(80m),
+            CreatePaperPosition(85m),
+            CreatePaperPosition(-20m),
+            CreatePaperPosition(95m)
+        });
+
+        var result = service.Evaluate(CreateSignal(), CreateDecision(), Array.Empty<Trade>());
+
+        result.Approved.Should().BeFalse();
+        result.PromotionStage.Should().Be("Backtest");
+        result.Reason.Should().Contain("Backtest ladder gate");
+    }
+
+    [Fact]
+    public async Task Evaluate_ShouldBlock_WhenPaperThresholdsAreRaisedViaConfiguration()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var config = BuildPromotionConfig(
+            backtestMinTrades: 1,
+            backtestMinProfitFactor: 0,
+            backtestMinWinRate: 0,
+            paperMinTrades: 12,
+            paperMinProfitFactor: 2,
+            paperMinWinRate: 1);
+        var service = new StrategyPromotionService(store, configuration: config);
+        await service.RecordBacktestState(CreateBacktestResult());
+        await service.RecordPaperState(new[]
+        {
+            CreatePaperPosition(120m),
+            CreatePaperPosition(110m),
+            CreatePaperPosition(90m),
+            CreatePaperPosition(100m),
+            CreatePaperPosition(80m),
+            CreatePaperPosition(85m),
+            CreatePaperPosition(-20m),
+            CreatePaperPosition(95m)
+        });
+
+        var result = service.Evaluate(CreateSignal(), CreateDecision(), Array.Empty<Trade>());
+
+        result.Approved.Should().BeFalse();
+        result.PromotionStage.Should().Be("Paper");
+        result.Reason.Should().Contain("Paper ladder gate");
+    }
+
     [Fact]
     public async Task Evaluate_ShouldReduceSize_WhenPaperReadyButLiveSampleIsThin()
     {
@@ -1012,5 +1077,28 @@ public class StrategyPromotionServiceTests
         public Task<StrategyPerformanceState> LoadAsync() => Task.FromResult(_state);
 
         public Task SaveAsync(StrategyPerformanceState state) { _state = state; return Task.CompletedTask; }
+    }
+
+    private static IConfiguration BuildPromotionConfig(
+        int backtestMinTrades,
+        double backtestMinProfitFactor,
+        double backtestMinWinRate,
+        int paperMinTrades,
+        double paperMinProfitFactor,
+        double paperMinWinRate)
+    {
+        var values = new Dictionary<string, string?>
+        {
+            ["Promotion:Backtest:MinTrades"] = backtestMinTrades.ToString(),
+            ["Promotion:Backtest:MinProfitFactor"] = backtestMinProfitFactor.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Promotion:Backtest:MinWinRate"] = backtestMinWinRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Promotion:Paper:MinTrades"] = paperMinTrades.ToString(),
+            ["Promotion:Paper:MinProfitFactor"] = paperMinProfitFactor.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Promotion:Paper:MinWinRate"] = paperMinWinRate.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+
+        return new ConfigurationBuilder()
+            .AddInMemoryCollection(values)
+            .Build();
     }
 }

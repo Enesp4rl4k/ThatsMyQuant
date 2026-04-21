@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using System.Threading;
@@ -12,13 +13,29 @@ public sealed class StrategyPromotionService
     private readonly object _sync = new();
     private StrategyPerformanceState _state;
 
+    // Promotion criteria — configurable via appsettings.json or env vars
+    private readonly int _backtestMinTrades;
+    private readonly double _backtestMinProfitFactor;
+    private readonly double _backtestMinWinRate;
+    private readonly int _paperMinTrades;
+    private readonly double _paperMinProfitFactor;
+    private readonly double _paperMinWinRate;
+
     public StrategyPromotionService(
         IStrategyPerformanceStore store,
-        MarketExecutionProfileService? executionProfiles = null)
+        MarketExecutionProfileService? executionProfiles = null,
+        IConfiguration? configuration = null)
     {
         _store = store;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
         _state = new StrategyPerformanceState();
+
+        _backtestMinTrades      = int.TryParse(configuration?["Promotion:Backtest:MinTrades"],       out var btTrades)      ? btTrades      : 6;
+        _backtestMinProfitFactor= double.TryParse(configuration?["Promotion:Backtest:MinProfitFactor"], out var btPf)       ? btPf          : 1.15;
+        _backtestMinWinRate     = double.TryParse(configuration?["Promotion:Backtest:MinWinRate"],    out var btWr)          ? btWr          : 0.42;
+        _paperMinTrades         = int.TryParse(configuration?["Promotion:Paper:MinTrades"],           out var ptTrades)      ? ptTrades      : 8;
+        _paperMinProfitFactor   = double.TryParse(configuration?["Promotion:Paper:MinProfitFactor"],  out var ptPf)          ? ptPf          : 1.20;
+        _paperMinWinRate        = double.TryParse(configuration?["Promotion:Paper:MinWinRate"],       out var ptWr)          ? ptWr          : 0.45;
     }
 
     public async Task InitializeAsync()
@@ -571,14 +588,17 @@ public sealed class StrategyPromotionService
         await PersistAsync();
     }
 
-    private static StrategyBucketPerformanceSnapshot CreateBacktestBucketSnapshot(string symbol, string strategy, string regime, string session, List<Trade> trades)
+    private StrategyBucketPerformanceSnapshot CreateBacktestBucketSnapshot(string symbol, string strategy, string regime, string session, List<Trade> trades)
     {
         var pnlValues = trades.Select(GetLivePnl).ToList();
         var percentReturns = trades.Select(t => t.EntryPrice * t.Quantity > 0 ? GetLivePnl(t) / (t.EntryPrice * t.Quantity) * 100m : 0m).ToList();
         var equityCurve = new List<decimal> { 100_000m };
         foreach (var pnl in pnlValues) equityCurve.Add(equityCurve.Last() + pnl);
 
-        var pass = pnlValues.Count >= 6 && ComputeProfitFactor(pnlValues) >= 1.15 && pnlValues.Average() > 0 && trades.Count(t => GetLivePnl(t) > 0) * 1.0 / Math.Max(1, trades.Count) >= 0.42;
+        var pass = pnlValues.Count >= _backtestMinTrades
+            && (double)ComputeProfitFactor(pnlValues) >= _backtestMinProfitFactor
+            && pnlValues.Average() > 0
+            && trades.Count(t => GetLivePnl(t) > 0) * 1.0 / Math.Max(1, trades.Count) >= _backtestMinWinRate;
         return new StrategyBucketPerformanceSnapshot
         {
             Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session,
@@ -598,7 +618,11 @@ public sealed class StrategyPromotionService
 
         var backtestMatch = FindBestBucketMatch(_state.BacktestBuckets, symbol, strategy, regime, session).Bucket;
         var backtestPass = backtestMatch?.BacktestPass == true;
-        var paperPass = backtestPass && pnlValues.Count >= 8 && ComputeProfitFactor(pnlValues) >= 1.20 && pnlValues.Average() > 0 && pnlValues.Count(v => v > 0) * 1.0 / pnlValues.Count >= 0.45;
+        var paperPass = backtestPass
+            && pnlValues.Count >= _paperMinTrades
+            && (double)ComputeProfitFactor(pnlValues) >= _paperMinProfitFactor
+            && pnlValues.Average() > 0
+            && pnlValues.Count(v => v > 0) * 1.0 / pnlValues.Count >= _paperMinWinRate;
         return new StrategyBucketPerformanceSnapshot
         {
             Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session,
@@ -1653,7 +1677,9 @@ public sealed class StrategyPromotionService
         ExecutionMode = br.ExecutionMode,
         PromotionStage = br.PromotionStage,
         EntryTime = br.EntryTime,
-        ExitTime = br.ExitTime
+        ExitTime = br.ExitTime,
+        TotalFeesPaid = br.TotalFeesPaid,
+        NetFunding = br.NetFunding
     };
 
     private static decimal GetPaperPnl(PaperPosition position)

@@ -80,9 +80,7 @@ public partial class UserManagementViewModel : ObservableObject
         }
     }
 
-    // Requirement 9.3 — reset a user's password (MustChangePassword=true is a TODO:
-    // IUserAuthService.UpdatePasswordAsync sets MustChangePassword=false; a dedicated
-    // service method or direct DB update would be needed to force re-change on next login)
+    // Requirement 9.3 — reset a user's password; user must change password on next login
     private async Task ResetPasswordAsync()
     {
         if (SelectedUser == null) return;
@@ -93,9 +91,7 @@ public partial class UserManagementViewModel : ObservableObject
 
         try
         {
-            await _authService.UpdatePasswordAsync(SelectedUser.Id, newPassword);
-            // TODO: set MustChangePassword=true — requires a dedicated service method
-            // not currently present on IUserAuthService.
+            await _authService.UpdatePasswordAsync(SelectedUser.Id, newPassword, requirePasswordChangeOnNextLogin: true);
             await LoadUsersAsync();
         }
         catch (Exception ex)

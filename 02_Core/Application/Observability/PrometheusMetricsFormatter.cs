@@ -29,8 +29,27 @@ public static class PrometheusMetricsFormatter
         AppendCounter(builder, "tmq_trades_failed_total", "Trades that failed during execution", labels, snapshot.TradesFailed);
         AppendCounter(builder, "tmq_signals_deadletter_total", "Signals moved to dead-letter", labels, snapshot.DeadLetters);
         AppendCounter(builder, "tmq_positions_supervised_total", "Lifecycle supervision passes", labels, snapshot.LifecycleSupervisionPasses);
+        AppendCounter(builder, "tmq_execution_reports_received_total", "Execution reports received from venue stream", labels, snapshot.ExecutionReportsReceived);
+        AppendCounter(builder, "tmq_execution_reports_deduped_memory_total", "Execution reports suppressed by in-memory dedupe", labels, snapshot.ExecutionReportsDedupedMemory);
+        AppendCounter(builder, "tmq_execution_reports_deduped_checkpoint_total", "Execution reports suppressed by checkpoint dedupe", labels, snapshot.ExecutionReportsDedupedCheckpoint);
+        AppendCounter(builder, "tmq_execution_reports_out_of_order_total", "Execution reports suppressed as out-of-order regressions", labels, snapshot.ExecutionReportsOutOfOrder);
+        AppendCounter(builder, "tmq_execution_sync_replay_runs_total", "Execution sync reconciliation replay runs", labels, snapshot.ExecutionSyncReplayRuns);
+        AppendCounter(builder, "tmq_execution_sync_replay_drift_count", "Drift findings from reconciliation replays", labels, snapshot.ExecutionSyncReplayDriftCount);
         AppendGauge(builder, "tmq_execution_latency_average_ms", "Average execution latency in milliseconds", labels, snapshot.AverageExecutionLatencyMs);
         AppendGauge(builder, "tmq_execution_latency_last_ms", "Most recent execution latency in milliseconds", labels, snapshot.LastExecutionLatencyMs);
+        AppendGauge(builder, "tmq_execution_signal_queue_pending_approx", "Approximate pending execution signals (in-flight)", labels, snapshot.ExecutionSignalQueuePendingApprox);
+        AppendCounter(builder, "tmq_venue_http_errors_total", "Non-success HTTP responses from venue REST APIs", labels, snapshot.VenueHttpFailuresTotal);
+        AppendCounter(builder, "tmq_entry_slippage_observations_total", "Entry slippage samples recorded (|signal price vs fill|)", labels, snapshot.EntrySlippageSamples);
+        AppendGauge(builder, "tmq_entry_slippage_abs_percent_average", "Average absolute entry slippage percent across recorded fills", labels, snapshot.AverageAbsEntrySlippagePercent);
+        AppendGauge(builder, "tmq_entry_slippage_abs_percent_last", "Most recent absolute entry slippage percent", labels, snapshot.LastAbsEntrySlippagePercent);
+
+        if (snapshot.InferencePoolTargetSize > 0 || snapshot.InferenceLazyPoolBackgroundFailuresTotal > 0)
+        {
+            AppendGauge(builder, "tmq_inference_pool_engines_built", "ML.NET prediction engines built for InferenceAgent pool", labels, snapshot.InferencePoolEnginesBuilt);
+            AppendGauge(builder, "tmq_inference_pool_target_size", "Target InferenceAgent pool size", labels, snapshot.InferencePoolTargetSize);
+            AppendGauge(builder, "tmq_inference_lazy_fill_complete", "Lazy pool background fill finished (1=yes, 0=no)", labels, snapshot.InferenceLazyFillComplete);
+            AppendCounter(builder, "tmq_inference_lazy_pool_background_failures_total", "Failures during lazy pool background expansion", labels, snapshot.InferenceLazyPoolBackgroundFailuresTotal);
+        }
 
         if (circuitBreakerStatus is not null)
         {

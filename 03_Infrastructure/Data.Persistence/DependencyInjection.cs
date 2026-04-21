@@ -20,11 +20,11 @@ public static class DependencyInjection
     {
         if (configuration != null)
             services.Configure<TelegramOptions>(configuration.GetSection("Telegram"));
-        services.AddDbContextFactory<QuantDbContext>();
+        services.AddDbContextFactory<QuantDbContext>(opt => opt.UseConfiguredQuantDatabase(configuration ?? new ConfigurationBuilder().Build()));
         services.AddSingleton<IAuditLogger, DbAuditLogger>();
         services.AddSingleton<IBistMarketGateway, SimulatedBistMarketGateway>();
 
-        services.AddSingleton(sp => VenuePortfolioManager.Instance);
+        services.AddSingleton<VenuePortfolioManager>();
         services.AddSingleton<ISharedPortfolioStateManager>(sp => sp.GetRequiredService<VenuePortfolioManager>());
         services.AddSingleton<IPortfolioManager>(sp => sp.GetRequiredService<VenuePortfolioManager>());
 
@@ -60,6 +60,11 @@ public static class DependencyInjection
         services.AddSingleton<IExchangeServiceResolver>(sp => sp.GetRequiredService<ExchangeServiceResolver>());
 
         services.AddHttpClient<IHistoricalMarketDataService, OkxHistoricalDataService>();
+        services.AddSingleton<ITechnicalAnalysisService, QuantIndicatorService>();
+
+        // Real-cost providers — replace hardcoded BacktestCostModel defaults with OKX live data.
+        services.AddSingleton<ISymbolCostProfileProvider, OkxSymbolCostProfileProvider>();
+        services.AddSingleton<IFundingRateProvider, OkxFundingRateProvider>();
 
         return services;
     }

@@ -32,4 +32,8 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="ThatsMyQuant.Tests" />
+  </ItemGroup>
+
 </Project>

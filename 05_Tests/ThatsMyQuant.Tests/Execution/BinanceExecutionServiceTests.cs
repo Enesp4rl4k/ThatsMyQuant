@@ -25,7 +25,7 @@ public class BinanceExecutionServiceTests
             {
                 Content = new StringContent(
                     """
-                    {"symbol":"BTCUSDT","status":"FILLED","origQty":"0.25000000","executedQty":"0.25000000","price":"64000.00","fills":[{"price":"64010.00"}]}
+                    {"symbol":"BTCUSDT","status":"FILLED","origQty":"0.25000000","executedQty":"0.25000000","price":"64000.00","fills":[{"price":"64010.00","qty":"0.25000000","commission":"4.00062500","commissionAsset":"USDT"}]}
                     """,
                     Encoding.UTF8,
                     "application/json")
@@ -72,5 +72,53 @@ public class BinanceExecutionServiceTests
         trade.FilledQuantity.Should().Be(0.25m);
         trade.RemainingQuantity.Should().Be(0m);
         trade.MarkPrice.Should().Be(64010m);
+        trade.TotalFeesPaid.Should().Be(4.000625m);
+    }
+
+    [Fact]
+    public async Task ExecuteOrderAsync_FuturesMode_ShouldUseFuturesEndpointAndAllowShort()
+    {
+        using var keyVault = new ApiVault();
+        using var secretVault = new ApiVault();
+        keyVault.SecureInboundKey("test-key");
+        secretVault.SecureInboundKey("test-secret");
+
+        var handler = new CapturingHandler();
+        var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://fapi.binance.com")
+        };
+
+        var portfolio = Substitute.For<ISharedPortfolioStateManager>();
+        // Futures short should not require spot-style reserve.
+        portfolio.TryReserveForOrder(Arg.Any<VenueKind>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<decimal>())
+            .Returns(false);
+        portfolio.TryReserve(Arg.Any<VenueKind>(), Arg.Any<string>(), Arg.Any<decimal>())
+            .Returns(false);
+
+        var sut = new BinanceExecutionService(
+            NullLogger<BinanceExecutionService>.Instance,
+            httpClient,
+            keyVault,
+            secretVault,
+            Substitute.For<IStreamingMarketDataService>(),
+            portfolio);
+
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTCUSDT",
+            Side = TradeSide.Sell,
+            Price = 64000m,
+            Quantity = 0.25m
+        };
+
+        var trade = await sut.ExecuteOrderAsync(signal);
+
+        handler.LastRequest.Should().NotBeNull();
+        handler.LastRequest!.RequestUri!.AbsolutePath.Should().Be("/fapi/v1/order");
+        handler.LastRequest.RequestUri.Query.Should().Contain("side=SELL");
+        handler.LastRequest.RequestUri.Query.Should().Contain("reduceOnly=false");
+        trade.ExecutionMode.Should().Be("REAL-FUTURES");
     }
 }

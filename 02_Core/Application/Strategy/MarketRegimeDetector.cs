@@ -7,10 +7,17 @@ namespace ThatsMyQuant.Application.Strategy;
 /// Detects the current market regime (Trending, Ranging, or Volatile)
 /// to adapt indicator parameters for better accuracy.
 ///
-/// Methods:
-///   - ADX > 25 + EMA alignment → Trending
-///   - ATR > 2x average → Volatile
-///   - Otherwise → Ranging
+/// Classification (scale-invariant):
+///   - atrRatio = avgATR(recent lookback) / avgATR(baseline)
+///   - Volatile  → atrRatio > 1.6 (recent vol significantly elevated vs baseline)
+///   - Trending  → entropy < 0.82 AND atrRatio < 1.3 (organized returns, stable vol)
+///   - Ranging   → otherwise
+///
+/// The ratio-based volatility test replaces the previous absolute atrPercent
+/// threshold, which was coupled to asset scale and timeframe (a 3% ATR/bar
+/// threshold that works for daily equities mis-classifies every hourly crypto
+/// bar as volatile). Comparing recent volatility to a rolling baseline works
+/// for any asset class without retuning.
 ///
 /// Adaptive parameter adjustments:
 ///   - Trending: RSI(10), EMA(15/40) — more responsive to ride trends
@@ -19,6 +26,15 @@ namespace ThatsMyQuant.Application.Strategy;
 /// </summary>
 public static class MarketRegimeDetector
 {
+    private const double VolatileRatioThreshold = 1.6;
+    private const double TrendingRatioCeiling = 1.3;
+    private const double TrendingEntropyCeiling = 0.82;
+    private const int BaselineLookback = 100;
+    // ADX > 20 = directional market (Wilder). Combined with entropy gate, blocks false-trend
+    // classifications from short 2-3 bar pushes that fool pure entropy.
+    private const double TrendingMinAdx = 20.0;
+    private const int AdxPeriod = 14;
+
     public record RegimeResult
     {
         public MarketRegime Regime { get; init; }
@@ -30,30 +46,47 @@ public static class MarketRegimeDetector
         public string Description { get; init; } = "";
     }
 
-    public static RegimeResult Detect(IReadOnlyList<Candle> candles, int lookback = 20)
+    public static RegimeResult Detect(IReadOnlyList<Candle> candles, int lookback = 20, int lagBars = 1, string timeframe = "1h")
     {
-        if (candles.Count < lookback + 14)
+        // Lag to eliminate bar-t leakage: classify using bars that ended strictly before the
+        // decision bar. Default lagBars=1 means "regime at bar t uses data through bar t-1".
+        // Backtest and live are symmetric under this contract.
+        int effectiveCount = Math.Max(0, candles.Count - lagBars);
+        if (effectiveCount < lookback + AdxPeriod + 1)
             return new RegimeResult { Regime = MarketRegime.Unknown, AdaptedRsiPeriod = 14,
                 AdaptedEmaFast = 20, AdaptedEmaSlow = 50, StopLossMultiplier = 2.0,
                 TakeProfitMultiplier = 3.0, Description = "Insufficient data" };
 
-        // Compute ATR for volatility assessment
-        var recentCandles = candles.TakeLast(lookback).ToList();
-        double avgAtr = ComputeAverageATR(recentCandles);
+        var laggedCandles = lagBars > 0 ? candles.Take(effectiveCount).ToList() : candles.ToList();
+        var recentCandles = laggedCandles.TakeLast(lookback).ToList();
+        double recentAtr = ComputeAverageATR(recentCandles);
         double avgPrice = recentCandles.Average(c => (double)c.Close);
-        double atrPercent = avgPrice > 0 ? avgAtr / avgPrice * 100 : 0;
+        double atrPercent = avgPrice > 0 ? recentAtr / avgPrice * 100 : 0;
 
-        // Compute directional movement AND Shannon Entropy
+        int effectiveBaseline = Math.Min(laggedCandles.Count, BaselineLookback);
+        double atrRatio = 1.0;
+        if (effectiveBaseline >= lookback * 2)
+        {
+            var baselineCandles = laggedCandles.TakeLast(effectiveBaseline).ToList();
+            double baselineAtr = ComputeAverageATR(baselineCandles);
+            atrRatio = baselineAtr > 0 ? recentAtr / baselineAtr : 1.0;
+        }
+
         double trendStrength = ComputeTrendStrength(recentCandles);
         double normalizedEntropy = ComputeShannonEntropy(recentCandles);
-        double garchVolatilityForecast = ComputeGarchVolatility(recentCandles);
+        // GARCH (alpha,beta) tuned per timeframe. Prior defaults (0.15, 0.80) were 5m-calibrated
+        // and over-reacted on 1h. Published empirical ranges: 1m/5m fast (0.15/0.80), 15m/1h
+        // medium (0.10/0.85), 4h/1d slow (0.07/0.90).
+        var (alpha, beta) = ResolveGarchParams(timeframe);
+        double garchVolatilityForecast = ComputeGarchVolatility(laggedCandles.TakeLast(Math.Min(laggedCandles.Count, BaselineLookback)).ToList(), alpha, beta);
 
-        // Shannon Entropy: < 0.82 means the returns distribution is organized (trending).
-        // > 0.90 means it's mostly random noise (ranging).
-        bool isTrending = normalizedEntropy < 0.82 && atrPercent < 1.5 && garchVolatilityForecast < 1.0;
-        
-        // Trigger volatile regime if ATR is huge OR if GARCH(1,1) forecasts an impending volatility cluster.
-        bool isVolatile = atrPercent > 3.0 || garchVolatilityForecast > 1.5;
+        // ADX on the lagged window — second-pass gate for Trending.
+        double adx = ComputeAdx(laggedCandles.TakeLast(AdxPeriod * 3).ToList(), AdxPeriod);
+
+        bool isVolatile = atrRatio > VolatileRatioThreshold;
+        bool isTrending = normalizedEntropy < TrendingEntropyCeiling
+                          && atrRatio < TrendingRatioCeiling
+                          && adx >= TrendingMinAdx;
 
         if (isVolatile)
         {
@@ -65,7 +98,7 @@ public static class MarketRegimeDetector
                 AdaptedEmaSlow = 50,
                 StopLossMultiplier = 3.0,  // Wider stops in volatile markets
                 TakeProfitMultiplier = 4.5,
-                Description = $"VOLATILE — ATR={atrPercent:F1}%, GARCH={garchVolatilityForecast:F2}%. Impending/active volatility cluster detected."
+                Description = $"VOLATILE — ATR ratio={atrRatio:F2}x (recent {atrPercent:F2}%), GARCH={garchVolatilityForecast:F2}%. Recent vol elevated vs baseline."
             };
         }
 
@@ -79,7 +112,7 @@ public static class MarketRegimeDetector
                 AdaptedEmaSlow = 40,
                 StopLossMultiplier = 2.0,
                 TakeProfitMultiplier = 4.0, // Let winners run longer in trends
-                Description = $"TRENDING — Entropy={normalizedEntropy:F2}. Organized structure. Riding the trend."
+                Description = $"TRENDING — Entropy={normalizedEntropy:F2}, ATR ratio={atrRatio:F2}x. Organized structure. Riding the trend."
             };
         }
 
@@ -91,7 +124,7 @@ public static class MarketRegimeDetector
             AdaptedEmaSlow = 50,
             StopLossMultiplier = 1.5,  // Tighter stops in range
             TakeProfitMultiplier = 2.0,
-            Description = $"RANGING — Entropy={normalizedEntropy:F2}. High noise {trendStrength:P0} directional. Mean-reversion mode."
+            Description = $"RANGING — Entropy={normalizedEntropy:F2}, ATR ratio={atrRatio:F2}x. High noise {trendStrength:P0} directional. Mean-reversion mode."
         };
     }
 
@@ -192,14 +225,72 @@ public static class MarketRegimeDetector
     /// Captures volatility clustering which ATR often lags.
     /// \sigma^2_t = \omega + \alpha \cdot r_{t-1}^2 + \beta \cdot \sigma^2_{t-1}
     /// </summary>
-    private static double ComputeGarchVolatility(IReadOnlyList<Candle> candles)
+    private static (double alpha, double beta) ResolveGarchParams(string timeframe) => timeframe switch
+    {
+        "1m" or "5m" => (0.15, 0.80),
+        "15m" or "1h" => (0.10, 0.85),
+        "4h" or "1d" => (0.07, 0.90),
+        _ => (0.10, 0.85)
+    };
+
+    // Wilder's ADX on a sliding window. Returns the last smoothed ADX value; 0 when
+    // insufficient bars. Uses +DI / -DI / DX chain then smooths DX with a Wilder RMA.
+    private static double ComputeAdx(IReadOnlyList<Candle> candles, int period)
+    {
+        if (candles.Count < period * 2 + 1) return 0.0;
+        double plusDm = 0, minusDm = 0, tr = 0;
+        // Seed with first period
+        for (int i = 1; i <= period; i++)
+        {
+            var up = (double)(candles[i].High - candles[i - 1].High);
+            var dn = (double)(candles[i - 1].Low - candles[i].Low);
+            plusDm += up > dn && up > 0 ? up : 0;
+            minusDm += dn > up && dn > 0 ? dn : 0;
+            double hl = (double)(candles[i].High - candles[i].Low);
+            double hc = Math.Abs((double)(candles[i].High - candles[i - 1].Close));
+            double lc = Math.Abs((double)(candles[i].Low - candles[i - 1].Close));
+            tr += Math.Max(hl, Math.Max(hc, lc));
+        }
+        double adx = 0;
+        int dxCount = 0;
+        double dxSum = 0;
+        for (int i = period + 1; i < candles.Count; i++)
+        {
+            var up = (double)(candles[i].High - candles[i - 1].High);
+            var dn = (double)(candles[i - 1].Low - candles[i].Low);
+            double curPlus = up > dn && up > 0 ? up : 0;
+            double curMinus = dn > up && dn > 0 ? dn : 0;
+            double hl = (double)(candles[i].High - candles[i].Low);
+            double hc = Math.Abs((double)(candles[i].High - candles[i - 1].Close));
+            double lc = Math.Abs((double)(candles[i].Low - candles[i - 1].Close));
+            double curTr = Math.Max(hl, Math.Max(hc, lc));
+            plusDm = plusDm - (plusDm / period) + curPlus;
+            minusDm = minusDm - (minusDm / period) + curMinus;
+            tr = tr - (tr / period) + curTr;
+            if (tr <= 0) continue;
+            double plusDi = 100.0 * plusDm / tr;
+            double minusDi = 100.0 * minusDm / tr;
+            double diSum = plusDi + minusDi;
+            double dx = diSum > 0 ? 100.0 * Math.Abs(plusDi - minusDi) / diSum : 0;
+            if (dxCount < period)
+            {
+                dxSum += dx;
+                dxCount++;
+                if (dxCount == period) adx = dxSum / period;
+            }
+            else
+            {
+                adx = (adx * (period - 1) + dx) / period;
+            }
+        }
+        return adx;
+    }
+
+    private static double ComputeGarchVolatility(IReadOnlyList<Candle> candles, double alpha = 0.10, double beta = 0.85)
     {
         if (candles.Count < 2) return 0;
-        
-        // High-frequency GARCH(1,1) parameters (fast reacting)
+
         double omega = 0.000005;
-        double alpha = 0.15;
-        double beta = 0.80; 
 
         var returns = new List<double>(candles.Count);
         for (int i = 1; i < candles.Count; i++)

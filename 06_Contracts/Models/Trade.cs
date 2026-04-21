@@ -20,6 +20,19 @@ public class Trade
     public string EdgeBand { get; set; } = string.Empty;
     public string ExactBucketImpactLabel { get; set; } = string.Empty;
     public string ExactBucketSummary { get; set; } = string.Empty;
+    public string ProfitLeakAuditSummary { get; set; } = string.Empty;
+    public string ProfitLeakWorstBucketLabel { get; set; } = string.Empty;
+    public string ProfitLeakWorstBucketBeforeLiveChange { get; set; } = string.Empty;
+    public string ProfitLeakWorstBucketAfterLiveChange { get; set; } = string.Empty;
+    public decimal ProfitLeakAuditSizeMultiplier { get; set; }
+    public decimal ProfitLeakExactNetExpectancy { get; set; }
+    public decimal ProfitLeakExitPolicyNetExpectancy { get; set; }
+    public decimal ProfitLeakRegimeNetExpectancy { get; set; }
+    public decimal ProfitLeakVenueNetExpectancy { get; set; }
+    public decimal ProfitLeakReducedSizeNetExpectancy { get; set; }
+    public bool ProfitLeakReducedSizeNoise { get; set; }
+    public decimal ProfitLeakLoserClusterRate { get; set; }
+    public string ProfitLeakDominantLosingExitPolicy { get; set; } = string.Empty;
     public decimal FinalAllocatorBias { get; set; }
     public string FinalAllocatorScope { get; set; } = string.Empty;
     public decimal VenueExecutionBias { get; set; }
@@ -36,6 +49,8 @@ public class Trade
     public string MlModelVersion { get; set; } = string.Empty;
     public string ExecutionMode { get; set; } = "REAL";
     public string PromotionStage { get; set; } = "Backtest";
+    public decimal Leverage { get; set; } = 1m;
+    public MarginMode MarginMode { get; set; } = MarginMode.Isolated;
     public decimal RequestedQuantity { get; set; }
     public decimal FilledQuantity { get; set; }
     public decimal RemainingQuantity { get; set; }
@@ -60,6 +75,13 @@ public class Trade
     public decimal EntrySlippagePercent { get; set; }
     public decimal PositionSizePercent { get; set; }
     public long ExecutionLatencyMs { get; set; }
+
+    /// <summary>Total exchange fees paid for this trade (non-negative).</summary>
+    public decimal TotalFeesPaid { get; set; }
+
+    /// <summary>Net perpetual funding cash-flow: positive = received, negative = paid.</summary>
+    public decimal NetFunding { get; set; }
+
     public DateTime EntryTime { get; set; }
     public DateTime? SubmittedTime { get; set; }
     public DateTime? LastUpdatedTime { get; set; }

@@ -55,6 +55,40 @@ public class MarketRegimeDetectorTests
     }
 
     [Fact]
+    public void Detect_UniformlyHighAbsoluteAtr_ShouldNotAutoClassifyAsVolatile()
+    {
+        // Regression: the previous detector used an absolute "ATR > 3% of price"
+        // rule which classified every bar of a high-volatility asset (e.g. crypto
+        // 1h with 40%+ intra-bar ranges) as Volatile, starving the Trending /
+        // Ranging branches. Scale-invariant classification should look at the
+        // recent/baseline ATR ratio: when the series is uniformly volatile, the
+        // ratio is ~1.0, so the bar is not "elevated" vs its own baseline.
+        var candles = new List<Candle>();
+        var random = new Random(7);
+        decimal price = 700_000m;
+
+        // 60 bars with consistent 40-50% of price intra-bar range, tightly
+        // noisy closes (no drift). Uniform high-vol regime throughout.
+        for (int i = 0; i < 60; i++)
+        {
+            decimal range = price * 0.45m; // ~45% range per bar
+            decimal open = price + (decimal)((random.NextDouble() - 0.5) * 0.02) * price;
+            decimal close = price + (decimal)((random.NextDouble() - 0.5) * 0.02) * price;
+            decimal high = Math.Max(open, close) + range / 2m;
+            decimal low = Math.Min(open, close) - range / 2m;
+            candles.Add(new Candle { Open = open, High = high, Low = low, Close = close });
+            price = close;
+        }
+
+        var result = MarketRegimeDetector.Detect(candles);
+
+        // The whole series is uniformly volatile, so there is no recent spike
+        // vs baseline. Must NOT be classified as Volatile regardless of
+        // how large the absolute ATR% is.
+        result.Regime.Should().NotBe(MarketRegime.Volatile);
+    }
+
+    [Fact]
     public void Detect_GarchVolatilitySpike_ShouldIdentifyVolatileRegime()
     {
         // Test that GARCH catches volatility clusters before the moving average ATR does

@@ -1,4 +1,6 @@
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
@@ -22,6 +24,17 @@ public class SignalRepository : ISignalRepository
             db.Signals
                 .AsNoTracking()
                 .Where(s => s.Status == status)
+                .OrderBy(s => s.Timestamp)
+                .Take(count));
+
+    private static readonly Func<QuantDbContext, DateTime, int, IAsyncEnumerable<Signal>> s_getExecutionClaimCandidatesQuery =
+        EF.CompileAsyncQuery((QuantDbContext db, DateTime staleClaimBeforeUtc, int count) =>
+            db.Signals
+                .AsNoTracking()
+                .Where(s => s.Status == TradeStatus.Queued ||
+                            (s.Status == TradeStatus.Processing &&
+                             s.ClaimedAtUtc != null &&
+                             s.ClaimedAtUtc <= staleClaimBeforeUtc))
                 .OrderBy(s => s.Timestamp)
                 .Take(count));
 
@@ -54,6 +67,42 @@ public class SignalRepository : ISignalRepository
 
     public async Task<IReadOnlyList<Signal>> GetByStatusAsync(TradeStatus status, int count = 50)
         => await MaterializeAsync(s_getByStatusQuery(_db, status, count), count);
+
+    public async Task<IReadOnlyList<Signal>> GetExecutionClaimCandidatesAsync(int count, DateTime staleClaimBeforeUtc)
+        => await MaterializeAsync(s_getExecutionClaimCandidatesQuery(_db, staleClaimBeforeUtc, count), count);
+
+    public async Task<bool> TryClaimQueuedAsync(Guid signalId, string workerId, DateTime claimedAtUtc, DateTime staleClaimBeforeUtc)
+    {
+        await _db.Database.OpenConnectionAsync();
+        await using var command = (SqliteCommand)_db.Database.GetDbConnection().CreateCommand();
+        if (_db.Database.CurrentTransaction is not null)
+            command.Transaction = (SqliteTransaction?)_db.Database.CurrentTransaction.GetDbTransaction();
+
+        command.CommandText = """
+            UPDATE Signals
+            SET Status = $processingStatus,
+                ClaimedAtUtc = $claimedAtUtc,
+                ClaimedBy = $claimedBy
+            WHERE Id = $id
+              AND (
+                    Status = $queuedStatus
+                    OR (
+                        Status = $processingStatus
+                        AND ClaimedAtUtc IS NOT NULL
+                        AND ClaimedAtUtc <= $staleClaimBeforeUtc
+                    )
+                  );
+            """;
+
+        AddParameter(command, "$processingStatus", TradeStatus.Processing.ToString());
+        AddParameter(command, "$claimedAtUtc", claimedAtUtc);
+        AddParameter(command, "$claimedBy", workerId);
+        AddParameter(command, "$id", signalId);
+        AddParameter(command, "$queuedStatus", TradeStatus.Queued.ToString());
+        AddParameter(command, "$staleClaimBeforeUtc", staleClaimBeforeUtc);
+
+        return await command.ExecuteNonQueryAsync() > 0;
+    }
 
     public async Task AddAsync(Signal signal)
     {
@@ -112,4 +161,12 @@ public class SignalRepository : ISignalRepository
     }
 
     private readonly record struct SignalStatusCount(TradeStatus Status, int Count);
+
+    private static void AddParameter(SqliteCommand command, string name, object? value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        command.Parameters.Add(parameter);
+    }
 }

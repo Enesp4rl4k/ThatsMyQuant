@@ -84,3 +84,17 @@ Invoke-RestMethod -Method Post -Uri https://localhost:7054/webhook `
 - .NET 9 SDK
 - Borsa-MCP (Configured in Claude/Antigravity)
 - Semantic Kernel (For AI Integration)
+
+---
+
+## Secrets and multi-process deployment
+
+- **Do not commit** API keys, webhook HMAC secrets, or exchange credentials. Use per-machine [user-secrets](https://learn.microsoft.com/dotnet/core/tools/dotnet-user-secrets) (`dotnet user-secrets set "KEY" "value"`), environment variables, or a secret store in production.
+- **Listener.Api** expects `TMQ_WEBHOOK_SECRET` (or equivalent in configuration) for HMAC validation; set the same value wherever you generate webhook signatures.
+- **Typical layout**: run `Listener.Api`, `QuantEngine.Worker`, and `Execution.Worker` as **separate processes** (three terminals or three services). Each loads its own `appsettings.json` / `exchange_settings.json` and optional user-secrets; they share the database URL via configuration, not via the repo.
+- **Observability**: workers expose `/metrics` (Prometheus text) and `/health` where `MapObservabilityEndpoints` is wired; use a single scrape config per service instance with distinct labels (e.g. service name). For product priorities (edge, execution quality, risk), see [docs/STRATEGIC_FOCUS.md](docs/STRATEGIC_FOCUS.md).
+
+### Correlation IDs
+
+- **Listener.Api** assigns a correlation id per HTTP request (`CorrelationIdMiddleware`) and may copy it into signal metadata for downstream tracing.
+- **Execution.Worker** ties structured log scopes to each signal via `TradingLogScope` (signal id / symbol / correlation id from metadata when present).

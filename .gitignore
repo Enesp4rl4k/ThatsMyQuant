@@ -79,3 +79,7 @@ $RECYCLE.BIN/
 *.log
 worker_log.txt
 tmq-tests.log
+
+# Test output (local / CI artifacts)
+**/TestResults/
+*.trx

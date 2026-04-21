@@ -10,6 +10,11 @@ public interface IExchangeService
     Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side);
 
     /// <summary>
+    /// Latest L2 snapshot from the venue WebSocket cache (if connected and subscribed). Returns false if unavailable.
+    /// </summary>
+    bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book);
+
+    /// <summary>
     /// Returns the user's active/favorited symbols from the exchange as canonical symbols
     /// (uppercase, no hyphens, e.g. <c>"BTCUSDT"</c>).
     /// </summary>

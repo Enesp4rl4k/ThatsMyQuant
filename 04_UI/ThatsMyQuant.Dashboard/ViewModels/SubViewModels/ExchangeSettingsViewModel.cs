@@ -11,7 +11,15 @@ namespace ThatsMyQuant.Dashboard.ViewModels.SubViewModels;
 
 public partial class ExchangeSettingsViewModel : ObservableObject
 {
+    // Compound mode string persisted to exchange_settings.json and env vars.
+    // Derived from (Venue, MarketType, IsDemoMode); kept for backward compat
+    // with Program.cs dispatch logic in every worker.
     [ObservableProperty] private string _selectedExchangeMode = "Mock";
+
+    // Axes the user actually picks from in the UI.
+    [ObservableProperty] private string _selectedVenue = "Mock";
+    [ObservableProperty] private string _selectedMarketType = "Spot";
+
     [ObservableProperty] private string _binanceApiKey = string.Empty;
     [ObservableProperty] private string _binanceApiSecret = string.Empty;
     [ObservableProperty] private string _okxApiKey = string.Empty;
@@ -21,20 +29,151 @@ public partial class ExchangeSettingsViewModel : ObservableObject
     [ObservableProperty] private string _saveStatus = "READY";
     [ObservableProperty] private bool _isSaving = false;
 
+    public ObservableCollection<string> AvailableVenues { get; } =
+    [
+        "Mock",
+        "Binance",
+        "OKX"
+    ];
+
+    public ObservableCollection<string> AvailableMarketTypes { get; } =
+    [
+        "Spot",
+        "Futures"
+    ];
+
+    // Retained for backward compatibility — settings files and any persisted
+    // bindings that still reference the combined list should still read.
     public ObservableCollection<string> AvailableExchangeModes { get; } =
     [
         "Mock",
         "Binance",
         "BinanceTestnet",
-        "OKX"
+        "BinanceFutures",
+        "BinanceFuturesTestnet",
+        "OKX",
+        "OKXSwap"
     ];
 
     private string SettingsPath => Path.Combine(ResolveSharedConfigRoot(), "exchange_settings.json");
     private string CredentialsPath => Path.Combine(ResolveSharedConfigRoot(), "exchange_credentials.dpapi");
 
+    // Prevents re-entrancy while the change handlers mutate each other.
+    private bool _isComposingMode;
+
     public ExchangeSettingsViewModel()
     {
         LoadSettings();
+    }
+
+    partial void OnSelectedVenueChanged(string value) => ComposeExchangeMode();
+    partial void OnSelectedMarketTypeChanged(string value) => ComposeExchangeMode();
+
+    // IsDemoMode drives Binance spot→testnet and Binance futures→futuresTestnet; it is
+    // already used for OKX. Recompose whenever the toggle flips so the mode string
+    // tracks the UI state without requiring a Save round-trip.
+    partial void OnIsDemoModeChanged(bool value)
+    {
+        // Guard: only prompt when switching TO live (value == false).
+        if (!value)
+        {
+            var result = MessageBox.Show(
+                "You are switching to LIVE trading. Real funds will be at risk. Confirm?",
+                "Live Trading Warning",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+
+            if (result != MessageBoxResult.Yes)
+            {
+                // Revert — re-triggers this handler with value == true.
+                IsDemoMode = true;
+                return;
+            }
+        }
+
+        ComposeExchangeMode();
+    }
+
+    /// <summary>
+    /// Derive the compound ExchangeMode string (consumed by every worker's Program.cs
+    /// dispatch logic and the TMQ_EXCHANGE_MODE env var) from the three UI axes
+    /// the user actually picks: Venue × MarketType × Demo/Testnet flag.
+    /// </summary>
+    private void ComposeExchangeMode()
+    {
+        if (_isComposingMode) return;
+        _isComposingMode = true;
+        try
+        {
+            SelectedExchangeMode = (SelectedVenue, SelectedMarketType, IsDemoMode) switch
+            {
+                ("Mock", _, _) => "Mock",
+                ("Binance", "Spot", true) => "BinanceTestnet",
+                ("Binance", "Spot", false) => "Binance",
+                ("Binance", "Futures", true) => "BinanceFuturesTestnet",
+                ("Binance", "Futures", false) => "BinanceFutures",
+                ("OKX", "Spot", _) => "OKX",
+                ("OKX", "Futures", _) => "OKXSwap",
+                _ => SelectedExchangeMode
+            };
+        }
+        finally
+        {
+            _isComposingMode = false;
+        }
+    }
+
+    /// <summary>
+    /// Reverse of ComposeExchangeMode: parse the persisted compound string back
+    /// into the three UI axes so the user's last selection round-trips correctly.
+    /// OKX demo-mode information lives in the JSON's OKX.IsDemoMode field, not
+    /// the compound string, so only Binance modes drive IsDemoMode here.
+    /// </summary>
+    private void DecomposeExchangeMode(string mode)
+    {
+        _isComposingMode = true;
+        try
+        {
+            switch (mode)
+            {
+                case "Mock":
+                    SelectedVenue = "Mock";
+                    SelectedMarketType = "Spot";
+                    break;
+                case "Binance":
+                    SelectedVenue = "Binance";
+                    SelectedMarketType = "Spot";
+                    IsDemoMode = false;
+                    break;
+                case "BinanceTestnet":
+                    SelectedVenue = "Binance";
+                    SelectedMarketType = "Spot";
+                    IsDemoMode = true;
+                    break;
+                case "BinanceFutures":
+                    SelectedVenue = "Binance";
+                    SelectedMarketType = "Futures";
+                    IsDemoMode = false;
+                    break;
+                case "BinanceFuturesTestnet":
+                    SelectedVenue = "Binance";
+                    SelectedMarketType = "Futures";
+                    IsDemoMode = true;
+                    break;
+                case "OKX":
+                    SelectedVenue = "OKX";
+                    SelectedMarketType = "Spot";
+                    break;
+                case "OKXSwap":
+                    SelectedVenue = "OKX";
+                    SelectedMarketType = "Futures";
+                    break;
+            }
+        }
+        finally
+        {
+            _isComposingMode = false;
+        }
     }
 
     [RelayCommand]
@@ -115,24 +254,6 @@ public partial class ExchangeSettingsViewModel : ObservableObject
         }
     }
 
-    partial void OnIsDemoModeChanged(bool value)
-    {
-        // Guard: only prompt when switching TO live (value == false).
-        if (value) return;
-
-        var result = MessageBox.Show(
-            "You are switching to LIVE trading. Real funds will be at risk. Confirm?",
-            "Live Trading Warning",
-            MessageBoxButton.YesNo,
-            MessageBoxImage.Warning);
-
-        if (result != MessageBoxResult.Yes)
-        {
-            // Revert — re-triggers this handler with value == true, which returns immediately.
-            IsDemoMode = true;
-        }
-    }
-
     private void LoadSettings()
     {
         if (File.Exists(SettingsPath))
@@ -150,6 +271,10 @@ public partial class ExchangeSettingsViewModel : ObservableObject
                 {
                     if (okx.TryGetProperty("IsDemoMode", out var demo)) IsDemoMode = demo.GetBoolean();
                 }
+
+                // Project the compound mode back into the UI's (Venue, MarketType)
+                // axes so the user sees their previous selection correctly on load.
+                DecomposeExchangeMode(SelectedExchangeMode);
             }
             catch
             {

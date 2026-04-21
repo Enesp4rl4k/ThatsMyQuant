@@ -28,6 +28,16 @@ public partial class PortfolioViewModel : ObservableObject
     [ObservableProperty] private Brush _portfolioExecutionModeColor = GrayBrush;
     [ObservableProperty] private string _portfolioPromotionStageLabel = "Stage pending";
 
+    /// <summary>Totals from closed trades in the selected portfolio range (fees paid).</summary>
+    [ObservableProperty] private decimal _portfolioWindowFeesPaid;
+
+    /// <summary>Net funding in range: positive received, negative paid.</summary>
+    [ObservableProperty] private decimal _portfolioWindowNetFunding;
+
+    [ObservableProperty] private Brush _portfolioWindowFeesBrush = GrayBrush;
+
+    [ObservableProperty] private Brush _portfolioWindowFundingBrush = GrayBrush;
+
     public ObservableCollection<PositionViewModel> ActivePositions { get; } = new();
     public ObservableCollection<TradeJournalEntry> TradeJournal { get; } = new();
     

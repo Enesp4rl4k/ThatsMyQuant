@@ -168,6 +168,7 @@ public sealed class TickReplayEngine
         if (execution.FilledQuantity <= 0) return position;
 
         var exitPrice = execution.FillPrice;
+        var feesPortion = CalculateFees(position, exitPrice, execution.FilledQuantity);
         var pnl = CalculatePnl(position, exitPrice, execution.FilledQuantity);
         state.Update(pnl);
         equityCurve.Add(state.Equity);
@@ -187,7 +188,9 @@ public sealed class TickReplayEngine
             ExitReason = exitReason,
             ExecutionMode = "TICK-REPLAY",
             Confidence = position.Confidence,
-            Reasoning = $"{position.Reasoning} | Exit fill {execution.FillPrice:F4} on {execution.ExecutionScope}"
+            Reasoning = $"{position.Reasoning} | Exit fill {execution.FillPrice:F4} on {execution.ExecutionScope}",
+            TotalFeesPaid = feesPortion,
+            NetFunding = 0m
         });
 
         tradeHistory.Add(new Trade
@@ -198,7 +201,9 @@ public sealed class TickReplayEngine
             ExitPrice = exitPrice,
             Quantity = execution.FilledQuantity,
             EntryTime = position.EntryTime,
-            ExitTime = DateTimeOffset.FromUnixTimeMilliseconds(tick.TimestampMs).UtcDateTime
+            ExitTime = DateTimeOffset.FromUnixTimeMilliseconds(tick.TimestampMs).UtcDateTime,
+            TotalFeesPaid = feesPortion,
+            NetFunding = 0m
         });
 
         return null;
@@ -385,12 +390,14 @@ public sealed class TickReplayEngine
         return current;
     }
 
+    private static decimal CalculateFees(ReplayPosition pos, decimal exitPrice, decimal filledQuantity)
+        => (pos.EntryPrice * filledQuantity + exitPrice * filledQuantity) * CommissionRate;
+
     private static decimal CalculatePnl(ReplayPosition pos, decimal exitPrice, decimal filledQuantity)
     {
         decimal direction = pos.Side == TradeSide.Sell ? -1m : 1m;
         decimal gross = (exitPrice - pos.EntryPrice) * filledQuantity * direction;
-        decimal fees = (pos.EntryPrice * filledQuantity + exitPrice * filledQuantity) * CommissionRate;
-        return gross - fees;
+        return gross - CalculateFees(pos, exitPrice, filledQuantity);
     }
 
     private static BacktestResult BuildResult(

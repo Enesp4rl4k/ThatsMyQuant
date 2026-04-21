@@ -55,7 +55,11 @@ public partial class MainViewModel
 
                     using var okxHttp = new HttpClient();
                     var okxLogger = LoggerFactory.Create(b => b.AddConsole()).CreateLogger<OkxExecutionService>();
-                    using var okxService = new OkxExecutionService(okxLogger, okxHttp, okxConfig);
+                    using var okxService = new OkxExecutionService(
+                        okxLogger,
+                        okxHttp,
+                        okxConfig,
+                        new ThatsMyQuant.Infrastructure.Services.VenuePortfolioManager());
                     okxSymbols = await okxService.GetFavoritesAsync();
                 }
                 catch (ExchangeSyncException ex)
@@ -93,7 +97,8 @@ public partial class MainViewModel
                         binanceHttp,
                         keyVault,
                         secretVault,
-                        streamingService: null!);
+                        streamingService: null!,
+                        new ThatsMyQuant.Infrastructure.Services.VenuePortfolioManager());
                     binanceSymbols = await binanceService.GetFavoritesAsync();
                 }
                 catch (ExchangeSyncException ex)

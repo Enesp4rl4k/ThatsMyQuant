@@ -1,5 +1,6 @@
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -14,6 +15,13 @@ public sealed record MarketExecutionProfile(
 
 public sealed class MarketExecutionProfileService
 {
+    private readonly IExecutionCostSnapshotCache? _liveCosts;
+
+    public MarketExecutionProfileService(IExecutionCostSnapshotCache? liveCosts = null)
+    {
+        _liveCosts = liveCosts;
+    }
+
     private static readonly IReadOnlyList<MarketExecutionProfile> Profiles =
     [
         new("Crypto", "Binance", 0.08m, 0.03m, 0.04m, 1_000_000m, 120),
@@ -39,13 +47,34 @@ public sealed class MarketExecutionProfileService
     }
 
     public decimal ResolveSlippagePercent(string symbol, IDictionary<string, string>? metadata, decimal? overridePercent = null)
-        => overridePercent is > 0 ? overridePercent.Value : ResolveForSymbol(symbol, metadata).SlippagePercent;
+    {
+        if (overridePercent is > 0)
+            return overridePercent.Value;
+        var live = _liveCosts?.GetSlippagePercent(symbol);
+        if (live is > 0m)
+            return live.Value;
+        return ResolveForSymbol(symbol, metadata).SlippagePercent;
+    }
 
     public decimal ResolveSpreadPercent(string symbol, IDictionary<string, string>? metadata, decimal? overridePercent = null)
-        => overridePercent is > 0 ? overridePercent.Value : ResolveForSymbol(symbol, metadata).SpreadPercent;
+    {
+        if (overridePercent is > 0)
+            return overridePercent.Value;
+        var live = _liveCosts?.GetSpreadPercent(symbol);
+        if (live is > 0m)
+            return live.Value;
+        return ResolveForSymbol(symbol, metadata).SpreadPercent;
+    }
 
     public decimal ResolveCommissionPercent(string symbol, IDictionary<string, string>? metadata, decimal? overridePercent = null)
-        => overridePercent is > 0 ? overridePercent.Value : ResolveForSymbol(symbol, metadata).CommissionPercentPerSide;
+    {
+        if (overridePercent is > 0)
+            return overridePercent.Value;
+        var live = _liveCosts?.GetTakerCommissionPercentPerSide(symbol);
+        if (live is > 0m)
+            return live.Value;
+        return ResolveForSymbol(symbol, metadata).CommissionPercentPerSide;
+    }
 
     public decimal ApplyExecutionPrice(
         decimal price,
@@ -84,6 +113,24 @@ public sealed class MarketExecutionProfileService
         var commissionRate = ResolveCommissionPercent(symbol, metadata, overrideCommissionPercent) / 100m;
         var fees = ((entryPrice * quantity) + (exitPrice * quantity)) * commissionRate;
         return gross - fees;
+    }
+
+    /// <summary>Notional-based round-trip commission for a closed slice (entry + exit legs).</summary>
+    public decimal CalculateRoundTripFees(
+        decimal entryPrice,
+        decimal exitPrice,
+        decimal quantity,
+        string symbol,
+        IDictionary<string, string>? metadata = null,
+        decimal? overrideCommissionPercent = null)
+    {
+        if (quantity <= 0m)
+        {
+            return 0m;
+        }
+
+        var commissionRate = ResolveCommissionPercent(symbol, metadata, overrideCommissionPercent) / 100m;
+        return ((entryPrice * quantity) + (exitPrice * quantity)) * commissionRate;
     }
 
     private static string ResolveMarket(string symbol)

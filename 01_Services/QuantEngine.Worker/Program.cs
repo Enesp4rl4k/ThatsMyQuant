@@ -30,11 +30,20 @@ builder.Configuration.ApplySharedExchangeConfiguration();
 var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
 var isBinanceMode =
     selectedExchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
-    selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
-var isOkxMode = selectedExchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase);
-var binanceBaseUrl = selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)
-    ? "https://testnet.binance.vision"
-    : "https://api.binance.com";
+    selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) ||
+    selectedExchangeMode.Equals("BinanceFutures", StringComparison.OrdinalIgnoreCase) ||
+    selectedExchangeMode.Equals("BinanceFuturesTestnet", StringComparison.OrdinalIgnoreCase);
+var isOkxMode =
+    selectedExchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) ||
+    selectedExchangeMode.Equals("OKXSwap", StringComparison.OrdinalIgnoreCase);
+var isMockMode = selectedExchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase);
+var binanceBaseUrl = selectedExchangeMode switch
+{
+    var mode when mode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) => "https://testnet.binance.vision",
+    var mode when mode.Equals("BinanceFutures", StringComparison.OrdinalIgnoreCase) => "https://fapi.binance.com",
+    var mode when mode.Equals("BinanceFuturesTestnet", StringComparison.OrdinalIgnoreCase) => "https://testnet.binancefuture.com",
+    _ => "https://api.binance.com"
+};
 
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient("Yahoo", c => c.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0"));
@@ -43,6 +52,11 @@ builder.Services.AddHttpClient("Binance", c =>
     c.BaseAddress = new Uri(binanceBaseUrl);
 });
 builder.Services.AddHttpClient("OKX");
+builder.Services.AddHttpClient("OkxPublic", c =>
+{
+    c.BaseAddress = new Uri("https://www.okx.com");
+    c.Timeout = TimeSpan.FromSeconds(10);
+});
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
 
 Log.Logger = new LoggerConfiguration()
@@ -111,6 +125,34 @@ var hasBinanceCredentials =
     !string.IsNullOrWhiteSpace(builder.Configuration["TMQ_BINANCE_API_KEY"]) &&
     !string.IsNullOrWhiteSpace(builder.Configuration["TMQ_BINANCE_API_SECRET"]);
 
+var okxDemoFlag = builder.Configuration["OKX:IsDemoMode"] ?? builder.Configuration["OKX__IsDemoMode"];
+var isOkxDemo = bool.TryParse(okxDemoFlag, out var okxDemo) && okxDemo;
+var allowLiveTradingFlag = builder.Configuration["TMQ_ALLOW_LIVE_TRADING"];
+var allowLiveTrading = bool.TryParse(allowLiveTradingFlag, out var allowLive) && allowLive;
+var credentialSource = StartupSafetyPolicy.ResolveCredentialSource(hasOkxCredentials, hasBinanceCredentials);
+var executionSyncEnabled = isOkxMode && hasOkxCredentials;
+
+Log.Information(
+    "QuantEngine.Worker startup: ExchangeMode={ExchangeMode} | OKX_Creds={HasOkxCreds} (Demo={OkxDemo}) | Binance_Creds={HasBinanceCreds} (BaseUrl={BinanceBaseUrl}) | LiveOverride={AllowLiveTrading} | CredentialSource={CredentialSource} | ExecutionSync={ExecutionSyncEnabled}",
+    selectedExchangeMode,
+    hasOkxCredentials,
+    isOkxDemo,
+    hasBinanceCredentials,
+    binanceBaseUrl,
+    allowLiveTrading,
+    credentialSource,
+    executionSyncEnabled);
+
+StartupSafetyPolicy.EnforceOrThrow(
+    "QuantEngine.Worker",
+    selectedExchangeMode,
+    isMockMode,
+    isOkxMode,
+    isOkxDemo,
+    allowLiveTrading,
+    hasOkxCredentials,
+    hasBinanceCredentials);
+
 // Execution routing follows the launcher-selected venue.
 if (isOkxMode && hasOkxCredentials)
 {
@@ -125,13 +167,17 @@ if (isOkxMode && hasOkxCredentials)
             sp.GetRequiredService<ILogger<OkxExecutionService>>(),
             sp.GetRequiredService<IHttpClientFactory>().CreateClient("OKX"),
             builder.Configuration,
-            sp.GetService<ISharedPortfolioStateManager>(),
-            sp.GetService<ThatsMyQuant.Application.Security.ApiVault>()));
+            sp.GetRequiredService<ISharedPortfolioStateManager>(),
+            sp.GetService<ThatsMyQuant.Application.Security.ApiVault>(),
+            sp.GetService<OperationalTelemetry>(),
+            sp.GetRequiredService<IStreamingMarketDataService>()));
     builder.Services.AddSingleton<IExchangeExecutionSync>(sp =>
         new OkxExecutionSync(
             sp.GetRequiredService<ILogger<OkxExecutionSync>>(),
             builder.Configuration,
             sp.GetService<ThatsMyQuant.Application.Security.ApiVault>()));
+
+    Log.Information("QuantEngine.Worker: OKX execution service registered (Demo={OkxDemo}).", isOkxDemo);
 }
 else if (isBinanceMode && hasBinanceCredentials)
 {
@@ -148,8 +194,11 @@ else if (isBinanceMode && hasBinanceCredentials)
             keyVault,
             secretVault,
             sp.GetRequiredService<IStreamingMarketDataService>(),
-            sp.GetService<ISharedPortfolioStateManager>());
+            sp.GetRequiredService<ISharedPortfolioStateManager>(),
+            sp.GetService<OperationalTelemetry>());
     });
+
+    Log.Information("QuantEngine.Worker: Binance execution service registered in {Mode} mode.", selectedExchangeMode);
 }
 else
 {
@@ -158,7 +207,16 @@ else
         var inner = new MockBrokerService(sp.GetRequiredService<ILogger<MockBrokerService>>()); 
         return new ChaosExchangeDecorator(inner, sp.GetRequiredService<ILogger<ChaosExchangeDecorator>>());
     });
+
+    Log.Warning("QuantEngine.Worker: Mock exchange execution registered (Chaos decorator enabled).");
 }
+
+builder.Services.AddSingleton<IVenueTradeFeeProvider>(sp =>
+{
+    var ex = sp.GetRequiredService<IExchangeService>();
+    return ex as IVenueTradeFeeProvider ?? new NullVenueTradeFeeProvider();
+});
+builder.Services.Replace(ServiceDescriptor.Singleton<IExecutionCostSnapshotCache, ExecutionCostSnapshotCache>());
 
 builder.Services.TryAddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
 builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
@@ -169,7 +227,38 @@ builder.Services.AddTransient<ISignalValidator, PriceSanityValidator>();
 
 builder.Services.AddHostedService<WorkerManagementApiHostedService>();
 builder.Services.AddHostedService<ExchangeExecutionSyncHostedService>();
-builder.Services.AddHostedService<TradeBotWorker>();
+
+// TMQ_MODE dispatch: paper | live (default). `backtest` runs via the CLI tool instead.
+var runMode = (builder.Configuration["TMQ_MODE"] ?? "live").ToLowerInvariant();
+switch (runMode)
+{
+    case "paper":
+        builder.Services.AddHostedService<PaperTradingHostedService>();
+        Log.Information("QuantEngine.Worker: TMQ_MODE=paper. PaperTradingHostedService registered.");
+        break;
+
+    case "live":
+    default:
+        builder.Services.AddHostedService<TradeBotWorker>();
+        if (bool.TryParse(builder.Configuration["QuantEngine:LiveSignalScan:Enabled"], out var liveScan) && liveScan)
+        {
+            var symbols = builder.Configuration["QuantEngine:LiveSignalScan:Symbols"] ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(symbols))
+            {
+                builder.Services.AddHostedService<LiveSignalScanHostedService>();
+                Log.Information("QuantEngine.Worker: LiveSignalScanHostedService registered (symbols: {Symbols}).", symbols);
+            }
+            else
+            {
+                Log.Warning("QuantEngine.Worker: LiveSignalScan:Enabled=true but QuantEngine:LiveSignalScan:Symbols is empty; scan service not registered.");
+            }
+        }
+
+        Log.Information(
+            "QuantEngine.Worker: TMQ_MODE={Mode}. TradeBotWorker registered. HFT/tick signals are produced in Execution.Worker (TickPipeline); optional candle scan runs here when configured.",
+            runMode);
+        break;
+}
 
 var host = builder.Build();
 using (var scope = host.Services.CreateScope())
@@ -191,6 +280,9 @@ using (var scope = host.Services.CreateScope())
 
     var portfolioCache = scope.ServiceProvider.GetRequiredService<IPortfolioStateCache>();
     await portfolioCache.InitializeAsync();
+
+    var promotion = scope.ServiceProvider.GetRequiredService<StrategyPromotionService>();
+    await promotion.InitializeAsync();
 }
 
 host.Services.GetRequiredService<ServiceRuntimeState>().MarkReady();

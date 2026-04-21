@@ -42,6 +42,9 @@ public sealed class OkxWebSocketService : IStreamingMarketDataService, IAsyncDis
         _maxReconnectAttempts = maxReconnectAttempts;
     }
 
+    /// <summary>Unit tests: simulates a books5 snapshot without a live socket.</summary>
+    internal void RaiseOrderBookUpdatedForTests(OrderBookSnapshot snapshot) => OnOrderBookUpdated?.Invoke(snapshot);
+
     public async Task ConnectAsync(string[] symbols, CancellationToken cancellationToken)
     {
         if (symbols == null || symbols.Length == 0) return;

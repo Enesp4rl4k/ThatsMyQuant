@@ -15,8 +15,12 @@ namespace ThatsMyQuant.Tests.Strategy;
 public class EngineHardeningTests
 {
     [Fact]
-    public async Task AnalyzeAsync_ShouldRejectCryptoTrade_InDeadZoneSession()
+    public async Task AnalyzeAsync_ShouldNotHardBlockCryptoTrade_InDeadZoneSession()
     {
+        // Crypto is a 24/7 market: a dead-zone Turkey-time session should reduce
+        // conviction (score/size multipliers), not hard-block the signal. Any
+        // rejection at this point must come from downstream gates (confluence,
+        // tradeability, router threshold), never from the session gate itself.
         var logger = Substitute.For<ILogger<QuantIndicatorService>>();
         var service = new QuantIndicatorService(logger);
         var candles = CreateBullishCandles(new DateTime(2026, 3, 20, 18, 0, 0, DateTimeKind.Utc));
@@ -26,8 +30,7 @@ public class EngineHardeningTests
             candles,
             RiskParameters.Default);
 
-        decision.ShouldTrade.Should().BeFalse();
-        decision.Reasoning.Should().Contain("Session gate blocked");
+        decision.Reasoning.Should().NotContain("Session gate blocked");
     }
 
     [Fact]
@@ -178,8 +181,11 @@ public class EngineHardeningTests
     }
 
     [Fact]
-    public async Task ProcessSymbolAsync_ShouldSkipCryptoOutsidePreferredTradeWindow()
+    public async Task ProcessSymbolAsync_ShouldNotSkipCryptoOutsideTurkeyKillzones()
     {
+        // Crypto markets run 24/7. The paper-trading session filter must not
+        // hard-block new entries outside the Turkey-time London/NY killzones;
+        // any conviction reduction happens inside the analysis service instead.
         var analysis = Substitute.For<ITechnicalAnalysisService>();
         var marketData = Substitute.For<IMarketDataService>();
         var logger = Substitute.For<ILogger<PaperTradingService>>();
@@ -203,7 +209,7 @@ public class EngineHardeningTests
 
         var result = await service.ProcessSymbolAsync("BTC-USD");
 
-        result.Should().Contain("outside preferred trade window");
+        result.Should().NotContain("outside preferred trade window");
     }
 
     private static List<Candle> CreateBullishCandles(DateTime lastTimestampUtc)
