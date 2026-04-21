@@ -104,6 +104,8 @@ public class ExecutionWorkerCircuitBreakerTests
         await InvokeProcessSingleSignal(worker, signal, repo, mediator);
 
         signal.Status.Should().Be(TradeStatus.Executed);
+        signal.ClaimedAtUtc.Should().BeNull();
+        signal.ClaimedBy.Should().BeNull();
         await mediator.Received(1).Send(Arg.Any<ExecuteTradeCommand>(), Arg.Any<CancellationToken>());
         await repo.Received(1).UpdateAsync(signal);
     }
@@ -128,6 +130,8 @@ public class ExecutionWorkerCircuitBreakerTests
 
         signal.Status.Should().Be(TradeStatus.Failed);
         signal.Reasoning.Should().Contain("Execution returned non-success");
+        signal.ClaimedAtUtc.Should().BeNull();
+        signal.ClaimedBy.Should().BeNull();
     }
 
     [Fact]
@@ -146,5 +150,7 @@ public class ExecutionWorkerCircuitBreakerTests
 
         signal.Status.Should().Be(TradeStatus.DeadLetter);
         signal.Reasoning.Should().Contain("Max Retries");
+        signal.ClaimedAtUtc.Should().BeNull();
+        signal.ClaimedBy.Should().BeNull();
     }
 }

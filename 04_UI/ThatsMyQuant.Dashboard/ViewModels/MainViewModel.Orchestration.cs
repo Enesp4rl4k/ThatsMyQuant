@@ -26,9 +26,12 @@ public partial class MainViewModel
         Studio.BotLaunchSummary =
             $"{Studio.SelectedBotStrategy} on {Studio.SelectedBotBaseAsset}/{Studio.SelectedBotQuoteAsset} with {Studio.BotFundingAmount:N0} {Studio.SelectedBotQuoteAsset}, " +
             $"{Studio.SelectedBotObjective.ToLowerInvariant()} objective, grid {Studio.GridLowerLimit:F1}% to {Studio.GridUpperLimit:F1}%, density {Studio.GridDensity}, slope {slopeText}, throttle {StrategyThrottleStatus.ToLowerInvariant()}, {exactBucketLaunchText}, {concordanceLaunchText}, recommended capital {Studio.BotRecommendedFunding:N0}.";
-        Studio.BotLaunchHint = IsPaperMode
+        var modeHint = IsPaperMode
             ? "Paper mode is active, so this launch will stay sandboxed until you switch to live."
             : "Live mode is active. Double-check broker routing and risk limits before activating.";
+        Studio.BotLaunchHint =
+            modeHint +
+            " Same automated desk loop as Terminal START LOOP. Listener, Execution, and QuantEngine are separate processes—start them from the Launcher app or the README ops checklist; this button does not spawn them.";
 
         UpdateBotProductivityInsights();
     }
@@ -667,7 +670,10 @@ public partial class MainViewModel
         MarketOverview.ExecutionServiceStatus = ResolveExecutionServiceStatus(exchangeMode, simulationMode, hasBinanceKeys, hasOkxKeys);
         IsHftRuntimeAvailable = exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
                                 exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) ||
-                                exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase);
+                                exchangeMode.Equals("BinanceFutures", StringComparison.OrdinalIgnoreCase) ||
+                                exchangeMode.Equals("BinanceFuturesTestnet", StringComparison.OrdinalIgnoreCase) ||
+                                exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) ||
+                                exchangeMode.Equals("OKXSwap", StringComparison.OrdinalIgnoreCase);
         MarketOverview.AiProviderStatus = ResolveAiProviderStatus(hasGeminiKey, simulationMode);
 
         var configIssues = IdentifyConfigurationGaps(simulationMode);
@@ -684,13 +690,28 @@ public partial class MainViewModel
             return "SIMULATION BROKER";
         }
 
-        if ((exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) || exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)) && hasBinanceKeys)
+        if ((exchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
+             exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) ||
+             exchangeMode.Equals("BinanceFutures", StringComparison.OrdinalIgnoreCase) ||
+             exchangeMode.Equals("BinanceFuturesTestnet", StringComparison.OrdinalIgnoreCase)) && hasBinanceKeys)
         {
-            return exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) ? "BINANCE TESTNET" : "BINANCE LIVE";
+            return exchangeMode switch
+            {
+                var mode when mode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) => "BINANCE TESTNET",
+                var mode when mode.Equals("BinanceFutures", StringComparison.OrdinalIgnoreCase) => "BINANCE FUTURES",
+                var mode when mode.Equals("BinanceFuturesTestnet", StringComparison.OrdinalIgnoreCase) => "BINANCE FUTURES TESTNET",
+                _ => "BINANCE LIVE"
+            };
         }
 
-        if (exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) && hasOkxKeys)
+        if ((exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) ||
+             exchangeMode.Equals("OKXSwap", StringComparison.OrdinalIgnoreCase)) && hasOkxKeys)
         {
+            if (exchangeMode.Equals("OKXSwap", StringComparison.OrdinalIgnoreCase))
+            {
+                return okxDemoMode ? "OKX SWAP DEMO" : "OKX SWAP LIVE";
+            }
+
             return okxDemoMode ? "OKX DEMO" : "OKX LIVE";
         }
 

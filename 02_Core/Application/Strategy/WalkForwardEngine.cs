@@ -34,6 +34,7 @@ public sealed class WalkForwardEngine
     public async Task<WalkForwardResult> RunAsync(
         List<Candle> candles,
         string symbol,
+        string timeframe = "1h",
         int numWindows = 6,
         double trainRatio = 0.7,
         decimal capital = 100_000m,
@@ -83,8 +84,8 @@ public sealed class WalkForwardEngine
             _logger.LogDebug("Window {Window}: train [{TrainStart}-{TrainEnd}], test [{TestStart}-{TestEnd}]",
                 w, startIdx, trainEnd, trainEnd, testEnd);
 
-            var trainResult = await _backtestEngine.RunAsync(trainCandles, symbol, capital);
-            var oosResult = await _backtestEngine.RunAsync(testCandles, symbol, capital);
+            var trainResult = await _backtestEngine.RunAsync(trainCandles, symbol, timeframe, capital);
+            var oosResult = await _backtestEngine.RunAsync(testCandles, symbol, timeframe, capital);
 
             double trainSharpe = ComputeSharpe(trainResult);
             double oosSharpe = ComputeSharpe(oosResult);

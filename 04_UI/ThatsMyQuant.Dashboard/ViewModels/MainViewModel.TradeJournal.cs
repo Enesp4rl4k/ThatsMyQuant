@@ -47,6 +47,8 @@ public partial class MainViewModel
         var concordance = ResolveStoredConcordance(trade, exactBucketPressure, storedVenueImpact);
         var mlDrift = ResolveStoredMlDrift(trade);
         var stageExplanation = BuildTradeJournalStageExplanation(trade);
+        var profitLeakBefore = ResolveProfitLeakBeforeLiveChange(trade);
+        var profitLeakAfter = ResolveProfitLeakAfterLiveChange(trade, profitLeakBefore);
 
         return new TradeJournalEntry
         {
@@ -63,6 +65,10 @@ public partial class MainViewModel
             StageExplanation = stageExplanation,
             ExactBucketImpact = exactBucketPressure.Impact,
             ExactBucketSummary = exactBucketPressure.Summary,
+            ProfitLeakAuditSummary = ResolveProfitLeakAuditSummary(trade),
+            ProfitLeakWorstBucketBeforeLiveChange = profitLeakBefore,
+            ProfitLeakWorstBucketAfterLiveChange = profitLeakAfter,
+            ProfitLeakBucketTelemetry = BuildProfitLeakTelemetry(trade),
             EdgeSummary = BuildTradeJournalEdgeSummary(trade),
             ExitSummary = BuildTradeJournalExitSummary(trade),
             ExitReason = string.IsNullOrWhiteSpace(trade.ExitReason) ? ResolveLifecycleLabel(trade) : trade.ExitReason,
@@ -84,6 +90,7 @@ public partial class MainViewModel
                 stageExplanation,
                 storedVenueImpact,
                 exactBucketPressure.Impact,
+                ResolveProfitLeakReasoningFragment(trade),
                 concordance.Impact,
                 mlDrift.Impact),
             OriginalTrade = trade
@@ -354,6 +361,7 @@ public partial class MainViewModel
         string stageExplanation,
         string venueImpact,
         string exactBucketImpact,
+        string profitLeakImpact,
         string concordanceImpact,
         string mlDriftImpact)
     {
@@ -370,10 +378,93 @@ public partial class MainViewModel
             lifecyclePart,
             mlDriftImpact,
             exactBucketImpact,
+            profitLeakImpact,
             concordanceImpact,
             stageExplanation,
             allocatorImpact,
             venueImpact);
+    }
+
+    private static string ResolveProfitLeakAuditSummary(Trade trade)
+    {
+        return string.IsNullOrWhiteSpace(trade.ProfitLeakAuditSummary)
+            ? "Profit leak audit metadata was not recorded for this execution."
+            : trade.ProfitLeakAuditSummary;
+    }
+
+    private static string ResolveProfitLeakBeforeLiveChange(Trade trade)
+    {
+        if (!string.IsNullOrWhiteSpace(trade.ProfitLeakWorstBucketBeforeLiveChange))
+            return trade.ProfitLeakWorstBucketBeforeLiveChange;
+
+        var buckets = new List<(string Label, decimal Value)>
+        {
+            ("Exact", trade.ProfitLeakExactNetExpectancy),
+            ("ExitPolicy", trade.ProfitLeakExitPolicyNetExpectancy),
+            ("Regime", trade.ProfitLeakRegimeNetExpectancy),
+            ("Venue", trade.ProfitLeakVenueNetExpectancy)
+        };
+
+        if (trade.ProfitLeakReducedSizeNetExpectancy != 0m || trade.ProfitLeakReducedSizeNoise)
+            buckets.Add(("ReducedSize", trade.ProfitLeakReducedSizeNetExpectancy));
+
+        if (buckets.All(bucket => bucket.Value == 0m))
+            return "Worst leak bucket not recorded.";
+
+        var worst = buckets.OrderBy(bucket => bucket.Value).First();
+        return $"{worst.Label}: EV {worst.Value:F2}";
+    }
+
+    private static string ResolveProfitLeakAfterLiveChange(Trade trade, string beforeSummary)
+    {
+        if (!string.IsNullOrWhiteSpace(trade.ProfitLeakWorstBucketAfterLiveChange))
+            return trade.ProfitLeakWorstBucketAfterLiveChange;
+
+        if (trade.ProfitLeakAuditSizeMultiplier is > 0m and < 1m)
+            return $"Reduced to {trade.ProfitLeakAuditSizeMultiplier:F2}x after live change. {beforeSummary}";
+
+        if (!string.IsNullOrWhiteSpace(trade.ProfitLeakAuditSummary) &&
+            trade.ProfitLeakAuditSummary.Contains("net-negative", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"Blocked after live change. {beforeSummary}";
+        }
+
+        return "No leak-driven live change recorded.";
+    }
+
+    private static string BuildProfitLeakTelemetry(Trade trade)
+    {
+        var fragments = new List<string>();
+
+        if (trade.ProfitLeakExactNetExpectancy != 0m)
+            fragments.Add($"Exact {trade.ProfitLeakExactNetExpectancy:F2}");
+        if (trade.ProfitLeakExitPolicyNetExpectancy != 0m)
+            fragments.Add($"Exit {trade.ProfitLeakExitPolicyNetExpectancy:F2}");
+        if (trade.ProfitLeakRegimeNetExpectancy != 0m)
+            fragments.Add($"Regime {trade.ProfitLeakRegimeNetExpectancy:F2}");
+        if (trade.ProfitLeakVenueNetExpectancy != 0m)
+            fragments.Add($"Venue {trade.ProfitLeakVenueNetExpectancy:F2}");
+        if (trade.ProfitLeakReducedSizeNetExpectancy != 0m || trade.ProfitLeakReducedSizeNoise)
+            fragments.Add($"Reduced {trade.ProfitLeakReducedSizeNetExpectancy:F2}");
+        if (trade.ProfitLeakLoserClusterRate > 0m)
+            fragments.Add($"Loser cluster {trade.ProfitLeakLoserClusterRate:P0}");
+        if (!string.IsNullOrWhiteSpace(trade.ProfitLeakDominantLosingExitPolicy))
+            fragments.Add($"Dominant loser exit {trade.ProfitLeakDominantLosingExitPolicy}");
+
+        return fragments.Count == 0
+            ? "Profit leak telemetry unavailable."
+            : string.Join(" | ", fragments);
+    }
+
+    private static string ResolveProfitLeakReasoningFragment(Trade trade)
+    {
+        if (!string.IsNullOrWhiteSpace(trade.ProfitLeakWorstBucketAfterLiveChange))
+            return trade.ProfitLeakWorstBucketAfterLiveChange;
+
+        if (!string.IsNullOrWhiteSpace(trade.ProfitLeakWorstBucketBeforeLiveChange))
+            return $"Profit leak {trade.ProfitLeakWorstBucketBeforeLiveChange}";
+
+        return string.Empty;
     }
 
     private static string BuildAuditTrail(string separator, params string[] parts)

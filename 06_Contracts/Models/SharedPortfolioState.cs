@@ -30,4 +30,9 @@ public sealed record VenuePortfolioSnapshot(
 public sealed record GlobalPortfolioSnapshot(
     IReadOnlyDictionary<BalanceKey, VenueBalanceState> Balances,
     IReadOnlyDictionary<PositionKey, VenuePositionState> Positions,
-    DateTime SnapshotAtUtc);
+    DateTime SnapshotAtUtc)
+{
+    public decimal TotalUsdtValue => Balances
+        .Where(b => b.Key.Asset == "USDT")
+        .Sum(b => b.Value.Total);
+}

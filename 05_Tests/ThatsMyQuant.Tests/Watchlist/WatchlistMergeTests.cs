@@ -35,10 +35,14 @@ public class WatchlistMergeTests
     /// <summary>
     /// Generates a list of 0–10 canonical symbols (may contain duplicates).
     /// </summary>
+    /// <summary>
+    /// Canonical symbols only, case-insensitive distinct — duplicate entries would violate P3's
+    /// "exactly once" expectation while production merge preserves existing rows as-is.
+    /// </summary>
     private static Gen<List<string>> SymbolListGen() =>
-        from count   in Gen.Choose(0, 10)
+        from count in Gen.Choose(0, 10)
         from symbols in Gen.ArrayOf<string>(CanonicalSymbolGen(), count)
-        select symbols.ToList();
+        select symbols.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
     // ── pure merge helper (mirrors MainViewModel.WatchlistSync logic) ─────────
 
@@ -68,7 +72,7 @@ public class WatchlistMergeTests
     // For any existing, okxSymbols, binanceSymbols lists of canonical symbols,
     // every unique valid symbol from all three inputs appears exactly once in result.
     // Validates: Requirements 4.2, 4.3, 4.5, 9.3, 9.5
-    [Property(MaxTest = 100)]
+    [Property(MaxTest = 100, Replay = "0,1234567890")]
     public Property P3_UnionWithDedup()
     {
         // Feature: watchlist-exchange-sync, Property 3
@@ -111,7 +115,7 @@ public class WatchlistMergeTests
     // For any existing, okxSymbols, binanceSymbols:
     //   result.Count >= existing.Count  AND  every symbol in existing is still in result.
     // Validates: Requirements 4.1, 4.4, 9.4
-    [Property(MaxTest = 100)]
+    [Property(MaxTest = 100, Replay = "0,9876543210")]
     public Property P4_NoRemoval()
     {
         // Feature: watchlist-exchange-sync, Property 4

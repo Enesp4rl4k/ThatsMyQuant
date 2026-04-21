@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -15,19 +17,22 @@ public sealed class LivePositionLifecycleService
     private readonly IExchangeService _exchangeService;
     private readonly PositionSupervisorService _positionSupervisor;
     private readonly ILogger<LivePositionLifecycleService> _logger;
+    private readonly decimal _fundingRateBpsPer8h;
 
     public LivePositionLifecycleService(
         ITradeRepository tradeRepository,
         IMarketDataService marketDataService,
         IExchangeService exchangeService,
         PositionSupervisorService positionSupervisor,
-        ILogger<LivePositionLifecycleService> logger)
+        ILogger<LivePositionLifecycleService> logger,
+        IOptions<PaperLeverageOptions>? leverageOptions = null)
     {
         _tradeRepository = tradeRepository;
         _marketDataService = marketDataService;
         _exchangeService = exchangeService;
         _positionSupervisor = positionSupervisor;
         _logger = logger;
+        _fundingRateBpsPer8h = leverageOptions?.Value?.FundingRateBpsPer8h ?? 0m;
     }
 
     public async Task<int> SuperviseOpenTradesAsync(CancellationToken ct)
@@ -137,6 +142,16 @@ public sealed class LivePositionLifecycleService
                 lifecycleAction.Reason,
                 venueTrade.EntryTime == default ? DateTime.UtcNow : venueTrade.EntryTime);
 
+            var fundingNotional = exitFillQuantity * ((trade.EntryPrice + exitPrice) / 2m);
+            var funding = FundingAccrualService.Calculate(
+                fundingNotional,
+                trade.Side,
+                trade.EntryTime,
+                DateTime.UtcNow,
+                _fundingRateBpsPer8h);
+            trade.TotalFeesPaid += venueTrade.TotalFeesPaid;
+            trade.NetFunding += venueTrade.NetFunding + funding;
+
             await _tradeRepository.UpdateAsync(trade);
         }
         catch (Exception ex)
@@ -164,7 +179,9 @@ public sealed class LivePositionLifecycleService
             ["ExecutionMode"] = string.IsNullOrWhiteSpace(trade.ExecutionMode) ? "REAL" : trade.ExecutionMode,
             ["PromotionStage"] = string.IsNullOrWhiteSpace(trade.PromotionStage) ? "LiveProbe" : trade.PromotionStage,
             ["ExitPolicyTag"] = string.IsNullOrWhiteSpace(trade.ExitPolicyTag) ? "TrendRunner" : trade.ExitPolicyTag,
-            ["RequestedQuantity"] = lifecycleAction.Quantity.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            ["RequestedQuantity"] = lifecycleAction.Quantity.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["Leverage"] = Math.Max(1m, trade.Leverage).ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["MarginMode"] = trade.MarginMode.ToString()
         };
 
         return new Signal

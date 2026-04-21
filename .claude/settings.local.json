@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"public.*async Task.*{$\" \"C:/Users/parlak/Downloads/ThatsMyQuant/02_Core/Application\")",
+      "Bash(dotnet build *)",
+      "Bash(dotnet test *)",
+      "Bash(dotnet run *)"
+    ]
+  }
+}

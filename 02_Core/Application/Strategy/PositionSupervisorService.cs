@@ -51,6 +51,10 @@ public sealed class PositionSupervisorService
             PartialExitFraction = TryGetDecimal(signal, "PartialExitFraction"),
             BreakevenTriggerFraction = TryGetDecimal(signal, "BreakevenTriggerFraction", 0.50m),
             MaxHoldingBars = TryGetInt(signal, "MaxHoldingBars"),
+            Leverage = TryGetDecimal(signal, "Leverage", 1m),
+            MarginMode = Enum.TryParse<MarginMode>(TryGetString(signal, "MarginMode"), true, out var marginMode)
+                ? marginMode
+                : MarginMode.Isolated,
             SubmittedTime = now,
             LastUpdatedTime = now,
             EntryTime = now
@@ -106,6 +110,8 @@ public sealed class PositionSupervisorService
         trackedTrade.ExitReason = trackedTrade.Status == TradeStatus.Failed
             ? venueTrade.ExitReason
             : string.Empty;
+        trackedTrade.TotalFeesPaid += venueTrade.TotalFeesPaid;
+        trackedTrade.NetFunding += venueTrade.NetFunding;
     }
 
     public void MarkFailed(Trade trade, string reason)
@@ -146,6 +152,7 @@ public sealed class PositionSupervisorService
         trade.BarsHeld++;
         trade.MarkPrice = current.Close;
         UpdateMafe(trade, current);
+        ApplyExecutionStressOverlay(trade);
         ApplyBreakevenProtection(trade, current);
 
         var partialAction = TryResolvePartialExit(trade, current.Close);
@@ -338,7 +345,15 @@ public sealed class PositionSupervisorService
         if (trailingHit) return "TrailingSL";
         if (trade.MaxAdverseExcursionPercent <= -3.0m) return "MafeStatisticalStop";
 
-        var strategyExit = TryGetStrategyPolicyExit(trade.ExitPolicyTag, trade.Side, trade.IsBreakevenArmed, trade.BarsHeld, trade.MaxHoldingBars, current, previous);
+        var strategyExit = TryGetStrategyPolicyExit(
+            trade.ExitPolicyTag,
+            trade.Side,
+            trade.IsBreakevenArmed,
+            trade.BarsHeld,
+            trade.MaxHoldingBars,
+            current,
+            previous,
+            ResolveExecutionStress(trade));
         if (strategyExit != null) return strategyExit;
 
         if (trade.MaxHoldingBars > 0 && trade.BarsHeld >= trade.MaxHoldingBars)
@@ -354,26 +369,104 @@ public sealed class PositionSupervisorService
         int barsHeld,
         int maxHoldingBars,
         Candle candle,
-        Candle previous)
+        Candle previous,
+        decimal executionStress = 0m)
     {
-        var bearishBar = candle.Close < candle.Open && candle.Close < previous.Close;
-        var bullishBar = candle.Close > candle.Open && candle.Close > previous.Close;
+        var bearishBar =
+            (candle.Close < candle.Open || candle.Close < previous.Close || candle.Low < previous.Low) &&
+            candle.Close <= previous.Close;
+        var bullishBar =
+            (candle.Close > candle.Open || candle.Close > previous.Close || candle.High > previous.High) &&
+            candle.Close >= previous.Close;
+
+        // Breakeven armed check removed — BE stops disabled across routers to protect R:R.
+        // Strategy-policy exits now gated on bars-held ratio against MaxHoldingBars so they
+        // don't fire before TP has a realistic chance to hit.
+        var stressCompression = 1m - Math.Clamp(executionStress * 0.35m, 0m, 0.45m);
+        var trendFadeBars = maxHoldingBars > 0 ? Math.Max(6, (int)(maxHoldingBars * 0.65m * stressCompression)) : 12;
+        var meanRevBars = maxHoldingBars > 0 ? Math.Max(6, (int)(maxHoldingBars * 0.75m * stressCompression)) : 8;
+        var breakoutFailBars = maxHoldingBars > 0 ? Math.Max(4, (int)(maxHoldingBars * 0.50m * stressCompression)) : 6;
+        var momentumAgainstPosition = side == TradeSide.Buy
+            ? candle.Close < previous.Close
+            : candle.Close > previous.Close;
+        var hasOpposingBar = (side == TradeSide.Buy && bearishBar) || (side == TradeSide.Sell && bullishBar) || momentumAgainstPosition;
+
+        if (executionStress >= 0.70m && barsHeld >= 2 && hasOpposingBar)
+            return "ExecutionStressMomentumFade";
 
         return exitPolicyTag switch
         {
-            "TrendRunner" when isBreakevenArmed &&
-                                barsHeld >= Math.Max(6, maxHoldingBars / 2) &&
-                                ((side == TradeSide.Buy && bearishBar) || (side == TradeSide.Sell && bullishBar))
+            "TrendRunner" when barsHeld >= trendFadeBars &&
+                                hasOpposingBar
                 => "TrendMomentumFade",
-            "MeanReversion" when barsHeld >= 4 && !isBreakevenArmed
+            "MeanReversion" when barsHeld >= meanRevBars
                 => "MeanReversionTimeout",
-            "BreakoutExpansion" when barsHeld >= 3 && isBreakevenArmed &&
-                                       ((side == TradeSide.Buy && bearishBar) || (side == TradeSide.Sell && bullishBar))
+            "BreakoutExpansion" when barsHeld >= breakoutFailBars &&
+                                       hasOpposingBar
                 => "BreakoutFailure",
-            "HftScalp" when barsHeld >= 2
+            "HftScalp" when barsHeld >= 4
                 => "HftMicroExit",
             _ => null
         };
+    }
+
+    private static void ApplyExecutionStressOverlay(Trade trade)
+    {
+        var executionStress = ResolveExecutionStress(trade);
+        if (executionStress <= 0m)
+            return;
+
+        if (!trade.IsBreakevenArmed && trade.BreakevenTriggerFraction > 0m)
+        {
+            var stressedBreakeven = Math.Max(0.12m, trade.BreakevenTriggerFraction * (1m - (0.45m * executionStress)));
+            trade.BreakevenTriggerFraction = Math.Min(trade.BreakevenTriggerFraction, stressedBreakeven);
+        }
+
+        if (trade.MaxHoldingBars > 0)
+        {
+            var stressedMaxBars = Math.Max(3, (int)Math.Round(trade.MaxHoldingBars * (1m - (0.35m * executionStress))));
+            trade.MaxHoldingBars = Math.Min(trade.MaxHoldingBars, stressedMaxBars);
+        }
+
+        if (!trade.HasTakenPartialProfit && trade.PartialTakeProfit > 0m && trade.EntryPrice > 0m)
+        {
+            var currentDistance = Math.Abs(trade.PartialTakeProfit - trade.EntryPrice);
+            var stressedDistance = currentDistance * (1m - (0.20m * executionStress));
+            if (stressedDistance < currentDistance)
+            {
+                trade.PartialTakeProfit = trade.Side == TradeSide.Buy
+                    ? trade.EntryPrice + stressedDistance
+                    : trade.EntryPrice - stressedDistance;
+            }
+        }
+    }
+
+    private static decimal ResolveExecutionStress(Trade trade)
+    {
+        decimal stress = 0m;
+
+        if (trade.EntrySlippagePercent > 0.05m)
+        {
+            stress += Math.Clamp((trade.EntrySlippagePercent - 0.05m) / 0.20m, 0m, 0.60m);
+        }
+
+        if (trade.ExecutionLatencyMs > 150)
+        {
+            stress += Math.Clamp((trade.ExecutionLatencyMs - 150m) / 900m, 0m, 0.50m);
+        }
+
+        if (trade.VenueExecutionBias > 0m && trade.VenueExecutionBias < 1.0m)
+        {
+            stress += Math.Clamp((1.0m - trade.VenueExecutionBias) / 0.20m, 0m, 0.50m);
+        }
+
+        if (!string.IsNullOrWhiteSpace(trade.VenueExecutionScope) &&
+            trade.VenueExecutionScope.Contains("degrad", StringComparison.OrdinalIgnoreCase))
+        {
+            stress += 0.15m;
+        }
+
+        return Math.Clamp(stress, 0m, 1m);
     }
 
     private static decimal TryGetDecimal(Signal signal, string key, decimal fallback = 0m)

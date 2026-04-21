@@ -136,15 +136,114 @@ public class BacktestEngineTests
         result.FinalEquity.Should().Be(100_000m);
     }
 
+    [Fact]
+    public async Task RunAsync_ShouldRejectTrendEntries_TooFarFromEma21Pullback()
+    {
+        var decision = new TradeDecision
+        {
+            ShouldTrade = true,
+            Side = TradeSide.Buy,
+            Confidence = 85,
+            StopLoss = 90m,
+            TakeProfit = 130m,
+            PositionSizePercent = 0.10m,
+            StrategyTag = "TrendConfluence",
+            RegimeTag = "Trending",
+            ExitPolicyTag = "TrendRunner",
+            Indicators = new IndicatorSnapshot
+            {
+                ATR = 0.5,
+                EMA20 = 100
+            }
+        };
+
+        var engine = CreateEngine(decision);
+        var candles = CreateCandles(65, 100m, 1m);
+        var result = await engine.RunAsync(candles, "BTCUSDT", 100_000m);
+
+        result.TotalTrades.Should().Be(0, "entry is > 0.5 ATR away from EMA pullback zone");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldRejectBuy_WhenRealHtfEmaBiasIsBearish()
+    {
+        var decision = new TradeDecision
+        {
+            ShouldTrade = true,
+            Side = TradeSide.Buy,
+            Confidence = 85,
+            StopLoss = 90m,
+            TakeProfit = 130m,
+            PositionSizePercent = 0.10m,
+            StrategyTag = "TrendConfluence",
+            RegimeTag = "Trending",
+            ExitPolicyTag = "TrendRunner",
+            Indicators = new IndicatorSnapshot
+            {
+                ATR = 10,
+                EMA20 = 160
+            }
+        };
+
+        var engine = CreateEngine(decision);
+        engine.SetHigherTimeframeCandles(CreateDescendingCandles(70, 300m, 2m, TimeSpan.FromHours(4)));
+        var candles = CreateCandles(65, 100m, 1m);
+        var result = await engine.RunAsync(candles, "BTCUSDT", "1h", 100_000m);
+
+        result.TotalTrades.Should().Be(0, "bearish HTF EMA20/EMA50 slope should veto buy entries");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldNotLeakHftModeIntoLaterStandardRuns()
+    {
+        var engine = CreateEngine(CreateDecision(positionSizePercent: 0.10m, stopLoss: 10m, takeProfit: 1_000_000m));
+        var hftCandles = CreateCandles(65, 100m, 1m);
+        var standardCandles = CreateCandles(65, 100m, 1m);
+
+        var hftResult = await engine.RunHftAsync(hftCandles, "BTCUSDT", "1m", 100_000m);
+        var standardResult = await engine.RunAsync(standardCandles, "BTCUSDT", "1h", 100_000m);
+
+        hftResult.Should().NotBeNull();
+        standardResult.Trades.Should().OnlyContain(trade => trade.StrategyTag != "HftMicroEdge");
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldHaltNewEntries_WhenRollingSevenDayDrawdownExceedsTwoPercent()
+    {
+        var decision = new TradeDecision
+        {
+            ShouldTrade = true,
+            Side = TradeSide.Buy,
+            Confidence = 90,
+            StopLoss = 50m,
+            TakeProfit = 500m,
+            PositionSizePercent = 1.0m,
+            StrategyTag = "TrendConfluence",
+            RegimeTag = "Trending",
+            ExitPolicyTag = "TrendRunner",
+            Indicators = new IndicatorSnapshot
+            {
+                ATR = 100,
+                EMA20 = 100
+            }
+        };
+
+        var engine = CreateEngine(decision);
+        var candles = CreateCandlesWithStopLossTriggers(220, 100m);
+        var result = await engine.RunAsync(candles, "BTCUSDT", 1_000m);
+
+        result.TotalTrades.Should().Be(1, "after first >2% drawdown loss, entries should be halted for 24h");
+    }
+
     // ─── PBO Overfitting Tests ───
 
     [Fact]
     public async Task ComputePboAsync_ShouldReturnValidPBO_WithSufficientData()
     {
         var engine = CreateEngine(CreateDecision(positionSizePercent: 0.10m, stopLoss: 50m, takeProfit: 200m));
-        var candles = CreateCandles(16 * 60 + 10, 100m, 0.5m); // 970 candles
+        var candles = CreateCandles(8 * 60 + 10, 100m, 0.5m); // 490 candles — matches orchestrator (8 segments, C(8,4)=70)
 
-        var pbo = await engine.ComputePboAsync(candles, "BTCUSDT", 16, 100_000m);
+        var pbo = await engine.ComputePboAsync(candles, "BTCUSDT", 8, 100_000m);
 
         pbo.Should().NotBeNull();
         pbo.PBO.Should().BeInRange(0, 1);
@@ -157,9 +256,9 @@ public class BacktestEngineTests
     public async Task ComputePboAsync_ShouldReturnPBO1_WhenInsufficientData()
     {
         var engine = CreateEngine(CreateDecision());
-        var candles = CreateCandles(100, 100m, 1m); // too few for 16 segments
+        var candles = CreateCandles(100, 100m, 1m); // too few for 8 segments (needs 8*60)
 
-        var pbo = await engine.ComputePboAsync(candles, "BTCUSDT", 16, 100_000m);
+        var pbo = await engine.ComputePboAsync(candles, "BTCUSDT", 8, 100_000m);
 
         pbo.PBO.Should().Be(1.0, "Insufficient data should return worst-case PBO");
     }
@@ -168,9 +267,9 @@ public class BacktestEngineTests
     public async Task ComputePboAsync_ShouldComputeStochasticDominance()
     {
         var engine = CreateEngine(CreateDecision(positionSizePercent: 0.10m, stopLoss: 50m, takeProfit: 200m));
-        var candles = CreateCandles(16 * 60 + 10, 100m, 0.5m);
+        var candles = CreateCandles(8 * 60 + 10, 100m, 0.5m);
 
-        var pbo = await engine.ComputePboAsync(candles, "BTCUSDT", 16, 100_000m);
+        var pbo = await engine.ComputePboAsync(candles, "BTCUSDT", 8, 100_000m);
 
         pbo.StochasticDominance.Should().BeInRange(0, 1);
         pbo.ExpectedPerformance.Should().NotBe(double.NaN);
@@ -215,17 +314,105 @@ public class BacktestEngineTests
     }
 
     [Fact]
+    public void EvaluateBacktestPass_ShouldFail_WhenProfitFactorBelowAcceptanceGate()
+    {
+        var result = new BacktestResult
+        {
+            TotalTrades = 100,
+            WinningTrades = 45,
+            LosingTrades = 55,
+            TotalPnL = 1000m,
+            ProfitFactor = 1.10,
+            SharpeRatio = 1.3,
+            MaxDrawdownPercent = 8m,
+            AverageRR = 1.2
+        };
+
+        BacktestOrchestrator.EvaluateBacktestPass(result, null).Should().BeFalse();
+    }
+
+    [Fact]
+    public void EvaluateBacktestPass_ShouldFail_WhenExpectancyPerTradeIsTooLow()
+    {
+        var result = new BacktestResult
+        {
+            TotalTrades = 100,
+            WinningTrades = 45,
+            LosingTrades = 55,
+            TotalPnL = 0.50m,
+            ProfitFactor = 1.40,
+            SharpeRatio = 1.3,
+            MaxDrawdownPercent = 8m,
+            AverageRR = 1.2
+        };
+
+        BacktestOrchestrator.EvaluateBacktestPass(result, null).Should().BeFalse();
+    }
+
+    [Fact]
+    public void EvaluateBacktestPass_ShouldFail_WhenWalkForwardOosPositiveRatioIsWeak()
+    {
+        var result = new BacktestResult
+        {
+            TotalTrades = 100,
+            WinningTrades = 45,
+            LosingTrades = 55,
+            TotalPnL = 1000m,
+            ProfitFactor = 1.40,
+            SharpeRatio = 1.3,
+            MaxDrawdownPercent = 8m,
+            AverageRR = 1.2
+        };
+        var walkForward = new RollingWalkForwardGateResult
+        {
+            GateApplied = true,
+            Passed = true,
+            CompletedWindows = 4,
+            OosPositiveRatio = 0.40
+        };
+
+        BacktestOrchestrator.EvaluateBacktestPass(result, null, walkForward).Should().BeFalse();
+    }
+
+    [Fact]
     public void EvaluateBacktestPass_ShouldPass_WhenAllCriteriaMet()
     {
-        var result = new BacktestResult { TotalTrades = 50, TotalPnL = 1000, ProfitFactor = 1.8, SharpeRatio = 1.2, MaxDrawdownPercent = 12 };
+        var result = new BacktestResult
+        {
+            TotalTrades = 100,
+            WinningTrades = 45,
+            LosingTrades = 55,
+            TotalPnL = 1000,
+            ProfitFactor = 1.8,
+            SharpeRatio = 1.2,
+            MaxDrawdownPercent = 10,
+            AverageRR = 1.2
+        };
         var pbo = new PboResult { PBO = 0.2 };
-        BacktestOrchestrator.EvaluateBacktestPass(result, pbo).Should().BeTrue();
+        var walkForward = new RollingWalkForwardGateResult
+        {
+            GateApplied = true,
+            Passed = true,
+            CompletedWindows = 4,
+            OosPositiveRatio = 0.75
+        };
+        BacktestOrchestrator.EvaluateBacktestPass(result, pbo, walkForward).Should().BeTrue();
     }
 
     [Fact]
     public void EvaluateBacktestPass_ShouldPass_WhenNoPBO()
     {
-        var result = new BacktestResult { TotalTrades = 50, TotalPnL = 1000, ProfitFactor = 1.8, SharpeRatio = 1.2, MaxDrawdownPercent = 12 };
+        var result = new BacktestResult
+        {
+            TotalTrades = 100,
+            WinningTrades = 45,
+            LosingTrades = 55,
+            TotalPnL = 1000,
+            ProfitFactor = 1.8,
+            SharpeRatio = 1.2,
+            MaxDrawdownPercent = 10,
+            AverageRR = 1.2
+        };
         BacktestOrchestrator.EvaluateBacktestPass(result, null).Should().BeTrue();
     }
 
@@ -317,6 +504,64 @@ public class BacktestEngineTests
         var result = await engine.RunAsync(candles, "BTCUSDT", 100_000m);
 
         result.MaxConsecutiveLosses.Should().BeGreaterOrEqualTo(0);
+    }
+
+    /// <summary>
+    /// Guards the PBO logit rank helper: count of train Sharpes &lt;= v must match naive enumeration
+    /// (same upper-bound binary search contract as the engine PBO post-pass).
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(42)]
+    [InlineData(999)]
+    public void PboRank_CountLessOrEqual_ShouldMatchNaiveDefinition(int seed)
+    {
+        var rnd = new Random(seed);
+        for (int n = 2; n < 40; n++)
+        {
+            var values = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                values[i] = rnd.NextDouble() * 6.0 - 3.0;
+            }
+
+            var sorted = (double[])values.Clone();
+            Array.Sort(sorted);
+            for (int i = 0; i < n; i++)
+            {
+                double v = values[i];
+                int naive = 0;
+                for (int j = 0; j < n; j++)
+                {
+                    if (values[j] <= v)
+                    {
+                        naive++;
+                    }
+                }
+
+                int fast = CountLeUpperBound(sorted, v);
+                fast.Should().Be(naive);
+            }
+        }
+    }
+
+    private static int CountLeUpperBound(double[] sortedAsc, double v)
+    {
+        int left = 0, right = sortedAsc.Length;
+        while (left < right)
+        {
+            int mid = left + ((right - left) >> 1);
+            if (sortedAsc[mid] <= v)
+            {
+                left = mid + 1;
+            }
+            else
+            {
+                right = mid;
+            }
+        }
+
+        return left;
     }
 
     // ─── Helpers ───
@@ -413,6 +658,26 @@ public class BacktestEngineTests
                 Volume = 5_000m
             });
         }
+        return candles;
+    }
+
+    private static List<Candle> CreateDescendingCandles(int count, decimal startPrice, decimal step, TimeSpan interval)
+    {
+        var candles = new List<Candle>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var close = startPrice - (step * i);
+            candles.Add(new Candle
+            {
+                Timestamp = new DateTime(2026, 1, 1).Add(interval * i),
+                Open = close + 0.5m,
+                High = close + 1m,
+                Low = close - 1m,
+                Close = close,
+                Volume = 2_000m + i
+            });
+        }
+
         return candles;
     }
 }

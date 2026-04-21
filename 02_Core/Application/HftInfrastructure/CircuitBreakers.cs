@@ -31,7 +31,7 @@ public class HeartbeatMonitor
             Interlocked.CompareExchange(ref _firstHeartbeatTick, Environment.TickCount64, 0);
         }
 
-        _lastHeartbeatTick = Environment.TickCount64;
+        Interlocked.Exchange(ref _lastHeartbeatTick, Environment.TickCount64);
     }
 
     /// <summary>
@@ -44,7 +44,8 @@ public class HeartbeatMonitor
             return;
         }
 
-        if (Environment.TickCount64 - _lastHeartbeatTick > _maxStaleThreshold.TotalMilliseconds)
+        var last = Interlocked.Read(ref _lastHeartbeatTick);
+        if (Environment.TickCount64 - last > _maxStaleThreshold.TotalMilliseconds)
         {
             // Catastrophic latency spike or exchange failure.
             _safetySwitch.TriggerLiquidationEvacuation("Heartbeat stale threshold exceeded (>50ms). Exchange presumed disconnected.");

@@ -20,6 +20,7 @@ using ThatsMyQuant.Infrastructure.Persistence;
 using ThatsMyQuant.Infrastructure.Repositories;
 using ThatsMyQuant.Infrastructure.Services;
 using ThatsMyQuant.Infrastructure.Services.Validators;
+using ThatsMyQuant.Tests.TestInfrastructure;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Integration;
@@ -132,20 +133,23 @@ public class SignalPipelineIntegrationTests : IAsyncLifetime
 
     private static void BuildTestModel(string modelPath)
     {
-        var trainer = new AlphaModelTrainer(Substitute.For<ILogger<AlphaModelTrainer>>());
-        var data = Enumerable.Range(0, 160)
-            .Select(i =>
-            {
-                var positive = i % 2 == 0;
-                var baseValue = positive ? 1.5f : -1.5f;
-                return new CandleMlData
+        TestModelCache.EnsureModel(modelPath, "signal-pipeline-v1", cachePath =>
+        {
+            var trainer = new AlphaModelTrainer(Substitute.For<ILogger<AlphaModelTrainer>>());
+            var data = Enumerable.Range(0, 160)
+                .Select(i =>
                 {
-                    NextClosePrice = positive ? 1f : -1f,
-                    Features = new[] { baseValue, baseValue * 0.8f, baseValue * 0.6f, baseValue * 0.4f, baseValue * 0.2f }
-                };
-            })
-            .ToList();
-        trainer.TrainAndSaveModel(data, modelPath);
+                    var positive = i % 2 == 0;
+                    var baseValue = positive ? 1.5f : -1.5f;
+                    return new CandleMlData
+                    {
+                        NextClosePrice = positive ? 1f : -1f,
+                        Features = [baseValue, baseValue * 0.8f, baseValue * 0.6f, baseValue * 0.4f, baseValue * 0.2f]
+                    };
+                })
+                .ToList();
+            trainer.TrainAndSaveModel(data, cachePath);
+        });
     }
 
     [Fact]

@@ -4,6 +4,53 @@ namespace ThatsMyQuant.Application.Strategy;
 
 public sealed class MultiTimeframeConfluenceService
 {
+    public MultiTimeframeConfluenceResult EvaluateFromBase(IReadOnlyList<Candle> baseCandles)
+    {
+        if (baseCandles == null || baseCandles.Count < 10)
+            return new MultiTimeframeConfluenceResult(0, "NoData", "Not enough base candles for MTF.", []);
+
+        var dict = new Dictionary<string, IReadOnlyList<Candle>>();
+        var tfMinutes = (int)(baseCandles[^1].Timestamp - baseCandles[^2].Timestamp).TotalMinutes;
+        
+        // Always add base
+        dict[GetTimeframeName(tfMinutes)] = baseCandles;
+
+        // Try aggregate 1h (~60m)
+        if (tfMinutes < 60) dict["1h"] = AggregateCandles(baseCandles, 60 / tfMinutes);
+        // Try aggregate 4h (~240m)
+        if (tfMinutes < 240) dict["4h"] = AggregateCandles(baseCandles, 240 / tfMinutes);
+        // Try aggregate 1d (~1440m)
+        if (tfMinutes < 1440) dict["1d"] = AggregateCandles(baseCandles, 1440 / tfMinutes);
+
+        return Evaluate(dict);
+    }
+
+    private static string GetTimeframeName(int minutes) => minutes switch
+    {
+        <= 1 => "1m", <= 5 => "5m", <= 15 => "15m", <= 60 => "1h", <= 240 => "4h", _ => "1d"
+    };
+
+    private static IReadOnlyList<Candle> AggregateCandles(IReadOnlyList<Candle> baseCandles, int groupSize)
+    {
+        if (groupSize <= 1 || baseCandles.Count < groupSize) return Array.Empty<Candle>();
+        var result = new List<Candle>();
+        for (int i = 0; i < baseCandles.Count; i += groupSize)
+        {
+            var chunk = baseCandles.Skip(i).Take(groupSize).ToList();
+            if (chunk.Count < groupSize && i > 0) continue; // skip incomplete trailing chunk unless it's all we have
+            result.Add(new Candle
+            {
+                Timestamp = chunk.Last().Timestamp,
+                Open = chunk.First().Open,
+                High = chunk.Max(c => c.High),
+                Low = chunk.Min(c => c.Low),
+                Close = chunk.Last().Close,
+                Volume = chunk.Sum(c => c.Volume)
+            });
+        }
+        return result;
+    }
+
     public MultiTimeframeConfluenceResult Evaluate(IReadOnlyDictionary<string, IReadOnlyList<Candle>> candlesByTimeframe)
     {
         ArgumentNullException.ThrowIfNull(candlesByTimeframe);

@@ -7,7 +7,7 @@ namespace ThatsMyQuant.Tests.Infrastructure;
 
 public sealed class VenuePortfolioManagerTests
 {
-    private readonly VenuePortfolioManager _portfolio = VenuePortfolioManager.Instance;
+    private readonly VenuePortfolioManager _portfolio = new();
 
     public VenuePortfolioManagerTests()
     {
@@ -57,7 +57,7 @@ public sealed class VenuePortfolioManagerTests
 
         await Task.WhenAll(tasks);
 
-        _portfolio.GetPosition("BTCUSDT").Should().Be(5.00m);
+        _portfolio.GetPosition(VenueKind.Binance, "BTCUSDT").Should().Be(5.00m);
     }
 
     [Fact]
@@ -93,5 +93,31 @@ public sealed class VenuePortfolioManagerTests
         snapshot.Positions.Should().ContainKey("ETHUSDT");
         snapshot.Positions["ETHUSDT"].Quantity.Should().Be(2m);
         snapshot.Positions.Should().NotContainKey("BTCUSDT");
+    }
+
+    [Fact]
+    public void OrderReservationLedger_ShouldReleaseOnlyTrackedAmounts()
+    {
+        _portfolio.SetBalance(VenueKind.Binance, "USDT", 1000m);
+        _portfolio.TryReserveForOrder(VenueKind.Binance, "USDT", "ord-1", 250m).Should().BeTrue();
+        _portfolio.GetAvailableBalance(VenueKind.Binance, "USDT").Should().Be(750m);
+
+        _portfolio.ReleaseReservationForOrder(VenueKind.Binance, "USDT", "ord-1", 100m);
+        _portfolio.GetAvailableBalance(VenueKind.Binance, "USDT").Should().Be(850m);
+
+        // Should not over-release more than tracked reservation.
+        _portfolio.ReleaseReservationForOrder(VenueKind.Binance, "USDT", "ord-1", 500m);
+        _portfolio.GetAvailableBalance(VenueKind.Binance, "USDT").Should().Be(1000m);
+    }
+
+    [Fact]
+    public void OrderReservationLedger_ShouldForceReleaseOnTerminal()
+    {
+        _portfolio.SetBalance(VenueKind.Binance, "USDT", 600m);
+        _portfolio.TryReserveForOrder(VenueKind.Binance, "USDT", "ord-2", 200m).Should().BeTrue();
+        _portfolio.GetAvailableBalance(VenueKind.Binance, "USDT").Should().Be(400m);
+
+        _portfolio.ReleaseAllReservationsForOrder(VenueKind.Binance, "USDT", "ord-2");
+        _portfolio.GetAvailableBalance(VenueKind.Binance, "USDT").Should().Be(600m);
     }
 }

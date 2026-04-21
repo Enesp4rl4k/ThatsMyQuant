@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Interfaces;
@@ -31,7 +32,9 @@ public class MockBrokerService : IExchangeService
             EntryTime = DateTime.UtcNow,
             Status = TradeStatus.Executed,
             LifecycleStatus = TradeLifecycleStatus.Active,
-            ExecutionMode = "SIM"
+            ExecutionMode = "SIM",
+            Leverage = ResolveLeverage(signal),
+            MarginMode = ResolveMarginMode(signal)
         };
 
         _trades[trade.Id] = trade;
@@ -50,6 +53,12 @@ public class MockBrokerService : IExchangeService
         });
     }
 
+    public bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book)
+    {
+        book = default;
+        return false;
+    }
+
     public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side) => Task.FromResult(0m);
 
     public Task<List<string>> GetFavoritesAsync()
@@ -63,5 +72,28 @@ public class MockBrokerService : IExchangeService
         _trades.Clear();
         _logger.LogWarning("🚨 Mock emergency halt: {Count} simulated orders cancelled.", count);
         return Task.FromResult(count);
+    }
+
+    private static decimal ResolveLeverage(Signal signal)
+    {
+        if (signal.Metadata.TryGetValue("Leverage", out var leverageRaw) &&
+            decimal.TryParse(leverageRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var leverage) &&
+            leverage > 0m)
+        {
+            return leverage;
+        }
+
+        return 1m;
+    }
+
+    private static MarginMode ResolveMarginMode(Signal signal)
+    {
+        if (signal.Metadata.TryGetValue("MarginMode", out var marginRaw) &&
+            Enum.TryParse<MarginMode>(marginRaw, true, out var marginMode))
+        {
+            return marginMode;
+        }
+
+        return MarginMode.Isolated;
     }
 }

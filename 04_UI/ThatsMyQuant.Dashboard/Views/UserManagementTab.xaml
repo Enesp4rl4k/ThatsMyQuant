@@ -18,7 +18,14 @@
                   SelectionMode="Single"
                   GridLinesVisibility="Horizontal"
                   AlternatingRowBackground="#F5F5F5"
-                  Margin="4">
+                  Margin="4"
+                  EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                  ScrollViewer.CanContentScroll="True">
+            <DataGrid.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <VirtualizingStackPanel VirtualizationMode="Recycling" />
+                </ItemsPanelTemplate>
+            </DataGrid.ItemsPanel>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Username"    Binding="{Binding Username}"   Width="*" />
                 <DataGridTextColumn Header="Email"       Binding="{Binding Email}"       Width="2*" />

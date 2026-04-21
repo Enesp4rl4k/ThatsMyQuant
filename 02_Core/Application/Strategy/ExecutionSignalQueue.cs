@@ -55,6 +55,11 @@ public sealed class ExecutionSignalQueue
     public IAsyncEnumerable<Signal> ReadAllAsync(CancellationToken cancellationToken = default)
         => _channel.Reader.ReadAllAsync(cancellationToken);
 
+    /// <summary>
+    /// Signals accepted but not yet completed (still in-flight in the channel or pending map).
+    /// </summary>
+    public int PendingCount => _pendingSignals.Count;
+
     public void MarkCompleted(Guid signalId)
         => _pendingSignals.TryRemove(signalId, out _);
 
@@ -77,6 +82,8 @@ public sealed class ExecutionSignalQueue
             MarketType = signal.MarketType,
             Exchange = signal.Exchange,
             Timestamp = signal.Timestamp,
+            ClaimedAtUtc = signal.ClaimedAtUtc,
+            ClaimedBy = signal.ClaimedBy,
             Volume24h = signal.Volume24h,
             OrderFlowImbalance = signal.OrderFlowImbalance,
             BestBid = signal.BestBid,

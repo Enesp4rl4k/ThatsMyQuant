@@ -43,6 +43,8 @@ public class Signal : INotification
     public string Exchange { get; set; } = "Binance";
 
     public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    public DateTime? ClaimedAtUtc { get; set; }
+    public string? ClaimedBy { get; set; }
 
     /// <summary>The rolling 24-hour volume for the asset. 0 means unknown — volume checks will be skipped.</summary>
     public decimal Volume24h { get; set; } = 0;

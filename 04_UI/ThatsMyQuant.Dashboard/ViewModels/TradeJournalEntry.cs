@@ -19,6 +19,10 @@ public class TradeJournalEntry
     public string StageExplanation { get; set; } = "";
     public string ExactBucketImpact { get; set; } = "";
     public string ExactBucketSummary { get; set; } = "";
+    public string ProfitLeakAuditSummary { get; set; } = "";
+    public string ProfitLeakWorstBucketBeforeLiveChange { get; set; } = "";
+    public string ProfitLeakWorstBucketAfterLiveChange { get; set; } = "";
+    public string ProfitLeakBucketTelemetry { get; set; } = "";
     public string EdgeSummary { get; set; } = "";
     public string ExitSummary { get; set; } = "";
     public string ExitReason { get; set; } = "";

@@ -186,6 +186,73 @@ public class PositionSupervisorServiceTests
         fullExitAction.Reason.Should().Be("StopLoss");
     }
 
+    [Fact]
+    public void AdvanceTrade_ShouldTightenLifecycleControls_WhenExecutionIsDegraded()
+    {
+        var trade = new Trade
+        {
+            Symbol = "BTCUSDT",
+            Side = TradeSide.Buy,
+            EntryPrice = 100m,
+            Quantity = 1m,
+            RemainingQuantity = 1m,
+            TakeProfit = 110m,
+            StopLoss = 97m,
+            PartialTakeProfit = 105m,
+            PartialExitFraction = 0.35m,
+            BreakevenTriggerFraction = 0.50m,
+            MaxHoldingBars = 20,
+            ExitPolicyTag = "TrendRunner",
+            LifecycleStatus = TradeLifecycleStatus.Active,
+            Status = TradeStatus.Executed,
+            EntrySlippagePercent = 0.18m,
+            ExecutionLatencyMs = 680,
+            VenueExecutionBias = 0.90m,
+            VenueExecutionScope = "venue execution degraded"
+        };
+
+        _service.AdvanceTrade(trade, CreateCandle(101.5m, 102m, 101m), CreateCandle(101m, 101.5m, 100.5m), 2m);
+
+        trade.BreakevenTriggerFraction.Should().BeLessThan(0.50m);
+        trade.MaxHoldingBars.Should().BeLessThan(20);
+        trade.PartialTakeProfit.Should().BeLessThan(105m);
+    }
+
+    [Fact]
+    public void AdvanceTrade_ShouldExitSooner_OnOpposingBar_WhenExecutionStressIsHigh()
+    {
+        var trade = new Trade
+        {
+            Symbol = "BTCUSDT",
+            Side = TradeSide.Buy,
+            EntryPrice = 100m,
+            Quantity = 1m,
+            RemainingQuantity = 1m,
+            TakeProfit = 112m,
+            StopLoss = 97m,
+            PartialTakeProfit = 106m,
+            PartialExitFraction = 0.35m,
+            BreakevenTriggerFraction = 0.45m,
+            MaxHoldingBars = 24,
+            ExitPolicyTag = "TrendRunner",
+            LifecycleStatus = TradeLifecycleStatus.Active,
+            Status = TradeStatus.Executed,
+            EntrySlippagePercent = 0.22m,
+            ExecutionLatencyMs = 900,
+            VenueExecutionBias = 0.88m,
+            VenueExecutionScope = "BIST execution is degraded live"
+        };
+
+        var first = _service.AdvanceTrade(trade, CreateCandle(101.2m, 101.6m, 100.8m), CreateCandle(101m, 101.4m, 100.6m), 2m);
+        first.Should().BeNull();
+
+        var stressedExit = _service.AdvanceTrade(trade, CreateCandle(99.8m, 100.2m, 99.5m), CreateCandle(101.2m, 101.6m, 100.8m), 2m);
+
+        stressedExit.Should().NotBeNull();
+        stressedExit!.ActionType.Should().Be(PositionLifecycleActionType.FullExit);
+        stressedExit.Reason.Should().Be("ExecutionStressMomentumFade");
+    }
+
     private static Candle CreateCandle(decimal close, decimal high, decimal low)
         => new()
         {

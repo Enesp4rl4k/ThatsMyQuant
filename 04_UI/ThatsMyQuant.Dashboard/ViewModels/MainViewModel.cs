@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using System.Diagnostics;
 using System.IO;
 using System.Collections.ObjectModel;
 using System.Globalization;
@@ -38,6 +39,7 @@ public partial class MainViewModel : ObservableObject
     private readonly IStrategyPerformanceStore _performanceStore;
     private readonly bool _enableAutomaticAnalysis;
     private readonly IAuditLogger? _auditLogger;
+    private readonly CancellationTokenSource _webVitalsLoopCts = new();
 
     // --- Sub-ViewModels ---
     [ObservableProperty] private MarketOverviewViewModel _marketOverview = new();
@@ -138,10 +140,29 @@ public partial class MainViewModel : ObservableObject
     
     // --- Execution Queue Stats ---
     [ObservableProperty] private int _queuedCount = 0;
+    [ObservableProperty] private int _processingCount = 0;
     [ObservableProperty] private int _executedCount = 0;
     [ObservableProperty] private int _failedCount = 0;
     [ObservableProperty] private int _deadLetterCount = 0;
     [ObservableProperty] private string _queueHealth = "Optimal";
+
+    /// <summary>System Settings: local persistence / SQLite reachability (from startup init).</summary>
+    [ObservableProperty] private string _persistenceStoreHealth = "Verifying…";
+
+    /// <summary>System Settings: dashboard process uptime (UTC-based span).</summary>
+    [ObservableProperty] private string _dashboardProcessUptime = "—";
+
+    [ObservableProperty] private string _settingsDiagnosticLine1 = string.Empty;
+    [ObservableProperty] private string _settingsDiagnosticLine2 = string.Empty;
+    [ObservableProperty] private string _settingsDiagnosticLine3 = string.Empty;
+
+    public Brush PersistenceStoreHealthBrush => ResolvePersistenceStoreHealthBrush(PersistenceStoreHealth);
+
+    /// <summary>Header ops strip: signal queue telemetry (always visible).</summary>
+    [ObservableProperty] private string _opsStripExecutionLine = "Q — · P — · E — · F — · DL — · —";
+
+    /// <summary>Header ops strip: drawdown, governor status, open trades, desk positions.</summary>
+    [ObservableProperty] private string _opsStripRiskLine = "Risk strip loading…";
 
     // --- PLAIN ENGLISH TRANSLATION ---
     [ObservableProperty] private string _plainEnglishTranslation = "";
@@ -170,8 +191,8 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<ChartGridLineViewModel> VerticalGridLines => MarketOverview.VerticalGridLines;
     public PointCollection ChartPoints { get => MarketOverview.ChartPoints; set => MarketOverview.ChartPoints = value; }
 
-    public ObservableCollection<ChartAxisLabel> PortfolioXAxisLabels { get; } = new();
-    public ObservableCollection<ChartAxisLabel> PortfolioYAxisLabels { get; } = new();
+    public ObservableCollection<SubViewModels.ChartAxisLabel> PortfolioXAxisLabels => PortfolioView.PortfolioXAxisLabels;
+    public ObservableCollection<SubViewModels.ChartAxisLabel> PortfolioYAxisLabels => PortfolioView.PortfolioYAxisLabels;
 
     public ObservableCollection<IndicatorDetailViewModel> IndicatorDetails { get; } = new();
 
@@ -207,7 +228,12 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<SessionContextViewModel> SessionContexts { get; } = new();
     public ObservableCollection<PositionViewModel> ActivePositions { get; } = new();
     public ObservableCollection<string> DisabledStrategies { get; } = new();
-    [ObservableProperty] private System.Windows.Media.PointCollection _portfolioGrowthPoints = new();
+    /// <summary>Test/proxy surface: portfolio chart data lives on <see cref="PortfolioView"/>.</summary>
+    public System.Windows.Media.PointCollection PortfolioGrowthPoints
+    {
+        get => PortfolioView.PortfolioGrowthPoints;
+        set => PortfolioView.PortfolioGrowthPoints = value;
+    }
     [ObservableProperty] private string _disabledStrategiesSummary = "No strategies are currently disabled.";
     [ObservableProperty] private string _capitalAllocatorSummary = "Allocator is waiting for session context.";
     [ObservableProperty] private string _venueExecutionBiasSummary = "Execution bias is neutral.";
@@ -488,6 +514,9 @@ public partial class MainViewModel : ObservableObject
 
     [ObservableProperty] private bool _isZenMode = false;
 
+    /// <summary>P3: Decorative motion off when <see cref="UiMotionPreferences.ReduceMotion"/> at startup.</summary>
+    [ObservableProperty] private bool _reduceUiMotion;
+
     [RelayCommand]
     private void ToggleZenMode()
     {
@@ -506,6 +535,10 @@ public partial class MainViewModel : ObservableObject
         _clockTimer?.Stop();
         _queueTimer?.Stop();
         _tradingLoopService.Stop();
+        if (!_webVitalsLoopCts.IsCancellationRequested)
+        {
+            _webVitalsLoopCts.Cancel();
+        }
     }
 
     /// <summary>
@@ -577,30 +610,45 @@ public partial class MainViewModel : ObservableObject
         _performanceStore = performanceStore;
         _enableAutomaticAnalysis = enableAutomaticAnalysis;
         _auditLogger = auditLogger;
+        ReduceUiMotion = UiMotionPreferences.ReduceMotion;
 
         // Resolve UserManagementViewModel via App.ServiceProvider if available
         if (App.ServiceProvider != null)
         {
             var authSvc = App.ServiceProvider.GetService(typeof(IUserAuthService)) as IUserAuthService;
             if (authSvc != null)
+            {
                 UserManagement = new UserManagementViewModel(authSvc);
+                _ = UserManagement.LoadUsersCommand.ExecuteAsync(null);
+            }
         }
 
         // Start Web Vitals Synchronization
-        _ = Task.Run(async () => {
-            await webVitalsService.StartAsync();
-            // Periodic update loop
-            while (true)
+        _ = Task.Run(async () =>
+        {
+            try
             {
-                // Calculate real scores based on system state
-                double protection = (double)CalculatedProtectionScore();
-                double investment = (double)CalculatedInvestmentScore();
-                double fitness = (double)CalculatedFitnessScore();
-                
-                await webVitalsService.UpdateVitalsAsync(protection, investment, fitness);
-                await Task.Delay(5000); // Sync every 5 seconds
+                await webVitalsService.StartAsync();
+                while (!_webVitalsLoopCts.Token.IsCancellationRequested)
+                {
+                    // Calculate real scores based on system state
+                    double protection = (double)CalculatedProtectionScore();
+                    double investment = (double)CalculatedInvestmentScore();
+                    double fitness = (double)CalculatedFitnessScore();
+
+                    await webVitalsService.UpdateVitalsAsync(protection, investment, fitness);
+                    await Task.Delay(5000, _webVitalsLoopCts.Token); // Sync every 5 seconds
+                }
             }
-        });
+            catch (OperationCanceledException)
+            {
+                // Expected during logout or application shutdown.
+            }
+            catch (Exception ex)
+            {
+                AddSystemLog($"WEBVITALS: Sync loop error: {ex.Message}");
+            }
+        }, _webVitalsLoopCts.Token);
 
         LoadSymbols();
         
@@ -620,6 +668,7 @@ public partial class MainViewModel : ObservableObject
         UpdatePortfolioGrowth();
         UpdateHftWorkspace();
         RefreshStrategyTuningStudio(syncCandidateFields: true);
+        WireStrategyEvidenceStudioWatch();
 
         if (enableBackgroundTimers)
         {
@@ -629,6 +678,7 @@ public partial class MainViewModel : ObservableObject
                 CurrentTime = DateTime.Now.ToString("HH:mm:ss");
                 CurrentDate = DateTime.Now.ToString("d MMMM, dddd");
                 UpdateSessionContext();
+                RefreshSettingsHealthTelemetry();
             };
             _clockTimer.Start();
 
@@ -641,6 +691,8 @@ public partial class MainViewModel : ObservableObject
             };
             _queueTimer.Start();
         }
+
+        RefreshSettingsHealthTelemetry();
 
         UpdatePlainEnglishTranslation();
         UpdateSessionSummary();
@@ -702,11 +754,40 @@ public partial class MainViewModel : ObservableObject
                 RefreshStrategyTuningStudio();
                 AddSystemLog("Persistence: Strategy health snapshots restored.");
                 RefreshHeatmap();
+                PersistenceStoreHealth = "CONNECTED (local store)";
             });
         }
         catch (Exception ex)
         {
             AddSystemLog($"Persistence Error: {ex.Message}");
+            InvokeOnUi(() => PersistenceStoreHealth = "DEGRADED — see system log");
+        }
+    }
+
+    private void RefreshSettingsHealthTelemetry()
+    {
+        try
+        {
+            var proc = Process.GetCurrentProcess();
+            var startUtc = proc.StartTime.ToUniversalTime();
+            var uptime = DateTime.UtcNow - startUtc;
+            if (uptime < TimeSpan.Zero)
+            {
+                uptime = TimeSpan.Zero;
+            }
+
+            var days = (int)uptime.TotalDays;
+            DashboardProcessUptime = $"{days}d {uptime.Hours:00}h {uptime.Minutes:00}m";
+
+            var memMb = proc.WorkingSet64 / (1024 * 1024);
+            SettingsDiagnosticLine1 = $"• Working set ≈ {memMb} MB (dashboard process).";
+            SettingsDiagnosticLine2 =
+                $"• Signal queue: {QueueHealth} — Q {QueuedCount} · P {ProcessingCount} · E {ExecutedCount} · F {FailedCount} · DL {DeadLetterCount}.";
+            SettingsDiagnosticLine3 = $"• API ping: {ApiPing}.";
+        }
+        catch
+        {
+            DashboardProcessUptime = "—";
         }
     }
 
@@ -2767,6 +2848,7 @@ public partial class MainViewModel : ObservableObject
     partial void OnMarketDataHealthChanged(string value) => OnPropertyChanged(nameof(MarketDataHealthColor));
     partial void OnAiServiceHealthChanged(string value) => OnPropertyChanged(nameof(AiServiceHealthColor));
     partial void OnQueueHealthChanged(string value) => OnPropertyChanged(nameof(QueueHealthColor));
+    partial void OnPersistenceStoreHealthChanged(string value) => OnPropertyChanged(nameof(PersistenceStoreHealthBrush));
     partial void OnIsKillSwitchArmedChanged(bool value)
     {
         OnPropertyChanged(nameof(IsSoftPauseArmed));
@@ -2775,6 +2857,22 @@ public partial class MainViewModel : ObservableObject
 
     partial void OnRiskGovernorKillSwitchSummaryChanged(string value)
         => OnPropertyChanged(nameof(RiskGovernorSoftPauseSummary));
+
+    private static Brush ResolvePersistenceStoreHealthBrush(string status)
+    {
+        if (status.Contains("CONNECTED", StringComparison.OrdinalIgnoreCase))
+        {
+            return GreenBrush;
+        }
+
+        if (status.Contains("DEGRADED", StringComparison.OrdinalIgnoreCase) ||
+            status.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
+        {
+            return RedBrush;
+        }
+
+        return GrayBrush;
+    }
 
     private static Brush ResolveServiceHealthBrush(string status)
     {
@@ -3405,18 +3503,33 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand]
     private async Task RunBacktest()
     {
-        AddSystemLog($"Starting Local Backtest for {MarketOverview.SelectedSymbol}...");
-        Studio.BacktestStatus = $"Running backtest for {MarketOverview.SelectedSymbol} on {MarketOverview.SelectedTimeframe}...";
-        Studio.BacktestScenario = $"{MarketOverview.SelectedMarket} | {MarketOverview.SelectedSymbol} | {MarketOverview.SelectedTimeframe} | {Studio.SelectedRiskProfile} risk";
-        
-        var candles = await _marketDataService.GetCandlesAsync(
-            MarketOverview.SelectedSymbol,
-            ResolveBacktestCandleCount(MarketOverview.SelectedTimeframe),
-            MarketOverview.SelectedMarket,
-            MarketOverview.SelectedTimeframe);
-        var result = await _backtestEngine.RunAsync(candles, MarketOverview.SelectedSymbol, 100000);
-        
-        InvokeOnUi(() => ApplyBacktestResultsToUi(candles, result));
+        if (string.IsNullOrWhiteSpace(MarketOverview.SelectedSymbol))
+        {
+            Studio.BacktestStatus = "Backtest blocked: please select a symbol first.";
+            AddSystemLog("Backtest blocked: no symbol selected.");
+            return;
+        }
+
+        try
+        {
+            AddSystemLog($"Starting Local Backtest for {MarketOverview.SelectedSymbol}...");
+            Studio.BacktestStatus = $"Running backtest for {MarketOverview.SelectedSymbol} on {MarketOverview.SelectedTimeframe}...";
+            Studio.BacktestScenario = $"{MarketOverview.SelectedMarket} | {MarketOverview.SelectedSymbol} | {MarketOverview.SelectedTimeframe} | {Studio.SelectedRiskProfile} risk";
+
+            var candles = await _marketDataService.GetCandlesAsync(
+                MarketOverview.SelectedSymbol,
+                ResolveBacktestCandleCount(MarketOverview.SelectedTimeframe),
+                MarketOverview.SelectedMarket,
+                MarketOverview.SelectedTimeframe);
+            var result = await _backtestEngine.RunAsync(candles, MarketOverview.SelectedSymbol, MarketOverview.SelectedTimeframe, 100000);
+
+            InvokeOnUi(() => ApplyBacktestResultsToUi(candles, result));
+        }
+        catch (Exception ex)
+        {
+            Studio.BacktestStatus = "Backtest failed. Check system logs.";
+            AddSystemLog($"Backtest error: {ex.Message}");
+        }
     }
 
     private void ApplyBacktestResultsToUi(List<Candle> candles, BacktestResult result)
@@ -3503,7 +3616,7 @@ public partial class MainViewModel : ObservableObject
             MarketOverview.SelectedTimeframe);
         if (candles.Count == 0) return null;
         
-        var result = await _backtestEngine.RunAsync(candles, s, 100000);
+        var result = await _backtestEngine.RunAsync(candles, s, MarketOverview.SelectedTimeframe, 100000);
         
         decimal returnPct = result.StartingCapital > 0
             ? (result.FinalEquity - result.StartingCapital) / result.StartingCapital * 100
@@ -3822,11 +3935,11 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void EmergencyStop()
+    private async Task EmergencyStop()
     {
         if (!_userPromptService.Confirm(
                 "Emergency Shutdown",
-                "This will halt the trading loop and clear every visible open position from the operator deck. Continue?"))
+                "This will halt the trading loop and cancel all open orders on the selected exchange. Continue?"))
         {
             AddSystemLog("EMERGENCY STOP: Operator cancelled shutdown request.");
             return;
@@ -3836,12 +3949,31 @@ public partial class MainViewModel : ObservableObject
         Status = "STOPPED";
         StatusColor = RedBrush;
         AddSystemLog("EMERGENCY STOP: All trading halted.");
-        ActivePositions.Clear();
-        PortfolioView.ActivePositions.Clear();
+
+        var exchange = ResolveExchangeService();
+        if (exchange is null)
+        {
+            AddSystemLog("EMERGENCY STOP: Exchange service not available. Local loop stopped only.");
+            ActivePositions.Clear();
+            PortfolioView.ActivePositions.Clear();
+            return;
+        }
+
+        try
+        {
+            var cancelled = await exchange.CancelAllOrdersAsync();
+            AddSystemLog($"EMERGENCY STOP: Cancel-all sent to exchange. Cancelled orders: {cancelled}.");
+            ActivePositions.Clear();
+            PortfolioView.ActivePositions.Clear();
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"EMERGENCY STOP ERROR: Failed to cancel open orders: {ex.Message}");
+        }
     }
 
     [RelayCommand]
-    private void ClosePosition(PositionViewModel position)
+    private async Task ClosePosition(PositionViewModel position)
     {
         if (position == null) return;
         if (!_userPromptService.Confirm(
@@ -3852,8 +3984,32 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        AddSystemLog($"Closing {position.Symbol} {position.Side} at market. Remaining qty {position.RemainingQuantity:N4}.");
-        RemovePositionFromDeck(position);
+        var exchange = ResolveExchangeService();
+        if (exchange is null)
+        {
+            AddSystemLog("Close request failed: exchange service is unavailable.");
+            RemovePositionFromDeck(position);
+            return;
+        }
+
+        var signal = BuildFlattenSignal(position);
+        if (signal is null)
+        {
+            AddSystemLog($"Close request skipped for {position.Symbol}: could not determine valid flatten quantity/price.");
+            return;
+        }
+
+        try
+        {
+            AddSystemLog($"Closing {position.Symbol} {position.Side} at market. Remaining qty {position.RemainingQuantity:N4}.");
+            await exchange.ExecuteOrderAsync(signal);
+            AddSystemLog($"Close signal dispatched for {position.Symbol}. Waiting sync confirmation.");
+            RemovePositionFromDeck(position);
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"Close request failed for {position.Symbol}: {ex.Message}");
+        }
     }
 
     [RelayCommand]
@@ -3871,7 +4027,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void CloseAllPositions()
+    private async Task CloseAllPositions()
     {
         if (PortfolioView.ActivePositions.Count == 0)
         {
@@ -3888,8 +4044,26 @@ public partial class MainViewModel : ObservableObject
         }
 
         AddSystemLog("EMERGENCY KILL SWITCH: Closing all active positions...");
-        ActivePositions.Clear();
-        PortfolioView.ActivePositions.Clear();
+        var exchange = ResolveExchangeService();
+        if (exchange is null)
+        {
+            AddSystemLog("Close-all failed: exchange service is unavailable.");
+            ActivePositions.Clear();
+            PortfolioView.ActivePositions.Clear();
+            return;
+        }
+
+        try
+        {
+            var cancelled = await exchange.CancelAllOrdersAsync();
+            AddSystemLog($"Close-all request submitted. Exchange cancelled orders: {cancelled}.");
+            ActivePositions.Clear();
+            PortfolioView.ActivePositions.Clear();
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"Close-all request failed: {ex.Message}");
+        }
     }
 
     [RelayCommand]
@@ -3950,7 +4124,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private void VerifyConnection()
+    private async Task VerifyConnection()
     {
         var exchangeMode = ExchangeSettings.SelectedExchangeMode;
         var hasOkxCredentials =
@@ -3958,17 +4132,76 @@ public partial class MainViewModel : ObservableObject
             !string.IsNullOrWhiteSpace(ExchangeSettings.OkxSecretKey) &&
             !string.IsNullOrWhiteSpace(ExchangeSettings.OkxPassphrase);
 
-        if (exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase))
+        if (exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) ||
+            exchangeMode.Equals("OKXSwap", StringComparison.OrdinalIgnoreCase))
         {
-            AddSystemLog($"INFRA: OKX mode selected. Demo={ExchangeSettings.IsDemoMode}.");
+            AddSystemLog($"INFRA: {exchangeMode} mode selected. Demo={ExchangeSettings.IsDemoMode}.");
             AddSystemLog(hasOkxCredentials
                 ? "INFRA: OKX credentials are loaded in the dashboard session."
                 : "INFRA: OKX credentials are missing. Save settings after filling ApiKey, SecretKey, and Passphrase.");
             AddSystemLog("INFRA: Verify Connection is currently a readiness check, not a live OKX API ping.");
+        }
+
+        AddSystemLog($"INFRA: {exchangeMode} mode selected.");
+        var exchange = ResolveExchangeService();
+        if (exchange is null)
+        {
+            AddSystemLog("INFRA: Exchange connectivity probe unavailable. Exchange service is not resolved.");
             return;
         }
-        AddSystemLog($"INFRA: {exchangeMode} mode selected.");
-        AddSystemLog("INFRA: Verify Connection currently checks local readiness only.");
+
+        try
+        {
+            var account = await exchange.GetAccountStatusAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            AddSystemLog($"INFRA: Exchange probe OK ({account.Provider}). Equity={account.Equity:N2}, Balance={account.Balance:N2}.");
+        }
+        catch (TimeoutException)
+        {
+            AddSystemLog("INFRA: Exchange probe timed out after 5 seconds.");
+        }
+        catch (Exception ex)
+        {
+            AddSystemLog($"INFRA: Exchange probe failed: {ex.Message}");
+        }
+    }
+
+    private IExchangeService? ResolveExchangeService()
+        => App.ServiceProvider?.GetService(typeof(IExchangeService)) as IExchangeService;
+
+    private Signal? BuildFlattenSignal(PositionViewModel position)
+    {
+        var quantity = position.RemainingQuantity > 0m ? position.RemainingQuantity : position.Size;
+        var price = position.MarkPrice > 0m ? position.MarkPrice : position.EntryPrice;
+        if (quantity <= 0m || price <= 0m || string.IsNullOrWhiteSpace(position.Symbol))
+        {
+            return null;
+        }
+
+        var side = string.Equals(position.Side, "LONG", StringComparison.OrdinalIgnoreCase)
+            ? TradeSide.Sell
+            : TradeSide.Buy;
+
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Source = "Dashboard.ManualClose",
+            Symbol = position.Symbol,
+            Side = side,
+            Quantity = quantity,
+            Price = price,
+            StrategyTag = "OperatorIntervention",
+            RegimeTag = "ManualOverride",
+            Confidence = 100,
+            Reasoning = "Operator requested manual position flatten.",
+            Exchange = ExchangeSettings.SelectedExchangeMode,
+            MarketType = MarketOverview.SelectedMarket.Equals("BIST", StringComparison.OrdinalIgnoreCase)
+                ? MarketType.BIST
+                : MarketType.Crypto,
+            Timestamp = DateTime.UtcNow
+        };
+
+        signal.Metadata["ReduceOnly"] = "true";
+        return signal;
     }
 
     [RelayCommand]
@@ -4440,6 +4673,21 @@ public partial class MainViewModel : ObservableObject
         RiskGovernorStatus = presentation.Status;
         RiskGovernorStatusColor = presentation.Color;
         RiskGovernorReason = presentation.Reason;
+
+        RefreshOpsStripExecutionLine();
+        RefreshOpsStripRiskLine(snapshot);
+    }
+
+    private void RefreshOpsStripExecutionLine()
+    {
+        OpsStripExecutionLine = $"Q {QueuedCount}  ·  P {ProcessingCount}  ·  E {ExecutedCount}  ·  F {FailedCount}  ·  DL {DeadLetterCount}  ·  {QueueHealth}";
+    }
+
+    private void RefreshOpsStripRiskLine(RiskGovernorDashboardSnapshot snapshot)
+    {
+        var deskPositions = PortfolioView.ActivePositions.Count;
+        OpsStripRiskLine =
+            $"DD {snapshot.DrawdownPercent:F1}%  ·  Gov {RiskGovernorStatus}  ·  Venue open {snapshot.OpenTradeCount}  ·  Desk {deskPositions}";
     }
 
 
@@ -4812,3 +5060,4 @@ public partial class MainViewModel : ObservableObject
         return Math.Clamp(score, 0, 100);
     }
 }
+

@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Models;
@@ -42,7 +43,9 @@ public class ReplayBrokerService : IExchangeService
             LifecycleStatus = TradeLifecycleStatus.Active,
             StrategyTag = signal.StrategyTag,
             RegimeTag = signal.RegimeTag,
-            ExecutionMode = "REPLAY"
+            ExecutionMode = "REPLAY",
+            Leverage = ResolveLeverage(signal),
+            MarginMode = ResolveMarginMode(signal)
         };
 
         return Task.FromResult(trade);
@@ -57,9 +60,38 @@ public class ReplayBrokerService : IExchangeService
         });
     }
 
+    public bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book)
+    {
+        book = default;
+        return false;
+    }
+
     public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side) => Task.FromResult(0m);
 
     public Task<List<string>> GetFavoritesAsync() => Task.FromResult(new List<string>());
 
     public Task<int> CancelAllOrdersAsync(CancellationToken cancellationToken = default) => Task.FromResult(0);
+
+    private static decimal ResolveLeverage(Signal signal)
+    {
+        if (signal.Metadata.TryGetValue("Leverage", out var leverageRaw) &&
+            decimal.TryParse(leverageRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var leverage) &&
+            leverage > 0m)
+        {
+            return leverage;
+        }
+
+        return 1m;
+    }
+
+    private static MarginMode ResolveMarginMode(Signal signal)
+    {
+        if (signal.Metadata.TryGetValue("MarginMode", out var marginRaw) &&
+            Enum.TryParse<MarginMode>(marginRaw, true, out var marginMode))
+        {
+            return marginMode;
+        }
+
+        return MarginMode.Isolated;
+    }
 }

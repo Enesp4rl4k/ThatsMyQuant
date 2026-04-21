@@ -1,123 +1,218 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using MediatR;
+using ThatsMyQuant.Contracts.Commands;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
 /// <summary>
 /// A zero-allocation HFT engine that tracks the price spread between two correlated assets.
-/// It uses a rolling window to calculate the Z-Score of the spread and emits signals.
+/// It uses Engle-Granger Cointegration to dynamically adjust the Hedge Ratio and emits dual-leg spread capturing orders.
 /// </summary>
-public class PairsTradingEngine
+public class PairsTradingEngine : INotificationHandler<Signal>
 {
     private readonly ILogger<PairsTradingEngine> _logger;
+    private readonly IMediator _mediator;
+    private readonly PairsTradingOptions _options;
+    private readonly SemaphoreSlim _executionGate = new(1, 1);
+    
     private readonly string _symbolA;
     private readonly string _symbolB;
     
-    // Using fixed sized arrays or pointers for true zero alloc in C#, 
-    // but a pre-allocated ConcurrentQueue or CircularBuffer works well enough.
-    private readonly double[] _spreadHistory;
+    // Circular buffers for raw prices to run periodic EG-tests
+    private readonly decimal[] _priceWindowY; // Asset A
+    private readonly decimal[] _priceWindowX; // Asset B
     private int _historyIndex = 0;
     private int _historyCount = 0;
     private readonly int _windowSize;
 
-    private double _runningSum = 0;
-    private double _runningSumSq = 0;
-
     private decimal _latestPriceA;
     private decimal _latestPriceB;
 
-    private const double ZScoreThresholdEntry = 2.0;
-    private const double ZScoreThresholdExit = 0.5;
+    private bool _isCointegrated;
+    private decimal _hedgeRatio = 1m;
+    private decimal _spreadMean;
+    private decimal _spreadStdDev;
+    private int _tickCounter = 0;
+    private int _lastSignalTick = int.MinValue / 2;
 
-    public PairsTradingEngine(string symbolA, string symbolB, int windowSize, ILogger<PairsTradingEngine> logger)
+    [ActivatorUtilitiesConstructor]
+    public PairsTradingEngine(
+        ILogger<PairsTradingEngine> logger,
+        IMediator mediator,
+        IOptions<PairsTradingOptions>? options = null)
     {
-        _symbolA = symbolA;
-        _symbolB = symbolB;
-        _windowSize = windowSize;
-        _spreadHistory = new double[windowSize];
+        _options = options?.Value ?? new PairsTradingOptions();
+        _symbolA = _options.SymbolA;
+        _symbolB = _options.SymbolB;
+        _windowSize = Math.Max(16, _options.WindowSize);
+        _priceWindowY = new decimal[_windowSize];
+        _priceWindowX = new decimal[_windowSize];
         _logger = logger;
+        _mediator = mediator;
     }
 
-    /// <summary>
-    /// Processes a market tick. Passed by 'in' to avoid copying the struct (zero-allocation).
-    /// </summary>
-    public void ProcessTick(in MarketTick tick)
+    internal PairsTradingEngine(string symbolA, string symbolB, int windowSize, ILogger<PairsTradingEngine> logger, IMediator mediator)
+        : this(
+            logger,
+            mediator,
+            Options.Create(new PairsTradingOptions
+            {
+                SymbolA = symbolA,
+                SymbolB = symbolB,
+                WindowSize = windowSize
+            }))
+    {
+    }
+
+    public async Task Handle(Signal notification, CancellationToken cancellationToken)
+    {
+        // Treat signal updates as market ticks for pairs monitoring
+        await ProcessTickAsync(notification.Symbol, notification.Price, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ProcessTickAsync(string symbol, decimal price, CancellationToken ct)
     {
         bool updated = false;
 
-        if (tick.Symbol == _symbolA)
+        if (symbol == _symbolA)
         {
-            _latestPriceA = tick.Price;
+            _latestPriceA = price;
             updated = true;
         }
-        else if (tick.Symbol == _symbolB)
+        else if (symbol == _symbolB)
         {
-            _latestPriceB = tick.Price;
+            _latestPriceB = price;
             updated = true;
         }
 
         if (updated && _latestPriceA > 0 && _latestPriceB > 0)
         {
-            EvaluateSpread();
+            _tickCounter++;
+            
+            // Insert into rolling window
+            _priceWindowY[_historyIndex] = _latestPriceA;
+            _priceWindowX[_historyIndex] = _latestPriceB;
+            
+            _historyIndex = (_historyIndex + 1) % _windowSize;
+            if (_historyCount < _windowSize) _historyCount++;
+
+            // Periodically check cointegration if we have enough data
+            if (_historyCount == _windowSize && _tickCounter % Math.Max(1, _options.RebalanceInterval) == 0)
+            {
+                RecomputeCointegration();
+            }
+
+            if (_isCointegrated)
+            {
+                await EvaluateSpreadAsync(ct).ConfigureAwait(false);
+            }
         }
     }
 
-    private void EvaluateSpread()
+    private void RecomputeCointegration()
     {
-        // Use Log Spread: ln(PriceA) - ln(PriceB) for market-neutral statistical arbitrage
-        double currentSpread = Math.Log((double)_latestPriceA) - Math.Log((double)_latestPriceB);
-
-        double oldSpread = 0;
-        if (_historyCount == _windowSize)
+        // EG test requires contiguous arrays
+        var seriesY = new decimal[_windowSize];
+        var seriesX = new decimal[_windowSize];
+        
+        for (int i = 0; i < _windowSize; i++)
         {
-            oldSpread = _spreadHistory[_historyIndex];
+            int idx = (_historyIndex + i) % _windowSize;
+            seriesY[i] = _priceWindowY[idx];
+            seriesX[i] = _priceWindowX[idx];
         }
 
-        // Circular buffer insertion
-        _spreadHistory[_historyIndex] = currentSpread;
-        _historyIndex = (_historyIndex + 1) % _windowSize;
-
-        if (_historyCount < _windowSize)
+        var result = EngleGrangerDetector.TestCointegration(seriesY, seriesX);
+        _isCointegrated = result.IsCointegrated;
+        
+        if (_isCointegrated)
         {
-            _historyCount++;
-            _runningSum += currentSpread;
-            _runningSumSq += currentSpread * currentSpread;
+            _hedgeRatio = result.HedgeRatio;
+            _spreadMean = result.SpreadAverage;
+            _spreadStdDev = Math.Max(0.0001m, result.SpreadStdDev);
+            _logger.LogDebug("Pairs {A}/{B} Cointegrated! Beta: {Beta:F3}, StdDev: {StdDev:F3}", _symbolA, _symbolB, _hedgeRatio, _spreadStdDev);
         }
-        else
+    }
+
+    private async Task EvaluateSpreadAsync(CancellationToken ct)
+    {
+        // currentSpread = Y - (Beta * X)
+        decimal currentSpread = _latestPriceA - (_hedgeRatio * _latestPriceB);
+        double zScore = (double)((currentSpread - _spreadMean) / _spreadStdDev);
+
+        if (_tickCounter - _lastSignalTick < Math.Max(1, _options.SignalCooldownTicks))
         {
-            _runningSum += currentSpread - oldSpread;
-            _runningSumSq += (currentSpread * currentSpread) - (oldSpread * oldSpread);
+            return;
         }
-
-        // Need enough data
-        if (_historyCount < _windowSize) return;
-
-        double zScore = CalculateZScore(currentSpread);
 
         if (zScore > ZScoreThresholdEntry)
         {
-            // Spread is too wide: Asset A is overpriced relative to B.
-            // Action: Short A, Long B
             _logger.LogInformation("PAIRS SIGNAL: Short {SymbolA} / Long {SymbolB} | Z-Score: {Z:F2}", _symbolA, _symbolB, zScore);
+            await ExecuteLegsAsync(TradeSide.Sell, TradeSide.Buy, zScore, ct).ConfigureAwait(false);
         }
         else if (zScore < -ZScoreThresholdEntry)
         {
-            // Spread is too narrow: Asset A is underpriced relative to B.
-            // Action: Long A, Short B
             _logger.LogInformation("PAIRS SIGNAL: Long {SymbolA} / Short {SymbolB} | Z-Score: {Z:F2}", _symbolA, _symbolB, zScore);
+            await ExecuteLegsAsync(TradeSide.Buy, TradeSide.Sell, zScore, ct).ConfigureAwait(false);
         }
     }
 
-    private double CalculateZScore(double currentSpread)
+    private async Task ExecuteLegsAsync(TradeSide sideA, TradeSide sideB, double zScore, CancellationToken ct)
     {
-        double mean = _runningSum / _windowSize;
+        await _executionGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_tickCounter - _lastSignalTick < Math.Max(1, _options.SignalCooldownTicks))
+            {
+                return;
+            }
 
-        // Prevent precision loss anomalies yielding negative variance
-        double variance = (_runningSumSq - (_runningSum * _runningSum) / _windowSize) / _windowSize;
-        if (variance <= 0) return 0;
+            _lastSignalTick = _tickCounter;
+            var baseAllocation = Math.Max(100m, _options.BaseAllocationUsd);
 
-        double stdDev = Math.Sqrt(variance);
-        return (currentSpread - mean) / stdDev;
+            var sigA = new Signal
+            {
+                Symbol = _symbolA,
+                Price = _latestPriceA,
+                Side = sideA,
+                StrategyTag = "PairsTrading",
+                Confidence = 95,
+                Reasoning = $"Cointegration reversion bounds reached. HedgeRatio: {_hedgeRatio:F3}, ZScore: {zScore:F2}",
+                Quantity = baseAllocation / Math.Max(0.0000001m, _latestPriceA)
+            };
+
+            var sigB = new Signal
+            {
+                Symbol = _symbolB,
+                Price = _latestPriceB,
+                Side = sideB,
+                StrategyTag = "PairsTrading",
+                Confidence = 95,
+                Reasoning = $"Cointegration reversion bounds reached. HedgeRatio: {_hedgeRatio:F3}, ZScore: {zScore:F2}",
+                Quantity = (baseAllocation * _hedgeRatio) / Math.Max(0.0000001m, _latestPriceB)
+            };
+
+            var legA = _mediator.Send(new ExecuteTradeCommand(sigA), ct);
+            var legB = _mediator.Send(new ExecuteTradeCommand(sigB), ct);
+
+            await Task.WhenAll(legA, legB).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Pairs execution failed for {SymbolA}/{SymbolB}. One or both hedge legs did not complete cleanly.", _symbolA, _symbolB);
+            throw;
+        }
+        finally
+        {
+            _executionGate.Release();
+        }
     }
+
+    private double ZScoreThresholdEntry => _options.EntryZScoreThreshold > 0 ? _options.EntryZScoreThreshold : 2.0;
 }

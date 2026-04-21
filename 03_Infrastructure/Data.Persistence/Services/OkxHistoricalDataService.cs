@@ -15,6 +15,7 @@ public sealed class OkxHistoricalDataService : IHistoricalMarketDataService
     private readonly HttpClient _httpClient;
     private readonly ILogger<OkxHistoricalDataService> _logger;
     private const string BaseUrl = "https://www.okx.com";
+    private const int MaxRequestRetries = 5;
 
     public OkxHistoricalDataService(HttpClient httpClient, ILogger<OkxHistoricalDataService> logger)
     {
@@ -46,8 +47,8 @@ public sealed class OkxHistoricalDataService : IHistoricalMarketDataService
             // Endpoint: /api/v5/market/history-candles
             // Parameters: instId, after, bar, limit (default 100, max 100)
             var url = $"{BaseUrl}/api/v5/market/history-candles?instId={okxSymbol}&bar={MapTimeframe(timeframe)}&after={after}&limit=100";
-            
-            var response = await _httpClient.GetAsync(url, ct);
+
+            var response = await SendWithRetryAsync(url, ct);
             if (!response.IsSuccessStatusCode)
             {
                 var error = await response.Content.ReadAsStringAsync(ct);
@@ -80,11 +81,11 @@ public sealed class OkxHistoricalDataService : IHistoricalMarketDataService
                 candles.Add(new Candle
                 {
                     Timestamp = DateTimeOffset.FromUnixTimeMilliseconds(ts).UtcDateTime,
-                    Open = decimal.Parse(item[1].GetString() ?? "0"),
-                    High = decimal.Parse(item[2].GetString() ?? "0"),
-                    Low = decimal.Parse(item[3].GetString() ?? "0"),
-                    Close = decimal.Parse(item[4].GetString() ?? "0"),
-                    Volume = decimal.Parse(item[5].GetString() ?? "0")
+                    Open = decimal.Parse(item[1].GetString() ?? "0", System.Globalization.CultureInfo.InvariantCulture),
+                    High = decimal.Parse(item[2].GetString() ?? "0", System.Globalization.CultureInfo.InvariantCulture),
+                    Low = decimal.Parse(item[3].GetString() ?? "0", System.Globalization.CultureInfo.InvariantCulture),
+                    Close = decimal.Parse(item[4].GetString() ?? "0", System.Globalization.CultureInfo.InvariantCulture),
+                    Volume = decimal.Parse(item[5].GetString() ?? "0", System.Globalization.CultureInfo.InvariantCulture)
                 });
 
                 after = ts;
@@ -98,6 +99,42 @@ public sealed class OkxHistoricalDataService : IHistoricalMarketDataService
 
         // Return sorted by time ascending
         return candles.OrderBy(c => c.Timestamp).ToList();
+    }
+
+    private async Task<HttpResponseMessage> SendWithRetryAsync(string url, CancellationToken ct)
+    {
+        for (var attempt = 1; attempt <= MaxRequestRetries; attempt++)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync(url, ct);
+                if (response.IsSuccessStatusCode)
+                {
+                    return response;
+                }
+
+                if ((int)response.StatusCode == 429 && attempt < MaxRequestRetries)
+                {
+                    var delayMs = (int)Math.Pow(2, attempt) * 300;
+                    _logger.LogWarning("OKX rate limit hit (429). Retry {Attempt}/{Max} in {DelayMs}ms.", attempt, MaxRequestRetries, delayMs);
+                    await Task.Delay(delayMs, ct);
+                    continue;
+                }
+
+                return response;
+            }
+            catch (HttpRequestException ex) when (attempt < MaxRequestRetries)
+            {
+                var delayMs = (int)Math.Pow(2, attempt) * 300;
+                _logger.LogWarning(ex, "HTTP failure while fetching OKX candles. Retry {Attempt}/{Max} in {DelayMs}ms.", attempt, MaxRequestRetries, delayMs);
+                await Task.Delay(delayMs, ct);
+            }
+        }
+
+        return new HttpResponseMessage(System.Net.HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent("{\"msg\":\"Too Many Requests after retries\",\"code\":\"50011\"}")
+        };
     }
 
     private static string NormalizeToOkx(string symbol)

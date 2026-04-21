@@ -7,12 +7,9 @@ namespace ThatsMyQuant.Application.Common;
 /// </summary>
 public sealed class NullAuditLogger : IAuditLogger
 {
-    public Task LogSecurityEventAsync(string user, string action, string resource, string details) 
+    public Task LogSecurityEventAsync(string principalId, string role, string actionType, string details) 
         => Task.CompletedTask;
 
-    public Task LogTradeEventAsync(Guid tradeId, string action, string details) 
-        => Task.CompletedTask;
-
-    public Task LogSystemAlertAsync(string level, string component, string message) 
+    public Task LogOrderExecutionAsync(string orderId, string strategyId, string justification) 
         => Task.CompletedTask;
 }

@@ -63,7 +63,7 @@ public class OkxExecutionServiceTests
             // Fill-status poll response
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("""{"code":"0","data":[{"ordId":"test","state":"live","fillSz":"0","sz":"0.001"}]}""",
+                Content = new StringContent("""{"code":"0","data":[{"ordId":"test","state":"live","fillSz":"0","sz":"0.001","fillFee":"0"}]}""",
                     Encoding.UTF8, "application/json")
             };
         }
@@ -81,14 +81,16 @@ public class OkxExecutionServiceTests
         string secretKey = "test-secret",
         string apiKey = "test-api-key",
         string passphrase = "test-passphrase",
-        bool isDemoMode = false)
+        bool isDemoMode = false,
+        string exchangeMode = "OKX")
     {
         var dict = new Dictionary<string, string?>
         {
             ["OKX:SecretKey"]   = secretKey,
             ["OKX:ApiKey"]      = apiKey,
             ["OKX:Passphrase"]  = passphrase,
-            ["OKX:IsDemoMode"]  = isDemoMode.ToString()
+            ["OKX:IsDemoMode"]  = isDemoMode.ToString(),
+            ["TMQ_EXCHANGE_MODE"] = exchangeMode
         };
         return new ConfigurationBuilder().AddInMemoryCollection(dict).Build();
     }
@@ -299,6 +301,31 @@ public class OkxExecutionServiceTests
         sign1.Should().NotBe(sign2,
             "rotating the HMAC secret must produce a different signature");
     }
+
+    [Fact]
+    public async Task ExecuteOrderAsync_SwapMode_ShouldSubmitSwapInstrumentAndPosSide()
+    {
+        var handler   = new CapturingHandler();
+        var config    = BuildConfig(isDemoMode: true, exchangeMode: "OKXSwap");
+        var logger    = Substitute.For<ILogger<OkxExecutionService>>();
+        var portfolio = Substitute.For<ISharedPortfolioStateManager>();
+        portfolio.TryReserveForOrder(Arg.Any<VenueKind>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<decimal>())
+            .Returns(false);
+        portfolio.TryReserve(Arg.Any<VenueKind>(), Arg.Any<string>(), Arg.Any<decimal>())
+            .Returns(false);
+
+        var svc = new OkxExecutionService(logger, new HttpClient(handler), config, portfolio);
+        var signal = MakeSignal();
+        signal.Side = TradeSide.Sell; // open short in swap mode
+
+        await svc.ExecuteOrderAsync(signal);
+
+        handler.FirstRequest.Should().NotBeNull();
+        handler.FirstRequestBody.Should().Contain("\"instId\":\"BTC-USDT-SWAP\"");
+        // Default margin mode is isolated when signal does not specify Cross (see OkxExecutionService.ResolveMarginMode).
+        handler.FirstRequestBody.Should().Contain("\"tdMode\":\"isolated\"");
+        handler.FirstRequestBody.Should().Contain("\"posSide\":\"short\"");
+    }
 }
 
 /// <summary>
@@ -327,11 +354,11 @@ public class OkxFillTrackingTests
         }
     }
 
-    private static HttpResponseMessage OkxOrderResponse(string state, decimal fillSz, string ordId = "ord1")
+    private static HttpResponseMessage OkxOrderResponse(string state, decimal fillSz, string ordId = "ord1", string fillFee = "0")
         => new(HttpStatusCode.OK)
         {
             Content = new StringContent(
-                $$"""{"code":"0","data":[{"ordId":"{{ordId}}","state":"{{state}}","fillSz":"{{fillSz.ToString(System.Globalization.CultureInfo.InvariantCulture)}}","sz":"0.01"}]}""",
+                $$"""{"code":"0","data":[{"ordId":"{{ordId}}","state":"{{state}}","fillSz":"{{fillSz.ToString(System.Globalization.CultureInfo.InvariantCulture)}}","sz":"0.01","fillFee":"{{fillFee}}"}]}""",
                 Encoding.UTF8, "application/json")
         };
 
@@ -392,7 +419,7 @@ public class OkxFillTrackingTests
         const decimal qty = 0.01m;
         var handler = new ScriptedHandler(
             OkxPlacementResponse(),
-            OkxOrderResponse("filled", qty));
+            OkxOrderResponse("filled", qty, fillFee: "0.0125"));
 
         var portfolio = Substitute.For<ISharedPortfolioStateManager>();
         portfolio.TryReserve(Arg.Any<VenueKind>(), Arg.Any<string>(), Arg.Any<decimal>()).Returns(true);
@@ -408,6 +435,7 @@ public class OkxFillTrackingTests
         trade.FilledQuantity.Should().Be(qty);
         trade.RemainingQuantity.Should().Be(0m);
         trade.Status.Should().Be(TradeStatus.Executed);
+        trade.TotalFeesPaid.Should().Be(0.0125m);
         (trade.FilledQuantity + trade.RemainingQuantity).Should().Be(trade.RequestedQuantity);
     }
 

@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using Microsoft.ML;
+using ThatsMyQuant.Application.Observability;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.MachineLearning;
 
@@ -21,62 +24,201 @@ public struct PredictionResult
 
 /// <summary>
 /// The ultra-low latency execution component of the ML pipeline.
-/// Upgraded with Tier-1 HFT Engine paradigms:
-/// - O(1) concurrent pool execution via `ConcurrentStack`.
-/// - Destroyed `ThreadLocal` memory fragmentation churn.
-/// - Full-Hardware Parallel JIT pipeline warming.
-/// - `PredictionResult` rigorous deterministic telemetry.
+/// Pool of ML.NET prediction engines with optional lazy background fill (see <see cref="InferenceOptions.LazyPoolWarmup"/>).
 /// </summary>
 public class InferenceAgent
 {
     private readonly ConcurrentStack<(PredictionEngine<CandleMlData, CandlePrediction> Engine, CandleMlData Buffer)> _pool = new();
-    private readonly int _processorCount;
+    private readonly int _targetPoolSize;
     private readonly MLContext _mlContext;
+    private readonly ITransformer? _loadedModel;
+    private readonly InferenceOptions _options;
+    private readonly bool _lazyPoolWarmup;
     private readonly FeatureDriftMonitor? _featureDriftMonitor;
     private readonly string _modelVersion;
+    private readonly ILogger<InferenceAgent>? _logger;
+    private readonly OperationalTelemetry? _telemetry;
+    private readonly LogLevel _lazyPoolBackgroundLogLevel;
+
+    private int _totalEnginesBuilt;
+    private int _backgroundExpansionStarted;
+    private readonly object _poolGrowthLock = new();
+    private readonly bool _modelAvailable;
 
     public string ActiveModelVersion => _modelVersion;
+    public bool IsModelAvailable => _modelAvailable;
 
     public InferenceAgent()
-        : this((FeatureDriftMonitor?)null, "PredictiveAlphaModel.zip")
+        : this((FeatureDriftMonitor?)null, "PredictiveAlphaModel.zip", null)
     {
     }
 
     public InferenceAgent(string modelPath)
-        : this((FeatureDriftMonitor?)null, modelPath)
+        : this((FeatureDriftMonitor?)null, modelPath, null)
     {
     }
 
     public InferenceAgent(FeatureDriftMonitor featureDriftMonitor)
-        : this(featureDriftMonitor, "PredictiveAlphaModel.zip")
+        : this(featureDriftMonitor, "PredictiveAlphaModel.zip", null)
     {
     }
 
-    public InferenceAgent(FeatureDriftMonitor? featureDriftMonitor, string modelPath)
+    public InferenceAgent(
+        FeatureDriftMonitor? featureDriftMonitor,
+        string modelPath,
+        InferenceOptions? options = null,
+        ILogger<InferenceAgent>? logger = null,
+        OperationalTelemetry? telemetry = null)
     {
         _mlContext = new MLContext(seed: 42);
         _featureDriftMonitor = featureDriftMonitor;
         _modelVersion = BuildModelVersion(modelPath);
-        
+        _options = options ?? new InferenceOptions();
+        _lazyPoolWarmup = _options.LazyPoolWarmup;
+        _targetPoolSize = _options.GetEffectivePoolSize();
+        _logger = logger;
+        _telemetry = telemetry;
+        _lazyPoolBackgroundLogLevel = ParseLazyPoolBackgroundLogLevel(_options.LazyPoolBackgroundLogLevel);
+
         if (!File.Exists(modelPath))
-            throw new FileNotFoundException($"Cannot start Quantitative AI. Trained Model {modelPath} not found.");
-
-        ITransformer loadedModel = _mlContext.Model.Load(modelPath, out var _);
-
-        _processorCount = Environment.ProcessorCount;
-
-        // 🔥 FULL HARDWARE WARMUP
-        // Spin up the pre-compiler concurrently across every single physical and logical core in the system.
-        // Guarantee extreme JIT tail-latency protection (p99 / p999 execution smoothing).
-        Parallel.For(0, _processorCount, coreId =>
         {
-            var engine = _mlContext.Model.CreatePredictionEngine<CandleMlData, CandlePrediction>(loadedModel);
-            
+            _modelAvailable = false;
+            _logger?.LogWarning("Inference model not found at {ModelPath}. ML inference will run in disabled mode.", modelPath);
+            _telemetry?.SetInferencePoolTelemetry(0, 0, true);
+            return;
+        }
+
+        _loadedModel = _mlContext.Model.Load(modelPath, out var _);
+        _modelAvailable = true;
+
+        if (!_lazyPoolWarmup)
+        {
+            EagerWarmupFullPool();
+            _telemetry?.SetInferencePoolTelemetry(_targetPoolSize, _targetPoolSize, true);
+        }
+        else
+        {
+            _telemetry?.SetInferencePoolTelemetry(0, _targetPoolSize, false);
+        }
+    }
+
+    private static LogLevel ParseLazyPoolBackgroundLogLevel(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return LogLevel.Warning;
+        return Enum.TryParse<LogLevel>(value.Trim(), ignoreCase: true, out var level) ? level : LogLevel.Warning;
+    }
+
+    /// <summary>
+    /// Startup path: build the full pool in the constructor (highest startup cost, best first-second concurrency).
+    /// </summary>
+    private void EagerWarmupFullPool()
+    {
+        if (!_modelAvailable || _loadedModel is null)
+            return;
+
+        void PushOne()
+        {
+            var engine = _mlContext.Model.CreatePredictionEngine<CandleMlData, CandlePrediction>(_loadedModel);
             var dummyData = new CandleMlData { Features = new float[5] };
-            engine.Predict(dummyData); // Heat up the JIT compiler memory pipelines
-            
-            // Pool the engine with its own dedicated buffer to ensure zero-allocation thread-safety
+            engine.Predict(dummyData);
             _pool.Push((engine, new CandleMlData()));
+            Interlocked.Increment(ref _totalEnginesBuilt);
+        }
+
+        if (_options.UseParallelWarmup)
+            Parallel.For(0, _targetPoolSize, _ => PushOne());
+        else
+        {
+            for (var i = 0; i < _targetPoolSize; i++)
+                PushOne();
+        }
+    }
+
+    /// <summary>
+    /// Lazy path: guarantee at least one engine exists, then (once) fill the rest on a thread-pool thread.
+    /// </summary>
+    private void EnsureLazyBootstrapAndBackgroundFill()
+    {
+        if (!_modelAvailable || _loadedModel is null)
+            return;
+
+        lock (_poolGrowthLock)
+        {
+            if (_pool.TryPop(out var existing))
+            {
+                _pool.Push(existing);
+                return;
+            }
+
+            if (_totalEnginesBuilt < _targetPoolSize)
+                TryPushOneEngineUnderLock();
+
+            StartBackgroundExpansionOnce();
+        }
+    }
+
+    private void TryPushOneEngineUnderLock()
+    {
+        if (!_modelAvailable || _loadedModel is null)
+            return;
+
+        if (_totalEnginesBuilt >= _targetPoolSize)
+            return;
+
+        var engine = _mlContext.Model.CreatePredictionEngine<CandleMlData, CandlePrediction>(_loadedModel);
+        var dummyData = new CandleMlData { Features = new float[5] };
+        engine.Predict(dummyData);
+        _pool.Push((engine, new CandleMlData()));
+        _totalEnginesBuilt++;
+        _telemetry?.SetInferencePoolTelemetry(_totalEnginesBuilt, _targetPoolSize, _totalEnginesBuilt >= _targetPoolSize);
+    }
+
+    private void StartBackgroundExpansionOnce()
+    {
+        if (!_lazyPoolWarmup || _totalEnginesBuilt >= _targetPoolSize)
+            return;
+        if (Interlocked.CompareExchange(ref _backgroundExpansionStarted, 1, 0) != 0)
+            return;
+
+        var target = _targetPoolSize;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                while (true)
+                {
+                    lock (_poolGrowthLock)
+                    {
+                        if (_totalEnginesBuilt >= target)
+                        {
+                            _logger?.LogInformation(
+                                "Inference lazy pool background fill completed: {Engines} engines (target {Target}).",
+                                _totalEnginesBuilt,
+                                target);
+                            return;
+                        }
+
+                        TryPushOneEngineUnderLock();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _telemetry?.RecordInferenceLazyPoolBackgroundFillFailure();
+                if (_lazyPoolBackgroundLogLevel != LogLevel.None)
+                {
+                    int built;
+                    lock (_poolGrowthLock)
+                        built = _totalEnginesBuilt;
+                    _logger?.Log(
+                        _lazyPoolBackgroundLogLevel,
+                        ex,
+                        "Inference lazy pool background fill failed after building {EnginesBuilt} of {Target} engines.",
+                        built,
+                        target);
+                }
+            }
         });
     }
 
@@ -86,44 +228,54 @@ public class InferenceAgent
     /// </summary>
     public PredictionResult PredictNextReturn(FeatureEngineeringAgent featureAgent)
     {
+        if (!_modelAvailable || _loadedModel is null)
+            return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
         if (featureAgent == null) return new PredictionResult { Value = 0f, IsValid = false };
 
-        if (_pool.TryPop(out var item))
+        if (!_pool.TryPop(out var item))
         {
-            try
-            {
-                featureAgent.CopyTo(item.Buffer.Features);
-                return PredictInternal(item.Buffer, item.Engine);
-            }
-            finally
-            {
-                _pool.Push(item);
-            }
+            if (_lazyPoolWarmup)
+                EnsureLazyBootstrapAndBackgroundFill();
+            if (!_pool.TryPop(out item))
+                return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
         }
 
-        return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
+        try
+        {
+            featureAgent.CopyTo(item.Buffer.Features);
+            return PredictInternal(item.Buffer, item.Engine);
+        }
+        finally
+        {
+            _pool.Push(item);
+        }
     }
 
     [Obsolete("Use PredictNextReturn(FeatureEngineeringAgent) for better performance.")]
     public PredictionResult PredictNextReturn(float[] currentNormalizedFeatures)
     {
-        if (currentNormalizedFeatures == null || currentNormalizedFeatures.Length != 5) 
+        if (!_modelAvailable || _loadedModel is null)
+            return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
+        if (currentNormalizedFeatures == null || currentNormalizedFeatures.Length != 5)
             return new PredictionResult { Value = 0f, IsValid = false };
 
-        if (_pool.TryPop(out var item))
+        if (!_pool.TryPop(out var item))
         {
-            try
-            {
-                currentNormalizedFeatures.CopyTo(item.Buffer.Features, 0); 
-                return PredictInternal(item.Buffer, item.Engine);
-            }
-            finally
-            {
-                _pool.Push(item);
-            }
+            if (_lazyPoolWarmup)
+                EnsureLazyBootstrapAndBackgroundFill();
+            if (!_pool.TryPop(out item))
+                return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
         }
 
-        return new PredictionResult { Value = 0f, IsValid = false, ModelVersion = _modelVersion };
+        try
+        {
+            currentNormalizedFeatures.CopyTo(item.Buffer.Features, 0);
+            return PredictInternal(item.Buffer, item.Engine);
+        }
+        finally
+        {
+            _pool.Push(item);
+        }
     }
 
     private PredictionResult PredictInternal(CandleMlData buffer, PredictionEngine<CandleMlData, CandlePrediction> engine)
@@ -153,9 +305,9 @@ public class InferenceAgent
         }
 
         var prediction = engine.Predict(buffer);
-        
-        return new PredictionResult 
-        { 
+
+        return new PredictionResult
+        {
             Value = prediction.PredictedNextClose,
             IsValid = true,
             Confidence = 0.99f,

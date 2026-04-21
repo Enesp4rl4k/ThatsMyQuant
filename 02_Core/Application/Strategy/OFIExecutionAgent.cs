@@ -19,10 +19,10 @@ public partial class OFIExecutionAgent : INotificationHandler<Signal>
     private readonly ILogger<OFIExecutionAgent> _logger;
     private readonly IExchangeInfoProvider _exchangeInfo;
 
-    public OFIExecutionAgent(ILogger<OFIExecutionAgent> logger, IExchangeInfoProvider exchangeInfo)
+    public OFIExecutionAgent(ILogger<OFIExecutionAgent> logger, IExchangeInfoProvider? exchangeInfo = null)
     {
         _logger = logger;
-        _exchangeInfo = exchangeInfo;
+        _exchangeInfo = exchangeInfo ?? NullExchangeInfoProvider.Instance;
     }
 
     public Task Handle(Signal notification, CancellationToken cancellationToken)
@@ -75,4 +75,13 @@ public partial class OFIExecutionAgent : INotificationHandler<Signal>
 
     [LoggerMessage(EventId = 2, Level = LogLevel.Information, Message = "[FRONT-RUN] Massive Sell Wall detected ({Imbalance:P2}). Placing defensive Limit Sell at {FrontRunPrice}.")]
     private static partial void LogSellWallFrontRun(ILogger logger, double imbalance, double frontRunPrice);
+
+    private sealed class NullExchangeInfoProvider : IExchangeInfoProvider
+    {
+        public static readonly NullExchangeInfoProvider Instance = new();
+
+        public double GetTickSize(string symbol) => 0.01d;
+
+        public double GetLotSize(string symbol) => 0.000001d;
+    }
 }

@@ -1,6 +1,7 @@
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -25,11 +26,20 @@ builder.Configuration.ApplySharedExchangeConfiguration();
 var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
 var isBinanceMode =
     selectedExchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
-    selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase);
-var isOkxMode = selectedExchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase);
-var binanceBaseUrl = selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)
-    ? "https://testnet.binance.vision"
-    : "https://api.binance.com";
+    selectedExchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) ||
+    selectedExchangeMode.Equals("BinanceFutures", StringComparison.OrdinalIgnoreCase) ||
+    selectedExchangeMode.Equals("BinanceFuturesTestnet", StringComparison.OrdinalIgnoreCase);
+var isOkxMode =
+    selectedExchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) ||
+    selectedExchangeMode.Equals("OKXSwap", StringComparison.OrdinalIgnoreCase);
+var isMockMode = selectedExchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase);
+var binanceBaseUrl = selectedExchangeMode switch
+{
+    var mode when mode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase) => "https://testnet.binance.vision",
+    var mode when mode.Equals("BinanceFutures", StringComparison.OrdinalIgnoreCase) => "https://fapi.binance.com",
+    var mode when mode.Equals("BinanceFuturesTestnet", StringComparison.OrdinalIgnoreCase) => "https://testnet.binancefuture.com",
+    _ => "https://api.binance.com"
+};
 
 builder.Services.AddHttpClient();
 builder.Services.AddHttpClient("Yahoo", c => c.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0"));
@@ -38,6 +48,11 @@ builder.Services.AddHttpClient("Binance", c =>
     c.BaseAddress = new Uri(binanceBaseUrl);
 });
 builder.Services.AddHttpClient("OKX");
+builder.Services.AddHttpClient("OkxPublic", c =>
+{
+    c.BaseAddress = new Uri("https://www.okx.com");
+    c.Timeout = TimeSpan.FromSeconds(10);
+});
 
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
 
@@ -117,6 +132,34 @@ var hasBinanceCredentials =
     !string.IsNullOrWhiteSpace(builder.Configuration["TMQ_BINANCE_API_KEY"]) &&
     !string.IsNullOrWhiteSpace(builder.Configuration["TMQ_BINANCE_API_SECRET"]);
 
+var okxDemoFlag = builder.Configuration["OKX:IsDemoMode"] ?? builder.Configuration["OKX__IsDemoMode"];
+var isOkxDemo = bool.TryParse(okxDemoFlag, out var okxDemo) && okxDemo;
+var allowLiveTradingFlag = builder.Configuration["TMQ_ALLOW_LIVE_TRADING"];
+var allowLiveTrading = bool.TryParse(allowLiveTradingFlag, out var allowLive) && allowLive;
+var credentialSource = StartupSafetyPolicy.ResolveCredentialSource(hasOkxCredentials, hasBinanceCredentials);
+var executionSyncEnabled = isOkxMode && hasOkxCredentials;
+
+Log.Information(
+    "Execution.Worker startup: ExchangeMode={ExchangeMode} | OKX_Creds={HasOkxCreds} (Demo={OkxDemo}) | Binance_Creds={HasBinanceCreds} (BaseUrl={BinanceBaseUrl}) | LiveOverride={AllowLiveTrading} | CredentialSource={CredentialSource} | ExecutionSync={ExecutionSyncEnabled}",
+    selectedExchangeMode,
+    hasOkxCredentials,
+    isOkxDemo,
+    hasBinanceCredentials,
+    binanceBaseUrl,
+    allowLiveTrading,
+    credentialSource,
+    executionSyncEnabled);
+
+StartupSafetyPolicy.EnforceOrThrow(
+    "Execution.Worker",
+    selectedExchangeMode,
+    isMockMode,
+    isOkxMode,
+    isOkxDemo,
+    allowLiveTrading,
+    hasOkxCredentials,
+    hasBinanceCredentials);
+
 if (isOkxMode && hasOkxCredentials)
 {
     builder.Services.AddSingleton<OkxExecutionService>(sp =>
@@ -127,8 +170,10 @@ if (isOkxMode && hasOkxCredentials)
             sp.GetRequiredService<ILogger<OkxExecutionService>>(),
             httpClient,
             builder.Configuration,
-            sp.GetService<ISharedPortfolioStateManager>(),
-            apiVault);
+            sp.GetRequiredService<ISharedPortfolioStateManager>(),
+            apiVault,
+            sp.GetService<OperationalTelemetry>(),
+            sp.GetRequiredService<IStreamingMarketDataService>());
     });
 
     builder.Services.AddSingleton<IExchangeService>(sp => sp.GetRequiredService<OkxExecutionService>());
@@ -137,7 +182,7 @@ if (isOkxMode && hasOkxCredentials)
             sp.GetRequiredService<ILogger<OkxExecutionSync>>(),
             builder.Configuration,
             sp.GetService<ThatsMyQuant.Application.Security.ApiVault>()));
-    Log.Information("OKX execution service registered in live mode.");
+    Log.Information("Execution.Worker: OKX execution service registered (Demo={OkxDemo}).", isOkxDemo);
 }
 else if (isBinanceMode && hasBinanceCredentials)
 {
@@ -154,7 +199,8 @@ else if (isBinanceMode && hasBinanceCredentials)
             keyVault,
             secretVault,
             sp.GetRequiredService<IStreamingMarketDataService>(),
-            sp.GetService<ISharedPortfolioStateManager>());
+            sp.GetRequiredService<ISharedPortfolioStateManager>(),
+            sp.GetService<OperationalTelemetry>());
     });
     builder.Services.AddSingleton<IExchangeService>(sp => sp.GetRequiredService<BinanceExecutionService>());
     Log.Information("Binance execution service registered in {Mode} mode.", selectedExchangeMode);
@@ -167,6 +213,13 @@ else
         "{ExchangeMode} credentials were not found or the mode is unsupported. Execution.Worker is running in mock execution mode.",
         selectedExchangeMode);
 }
+
+builder.Services.AddSingleton<IVenueTradeFeeProvider>(sp =>
+{
+    var ex = sp.GetRequiredService<IExchangeService>();
+    return ex as IVenueTradeFeeProvider ?? new NullVenueTradeFeeProvider();
+});
+builder.Services.Replace(ServiceDescriptor.Singleton<IExecutionCostSnapshotCache, ExecutionCostSnapshotCache>());
 
 builder.Services.AddHostedService<WorkerManagementApiHostedService>();
 builder.Services.AddHostedService<ExchangeExecutionSyncHostedService>();
@@ -195,6 +248,9 @@ using (var scope = host.Services.CreateScope())
 
     var portfolioCache = scope.ServiceProvider.GetRequiredService<IPortfolioStateCache>();
     await portfolioCache.InitializeAsync();
+
+    var promotion = scope.ServiceProvider.GetRequiredService<StrategyPromotionService>();
+    await promotion.InitializeAsync();
 }
 
 host.Services.GetRequiredService<ServiceRuntimeState>().MarkReady();

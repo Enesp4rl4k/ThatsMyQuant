@@ -18,16 +18,22 @@ public class QuantIndicatorService : ITechnicalAnalysisService
     private readonly ILogger<QuantIndicatorService> _logger;
     private readonly IReadOnlyList<IStrategyRouter> _strategyRouters;
     private readonly ExitPolicyLearningService? _exitPolicyLearningService;
+    private readonly MultiTimeframeConfluenceService? _mtfService;
+    private readonly MarketExecutionProfileService _executionProfiles;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Domain.Common.CircularBuffer<Candle>> _hftCandleCache = new();
     private const int MinimumCandles = 52;
 
     public QuantIndicatorService(
         ILogger<QuantIndicatorService> logger,
         IEnumerable<IStrategyRouter>? strategyRouters = null,
-        ExitPolicyLearningService? exitPolicyLearningService = null)
+        ExitPolicyLearningService? exitPolicyLearningService = null,
+        MultiTimeframeConfluenceService? mtfService = null,
+        MarketExecutionProfileService? executionProfiles = null)
     {
         _logger = logger;
         _exitPolicyLearningService = exitPolicyLearningService;
+        _mtfService = mtfService;
+        _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
         _strategyRouters = strategyRouters?.ToList()
             ?? new List<IStrategyRouter>
             {
@@ -168,15 +174,16 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         var bestSide = buyScore >= sellScore ? TradeSide.Buy : TradeSide.Sell;
         var bestScore = Math.Max(buyScore, sellScore);
 
-        // Normalize to 0-100 range (max raw = 140, scale down)
-        int normalizedScore = Math.Min(100, (int)(bestScore * 100.0 / 140.0));
-        normalizedScore = Math.Max(0, (int)Math.Round(normalizedScore * (double)sessionGate.ScoreMultiplier));
+        // Keep alpha scoring independent from session timing so valid setups are not
+        // double-penalized by both confidence and position sizing.
+        int normalizedScore = Math.Min(100, (int)(bestScore * 100.0 / 105.0));
 
         _logger.LogInformation("Confluence: BuyScore={Buy}/140, SellScore={Sell}/140, Normalized={Norm}/100 ({Side})",
             buyScore, sellScore, normalizedScore, bestSide);
 
         var router = ResolveRouter(market, signal, regime);
         var entryThreshold = router.EntryThreshold;
+        var executionProfile = _executionProfiles.ResolveForSymbol(signal.Symbol, signal.Metadata);
 
         if (!sessionGate.AllowTrade)
         {
@@ -193,11 +200,41 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             return TradeDecision.Reject(gateReason, indicators);
         }
 
+        var entryConfluence = EntryConfluenceService.Evaluate(candles, bestSide, regime.Regime);
+        if (!entryConfluence.Pass)
+        {
+            var gateReason = $"Entry confluence gate failed: {entryConfluence.RejectReason}";
+            _logger.LogWarning("Trade REJECTED: {Reason}", gateReason);
+            return TradeDecision.Reject(gateReason, indicators);
+        }
+
         if (normalizedScore < entryThreshold)
         {
             var rejectReason = $"Confluence too weak ({normalizedScore}/100, needs {entryThreshold}). {string.Join(" | ", reasons)}";
             _logger.LogWarning("Trade REJECTED: {Reason}", rejectReason);
             return TradeDecision.Reject(rejectReason, indicators);
+        }
+
+        // P1-A: MTF Confluence Gate
+        if (_mtfService != null && candles.Count >= 20)
+        {
+            var mtfResult = _mtfService.EvaluateFromBase(candles);
+            if (mtfResult.Score < 45)
+            {
+                var rejectReason = $"MTF Confluence too weak ({mtfResult.Score}/100 < 45). {mtfResult.Summary}";
+                return TradeDecision.Reject(rejectReason, indicators);
+            }
+
+            bool isAligned = bestSide == TradeSide.Buy 
+                ? mtfResult.Snapshots.All(s => s.BiasScore >= -0.02) 
+                : mtfResult.Snapshots.All(s => s.BiasScore <= 0.02);
+
+            if (!isAligned)
+            {
+                var rejectReason = $"MTF Trend Alignment failed for {bestSide}. {mtfResult.Summary}";
+                return TradeDecision.Reject(rejectReason, indicators);
+            }
+            reasons.Add($"MTF Score {mtfResult.Score}/100");
         }
 
         // --- Risk Management ---
@@ -216,6 +253,7 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             signal,
             indicators,
             regime,
+            executionProfile,
             bestSide,
             normalizedScore,
             sessionGate.Reason,
@@ -223,6 +261,7 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             positionSize,
             currentPrice,
             (decimal)atr,
+            EstimateRoundTripCostPercent(executionProfile),
             reasons));
 
         var learnedDecision = _exitPolicyLearningService != null
@@ -275,14 +314,14 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         decimal supportRoom,
         decimal atr)
     {
-        var trendBullish = (ind.EMA20 ?? 0) > (ind.EMA50 ?? 0) && (ind.PMax?.IsBullish ?? false);
-        var trendBearish = (ind.EMA20 ?? 0) < (ind.EMA50 ?? 0) && !(ind.PMax?.IsBullish ?? true);
+        var trendBullish = (ind.EMA20 ?? 0) > (ind.EMA50 ?? 0);
+        var trendBearish = (ind.EMA20 ?? 0) < (ind.EMA50 ?? 0);
         var roomOk = side == TradeSide.Buy ? resistanceRoom >= atr * 0.9m : supportRoom >= atr * 0.9m;
 
         if (side == TradeSide.Buy && !trendBullish)
-            return (false, "Trend regime requires bullish EMA/PMax alignment.");
+            return (false, "Trend regime requires bullish EMA alignment.");
         if (side == TradeSide.Sell && !trendBearish)
-            return (false, "Trend regime requires bearish EMA/PMax alignment.");
+            return (false, "Trend regime requires bearish EMA alignment.");
         if (!roomOk)
             return (false, "Trend regime lacks enough room before the nearest opposing level.");
 
@@ -315,11 +354,11 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         decimal supportRoom,
         decimal atr)
     {
-        var volumeOk = (ind.VolumeRatio ?? 0) >= 1.8;
+        var volumeOk = (ind.VolumeRatio ?? 0) >= 1.25;
         var momentumOk = side == TradeSide.Buy
             ? (ind.MACDHistogram ?? 0) > 0 && (ind.EMA20 ?? 0) >= (ind.EMA50 ?? 0)
             : (ind.MACDHistogram ?? 0) < 0 && (ind.EMA20 ?? 0) <= (ind.EMA50 ?? 0);
-        var roomOk = side == TradeSide.Buy ? resistanceRoom >= atr * 1.1m : supportRoom >= atr * 1.1m;
+        var roomOk = side == TradeSide.Buy ? resistanceRoom >= atr * 0.9m : supportRoom >= atr * 0.9m;
 
         if (!volumeOk)
             return (false, "Volatility regime needs stronger relative volume.");
@@ -345,15 +384,23 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             _ => 0.80m
         };
 
-        decimal volatilityPenalty = indicators.ATR is > 0 && indicators.CurrentPrice > 0
-            ? Math.Clamp(1m - (Convert.ToDecimal(indicators.ATR.Value) / indicators.CurrentPrice), 0.55m, 1.00m)
-            : 0.85m;
+        decimal volatilityPenalty = 0.85m;
+        if (indicators.ATR is > 0 && indicators.CurrentPrice > 0)
+        {
+            decimal atrPct = Convert.ToDecimal(indicators.ATR.Value) / indicators.CurrentPrice;
+            if (atrPct > 0)
+            {
+                // P5-A: TargetVolatility sizing. Inverse relationship to bar ATR%.
+                decimal targetVol = 0.015m; 
+                volatilityPenalty = Math.Clamp(targetVol / atrPct, 0.25m, 2.5m);
+            }
+        }
 
         decimal volumePenalty = (indicators.VolumeRatio ?? 1.0) switch
         {
-            >= 1.8 => 1.00m,
-            >= 1.2 => 0.85m,
-            >= 1.0 => 0.70m,
+            >= 1.5 => 1.00m,
+            >= 1.15 => 0.85m,
+            >= 0.9 => 0.70m,
             _ => 0.50m
         };
 
@@ -378,7 +425,7 @@ public class QuantIndicatorService : ITechnicalAnalysisService
     {
         if (string.Equals(market, "BIST", StringComparison.OrdinalIgnoreCase))
         {
-            return new SessionGate(true, 1.00m, 1.00m, "Primary BIST session");
+            return new SessionGate(true, 1.00m, "Primary BIST session");
         }
 
         var turkeyTime = timestamp.Kind == DateTimeKind.Utc
@@ -387,18 +434,21 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         var hour = turkeyTime.Hour;
 
         if (hour is >= 10 and < 13)
-            return new SessionGate(true, 1.00m, 1.00m, "London killzone session edge");
+            return new SessionGate(true, 1.00m, "London killzone session edge");
         if (hour is >= 15 and < 18)
-            return new SessionGate(true, 0.95m, 0.90m, "New York killzone session edge");
+            return new SessionGate(true, 0.90m, "New York killzone session edge");
         if (hour is >= 3 and < 10)
             return regime == MarketRegime.Volatile
-                ? new SessionGate(false, 0.70m, 0.55m, "Asia handoff blocked for volatile breakout trades")
-                : new SessionGate(true, 0.80m, 0.70m, "Asia handoff session: reduced conviction");
+                ? new SessionGate(true, 0.55m, "Asia handoff session: volatile regime, reduced size")
+                : new SessionGate(true, 0.70m, "Asia handoff session: reduced size");
 
-        return new SessionGate(false, 0.60m, 0.45m, "Dead-zone session: avoid fresh trades");
+        return new SessionGate(true, 0.35m, "Dead-zone session: reduced size only");
     }
 
-    private readonly record struct SessionGate(bool AllowTrade, decimal ScoreMultiplier, decimal SizeMultiplier, string Reason);
+    private readonly record struct SessionGate(bool AllowTrade, decimal SizeMultiplier, string Reason);
+
+    private static decimal EstimateRoundTripCostPercent(MarketExecutionProfile profile)
+        => profile.SpreadPercent + (profile.SlippagePercent * 2m) + (profile.CommissionPercentPerSide * 2m);
 
     /// <summary>
     /// Multi-indicator confluence scoring (7 indicators, max 140 raw points, normalized to 0-100).
@@ -410,13 +460,13 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         int buyScore = 0, sellScore = 0;
         var reasons = new List<string>();
 
-        EvaluateRsi(ind, ref buyScore, ref sellScore, reasons);
-        EvaluateMacd(ind, ref buyScore, ref sellScore, reasons);
-        EvaluateEma(ind, ref buyScore, ref sellScore, reasons);
-        EvaluateBollinger(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateRsi(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
+        EvaluateMacd(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
+        EvaluateEma(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
+        EvaluateBollinger(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
         EvaluateVolume(ind, ref buyScore, ref sellScore, reasons);
-        EvaluateAlphaTrend(ind, ref buyScore, ref sellScore, reasons);
-        EvaluatePMax(ind, ref buyScore, ref sellScore, reasons);
+        EvaluateAlphaTrend(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
+        EvaluatePMax(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
         EvaluateSupportResistance(ind, ref buyScore, ref sellScore, reasons);
         EvaluatePattern(ind, ref buyScore, ref sellScore, reasons);
         ApplyRegimeConfluenceAdjustments(ind, regime, ref buyScore, ref sellScore, reasons);
@@ -424,66 +474,94 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         return (buyScore, sellScore, reasons);
     }
 
-    private static void EvaluateRsi(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    private static void EvaluateRsi(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (!ind.RSI.HasValue) return;
 
         if (ind.RSI < 30)
         {
-            buyScore += 20;
+            buyScore += regime == MarketRegime.Trending ? 15 : 30; // Stronger in ranging
             reasons.Add($"RSI={ind.RSI:F1} (oversold ✅BUY)");
         }
         else if (ind.RSI <= 50)
         {
-            buyScore += 15;
+            buyScore += regime == MarketRegime.Trending ? 25 : 15; // Mean recovery indicates trend resumption
             reasons.Add($"RSI={ind.RSI:F1} (recovering ✅BUY)");
         }
         else if (ind.RSI > 70)
         {
-            sellScore += 20;
+            sellScore += regime == MarketRegime.Trending ? 15 : 30;
             reasons.Add($"RSI={ind.RSI:F1} (overbought ✅SELL)");
         }
         else if (ind.RSI >= 50)
         {
-            sellScore += 10;
+            sellScore += regime == MarketRegime.Trending ? 25 : 15;
             reasons.Add($"RSI={ind.RSI:F1} (neutral-high)");
         }
     }
 
-    private static void EvaluateMacd(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    private static void EvaluateMacd(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (!ind.MACDHistogram.HasValue) return;
 
+        bool isTrending = regime == MarketRegime.Trending;
+        int points = isTrending ? 25 : 10; // MACD momentum is less reliable in ranging
+
         if (ind.MACDHistogram > 0 && ind.MACD > ind.MACDSignal)
         {
-            buyScore += 25;
+            buyScore += points;
             reasons.Add($"MACD histogram+ ({ind.MACDHistogram:F4} ✅BUY)");
         }
         else if (ind.MACDHistogram < 0 && ind.MACD < ind.MACDSignal)
         {
-            sellScore += 25;
+            sellScore += points;
             reasons.Add($"MACD histogram- ({ind.MACDHistogram:F4} ✅SELL)");
         }
     }
 
-    private static void EvaluateEma(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    private static void EvaluateEma(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (!ind.EMA20.HasValue || !ind.EMA50.HasValue) return;
 
         double price = (double)ind.CurrentPrice;
         if (price > ind.EMA20 && ind.EMA20 > ind.EMA50)
         {
-            buyScore += 20;
-            reasons.Add("EMA golden trend ✅BUY");
+            if (regime == MarketRegime.Trending)
+            {
+                buyScore += 20;
+                reasons.Add("EMA golden trend (Regime: Trending ✅BUY)");
+            }
+            else if (regime == MarketRegime.Ranging && price > ind.EMA20 * 1.02)
+            {
+                // In a ranging market, price significantly above moving averages is mean-reverting (overbought)
+                sellScore += 15;
+                reasons.Add("EMA stretched in Range (Mean Reversion ✅SELL)");
+            }
+            else
+            {
+                reasons.Add("EMA golden trend (IC zeroed due to Range/Neutral)");
+            }
         }
         else if (price < ind.EMA20 && ind.EMA20 < ind.EMA50)
         {
-            sellScore += 20;
-            reasons.Add("EMA death trend ✅SELL");
+            if (regime == MarketRegime.Trending)
+            {
+                sellScore += 20;
+                reasons.Add("EMA death trend (Regime: Trending ✅SELL)");
+            }
+            else if (regime == MarketRegime.Ranging && price < ind.EMA20 * 0.98)
+            {
+                buyScore += 15;
+                reasons.Add("EMA stretched in Range (Mean Reversion ✅BUY)");
+            }
+            else
+            {
+                reasons.Add("EMA death trend (IC zeroed due to Range/Neutral)");
+            }
         }
     }
 
-    private static void EvaluateBollinger(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    private static void EvaluateBollinger(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (!ind.BollingerLower.HasValue || !ind.BollingerUpper.HasValue) return;
 
@@ -492,14 +570,16 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         double lowerThreshold = ind.BollingerLower.Value + bbWidth * 0.1;
         double upperThreshold = ind.BollingerUpper.Value - bbWidth * 0.1;
 
+        int points = regime == MarketRegime.Ranging ? 25 : 10; // BB trades are stronger in Ranging regime
+
         if (price <= lowerThreshold)
         {
-            buyScore += 15;
+            buyScore += points;
             reasons.Add($"BB lower bounce ({ind.BollingerLower:F2} ✅BUY)");
         }
         else if (price >= upperThreshold)
         {
-            sellScore += 15;
+            sellScore += points;
             reasons.Add($"BB upper touch ({ind.BollingerUpper:F2} ✅SELL)");
         }
     }
@@ -527,45 +607,63 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         }
     }
 
-    private static void EvaluateAlphaTrend(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    private static void EvaluateAlphaTrend(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (ind.AlphaTrend == null) return;
 
+        bool isTrending = regime == MarketRegime.Trending;
+
         if (ind.AlphaTrend.Signal == TradeSide.Buy && ind.AlphaTrend.IsConfirmed)
         {
-            buyScore += 25;
-            reasons.Add("AlphaTrend BUY confirmed ✅BUY");
+            if (isTrending)
+            {
+                buyScore += 20;
+                reasons.Add("AlphaTrend BUY confirmed (Regime: Trending ✅BUY)");
+            }
+            else
+            {
+                reasons.Add("AlphaTrend BUY confirmed (IC zeroed due to Range)");
+            }
         }
         else if (ind.AlphaTrend.Signal == TradeSide.Sell && ind.AlphaTrend.IsConfirmed)
         {
-            sellScore += 25;
-            reasons.Add("AlphaTrend SELL confirmed ✅SELL");
+            if (isTrending)
+            {
+                sellScore += 20;
+                reasons.Add("AlphaTrend SELL confirmed (Regime: Trending ✅SELL)");
+            }
+            else
+            {
+                reasons.Add("AlphaTrend SELL confirmed (IC zeroed due to Range)");
+            }
         }
         else if (ind.AlphaTrend.IsBullish)
         {
-            buyScore += 10;
-            reasons.Add("AlphaTrend bullish (no signal)");
+            if (isTrending) buyScore += 10;
+            reasons.Add("AlphaTrend bullish bias");
         }
         else
         {
-            sellScore += 10;
-            reasons.Add("AlphaTrend bearish (no signal)");
+            if (isTrending) sellScore += 10;
+            reasons.Add("AlphaTrend bearish bias");
         }
     }
 
-    private static void EvaluatePMax(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
+    private static void EvaluatePMax(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (ind.PMax == null) return;
 
+        int points = regime == MarketRegime.Trending ? 20 : 10;
+
         if (ind.PMax.Signal == TradeSide.Buy || (ind.PMax.IsBullish && ind.CurrentPrice > (decimal)ind.PMax.Value))
         {
-            buyScore += 15;
-            reasons.Add("PMax bullish filter confirmed");
+            buyScore += points;
+            reasons.Add($"PMax bullish filter confirmed ({points} pts)");
         }
         else if (ind.PMax.Signal == TradeSide.Sell || (!ind.PMax.IsBullish && ind.CurrentPrice < (decimal)ind.PMax.Value))
         {
-            sellScore += 15;
-            reasons.Add("PMax bearish filter confirmed");
+            sellScore += points;
+            reasons.Add($"PMax bearish filter confirmed ({points} pts)");
         }
     }
 
@@ -574,18 +672,18 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         if (ind.NearestSupport != null)
         {
             decimal distToSupport = Math.Abs(ind.CurrentPrice - ind.NearestSupport.Price) / ind.CurrentPrice;
-            if (distToSupport < 0.02m) // Within 2% of support
+            if (distToSupport <= 0.008m && ind.NearestSupport.TestCount >= 2) // Within 0.8% and tested >= 2
             {
-                buyScore += 15;
+                buyScore += 20; // P1-C: Strong alpha
                 reasons.Add($"Near S/R support {ind.NearestSupport.Price:F2} (tested {ind.NearestSupport.TestCount}x ✅BUY)");
             }
         }
         if (ind.NearestResistance != null)
         {
             decimal distToResistance = Math.Abs(ind.NearestResistance.Price - ind.CurrentPrice) / ind.CurrentPrice;
-            if (distToResistance < 0.02m) // Within 2% of resistance
+            if (distToResistance <= 0.008m && ind.NearestResistance.TestCount >= 2) // Within 0.8% and tested >= 2
             {
-                sellScore += 15;
+                sellScore += 20; // P1-C: Strong alpha
                 reasons.Add($"Near S/R resistance {ind.NearestResistance.Price:F2} (tested {ind.NearestResistance.TestCount}x ✅SELL)");
             }
         }
@@ -597,13 +695,13 @@ public class QuantIndicatorService : ITechnicalAnalysisService
 
         if (ind.DetectedPattern.Contains("Bullish", StringComparison.OrdinalIgnoreCase))
         {
-            buyScore += 25;
-            reasons.Add($"Pattern: {ind.DetectedPattern} ✅BUY");
+            buyScore += 12; // Halved due to inverted IC@20
+            reasons.Add($"Pattern {ind.DetectedPattern} ✅BUY");
         }
         else if (ind.DetectedPattern.Contains("Bearish", StringComparison.OrdinalIgnoreCase))
         {
-            sellScore += 25;
-            reasons.Add($"Pattern: {ind.DetectedPattern} ✅SELL");
+            sellScore += 12; // Halved
+            reasons.Add($"Pattern {ind.DetectedPattern} ✅SELL");
         }
         else
         {
@@ -662,10 +760,10 @@ public class QuantIndicatorService : ITechnicalAnalysisService
 
     private static void ApplyVolatilityPenalty(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
     {
-        if ((ind.VolumeRatio ?? 0) < 1.8)
+        if ((ind.VolumeRatio ?? 0) < 1.25)
         {
-            buyScore -= 10;
-            sellScore -= 10;
+            buyScore -= 5;
+            sellScore -= 5;
             reasons.Add("Volatility regime penalty: breakout lacks strong volume");
         }
         else

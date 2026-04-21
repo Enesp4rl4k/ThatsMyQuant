@@ -16,15 +16,14 @@ public sealed class VenuePortfolioManager : ISharedPortfolioStateManager, IPortf
     private long _peakEquityScaled = 0;
     private long _initialEquityScaled = 0;
 
-    private static readonly Lazy<VenuePortfolioManager> _instance =
-        new(() => new VenuePortfolioManager());
-
-    public static VenuePortfolioManager Instance => _instance.Value;
-
     private readonly ConcurrentDictionary<BalanceKey, AtomicBalanceCell> _balances = new();
     private readonly ConcurrentDictionary<PositionKey, AtomicPositionCell> _positions = new();
+    private readonly ConcurrentDictionary<OrderReservationKey, long> _orderReservations = new();
 
-    private VenuePortfolioManager() { }
+    /// <summary>
+    /// Register via <c>AddThatsMyQuantInfrastructure</c> or construct in tests; avoid shared static state.
+    /// </summary>
+    public VenuePortfolioManager() { }
 
     public decimal AvailableUsdt => GetAvailableBalance(VenueKind.Binance, "USDT");
 
@@ -76,6 +75,80 @@ public sealed class VenuePortfolioManager : ISharedPortfolioStateManager, IPortf
 
         var cell = GetBalanceCell(venue, asset);
         cell.Release(ToScaled(amount));
+    }
+
+    public bool TryReserveForOrder(VenueKind venue, string asset, string orderId, decimal amount)
+    {
+        if (string.IsNullOrWhiteSpace(orderId))
+        {
+            return TryReserve(venue, asset, amount);
+        }
+
+        if (amount <= 0m)
+        {
+            return true;
+        }
+
+        if (!TryReserve(venue, asset, amount))
+        {
+            return false;
+        }
+
+        var scaled = ToScaled(amount);
+        var reservationKey = new OrderReservationKey(venue, NormalizeAsset(asset), orderId.Trim());
+        _orderReservations.AddOrUpdate(reservationKey, scaled, (_, existing) => existing + scaled);
+        return true;
+    }
+
+    public void ReleaseReservationForOrder(VenueKind venue, string asset, string orderId, decimal amount)
+    {
+        if (amount <= 0m)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(orderId))
+        {
+            ReleaseReservation(venue, asset, amount);
+            return;
+        }
+
+        var reservationKey = new OrderReservationKey(venue, NormalizeAsset(asset), orderId.Trim());
+        var releaseScaled = ToScaled(amount);
+        while (true)
+        {
+            if (!_orderReservations.TryGetValue(reservationKey, out var trackedScaled) || trackedScaled <= 0L)
+            {
+                return;
+            }
+
+            var actualRelease = Math.Min(trackedScaled, releaseScaled);
+            var updated = trackedScaled - actualRelease;
+            if (_orderReservations.TryUpdate(reservationKey, updated, trackedScaled))
+            {
+                if (updated <= 0L)
+                {
+                    _orderReservations.TryRemove(reservationKey, out _);
+                }
+
+                GetBalanceCell(venue, asset).Release(actualRelease);
+                return;
+            }
+        }
+    }
+
+    public void ReleaseAllReservationsForOrder(VenueKind venue, string asset, string orderId)
+    {
+        if (string.IsNullOrWhiteSpace(orderId))
+        {
+            return;
+        }
+
+        var reservationKey = new OrderReservationKey(venue, NormalizeAsset(asset), orderId.Trim());
+        if (_orderReservations.TryRemove(reservationKey, out var trackedScaled) && trackedScaled > 0L)
+        {
+            GetBalanceCell(venue, asset).Release(trackedScaled);
+        }
     }
 
     public void UpdatePosition(VenueKind venue, string symbol, decimal quantity)
@@ -142,7 +215,7 @@ public sealed class VenuePortfolioManager : ISharedPortfolioStateManager, IPortf
             DateTime.UtcNow);
     }
 
-    public decimal GetPosition(string symbol) => GetPosition(VenueKind.Binance, symbol);
+
 
     public (decimal Balance, IReadOnlyDictionary<string, decimal> Positions) GetSnapshot()
     {
@@ -158,6 +231,7 @@ public sealed class VenuePortfolioManager : ISharedPortfolioStateManager, IPortf
     {
         _balances.Clear();
         _positions.Clear();
+        _orderReservations.Clear();
         Interlocked.Exchange(ref _peakEquityScaled, 0);
     }
 
@@ -329,4 +403,6 @@ public sealed class VenuePortfolioManager : ISharedPortfolioStateManager, IPortf
             Interlocked.Exchange(ref _updatedTicks, DateTime.UtcNow.Ticks);
         }
     }
+
+    private readonly record struct OrderReservationKey(VenueKind Venue, string Asset, string OrderId);
 }

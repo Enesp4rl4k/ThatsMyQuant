@@ -2,6 +2,7 @@ using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Diagnostics;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Infrastructure.Persistence;
@@ -87,8 +88,8 @@ public sealed class SignalPersistenceBufferingTests : IAsyncLifetime
 
     private async Task<Signal?> WaitForSignalAsync(Guid signalId, TimeSpan timeout)
     {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < timeout)
         {
             await using var scope = _services.CreateAsyncScope();
             var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
@@ -98,7 +99,7 @@ public sealed class SignalPersistenceBufferingTests : IAsyncLifetime
                 return signal;
             }
 
-            await Task.Delay(25);
+            await Task.Delay(10);
         }
 
         return null;

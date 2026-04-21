@@ -2,6 +2,7 @@ using MediatR;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Threading;
 using ThatsMyQuant.Application.Risk;
 using ThatsMyQuant.Contracts.Enums;
@@ -221,6 +222,9 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
         var executionCheck = CheckExecutionHealth(state);
         if (!executionCheck.Approved) return Task.FromResult(executionCheck);
 
+        var leverageCheck = CheckLeverageLimit(signal);
+        if (!leverageCheck.Approved) return Task.FromResult(leverageCheck);
+
         var streakCheck = CheckLossStreak(state.ClosedTrades, signal);
         if (!streakCheck.Approved) return Task.FromResult(streakCheck);
 
@@ -365,6 +369,34 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
         if (state.ExecutionHealth < _options.MinimumExecutionHealthToTrade)
         {
             return (false, "Execution venue quality is degraded beyond risk tolerance.");
+        }
+
+        return (true, "");
+    }
+
+    private (bool Approved, string Reason) CheckLeverageLimit(Signal signal)
+    {
+        if (!signal.Metadata.TryGetValue("Leverage", out var raw) ||
+            !decimal.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, out var lev))
+        {
+            return (true, "");
+        }
+
+        var marginMode = MarginMode.Isolated;
+        if (signal.Metadata.TryGetValue("MarginMode", out var marginRaw) &&
+            Enum.TryParse<MarginMode>(marginRaw, true, out var parsedMode))
+        {
+            marginMode = parsedMode;
+        }
+
+        var modeMax = marginMode == MarginMode.Cross
+            ? _options.MaxRequestedLeverageCross
+            : _options.MaxRequestedLeverageIsolated;
+        var absoluteMax = _options.MaxRequestedLeverage;
+        var effectiveMax = Math.Min(Math.Max(1m, modeMax), Math.Max(1m, absoluteMax));
+        if (lev > effectiveMax)
+        {
+            return (false, $"Requested leverage {lev:F2} exceeds {marginMode} max {effectiveMax:F2}.");
         }
 
         return (true, "");

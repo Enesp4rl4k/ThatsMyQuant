@@ -44,7 +44,14 @@ public partial class ChangePasswordDialogViewModel : ObservableObject
 
         try
         {
-            await _authService.UpdatePasswordAsync(CurrentSession.Current!.Id, NewPassword!);
+            var current = CurrentSession.Current;
+            if (current is null)
+            {
+                ErrorMessage = "Session expired. Please sign in again.";
+                return;
+            }
+
+            await _authService.UpdatePasswordAsync(current.Id, NewPassword!);
             CloseAction?.Invoke(true);
         }
         catch (Exception ex)

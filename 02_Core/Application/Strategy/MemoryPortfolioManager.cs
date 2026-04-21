@@ -6,8 +6,8 @@ using ThatsMyQuant.Contracts.Models;
 namespace ThatsMyQuant.Application.Strategy;
 
 /// <summary>
-/// A high-performance, in-memory portfolio manager for real-time balance tracking.
-/// Designed for low-latency HFT environments with per-symbol position tracking.
+/// Application-layer in-memory portfolio for strategy/risk paths (registered as <see cref="IPortfolioManager"/> in <c>AddThatsMyQuantApplication</c>).
+/// For venue-scaled execution balances and reservations, use <c>VenuePortfolioManager</c> from <c>AddThatsMyQuantInfrastructure</c> (Infrastructure assembly).
 /// </summary>
 public sealed class MemoryPortfolioManager : IPortfolioManager
 {

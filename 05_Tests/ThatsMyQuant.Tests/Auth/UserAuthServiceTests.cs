@@ -429,6 +429,27 @@ public class UserAuthServiceTests
     }
 
     [Fact]
+    public async Task UpdatePasswordAsync_RequirePasswordChangeOnNextLogin_SetsMustChangePassword()
+    {
+        var (connection, db) = CreateDb();
+        try
+        {
+            var svc = new UserAuthService(db);
+            var created = await svc.CreateUserAsync("pwreset", "pwreset@test.com", "Initial1!A", Role.Operator);
+
+            await svc.UpdatePasswordAsync(created.Id, "Replacement1!B", requirePasswordChangeOnNextLogin: true);
+
+            var reloaded = await db.OperatorUsers.FindAsync(created.Id);
+            reloaded!.MustChangePassword.Should().BeTrue();
+        }
+        finally
+        {
+            await db.DisposeAsync();
+            await connection.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task SetUserActiveAsync_LastActiveAdmin_ThrowsInvalidOperationException()
     {
         var (connection, db, svc) = CreateSeeded();

@@ -47,6 +47,9 @@ public record IndicatorSnapshot
     /// <summary>PMax indicator result - moving-average/ATR trend filter.</summary>
     public PMaxResult? PMax { get; init; }
 
+    /// <summary>Rolling linear-regression edge context for slope, fit quality, and sigma-band stretch.</summary>
+    public LinearRegressionEdgeSnapshot? LinearRegression { get; init; }
+
     // --- Absorbing System (Support/Resistance) ---
     /// <summary>Detected support and resistance levels from pivot + wick absorption analysis.</summary>
     public List<SupportResistanceLevel>? SupportResistanceLevels { get; init; }

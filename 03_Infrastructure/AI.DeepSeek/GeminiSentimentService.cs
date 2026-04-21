@@ -52,6 +52,13 @@ public class GeminiSentimentService : ISentimentService
 
             if (string.IsNullOrEmpty(response)) return (0, false, "No response from Gemini.");
 
+            // Simulation mode: mock service returns a non-JSON APPROVE string — skip parse
+            if (response.Contains("SIMULATION", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogDebug("Gemini is in simulation mode — returning neutral sentiment.");
+                return (0, false, "Simulation mode — AI inference disabled.");
+            }
+
             // Simple cleanup if LLM wraps in markdown
             response = response.Replace("```json", "").Replace("```", "").Trim();
 

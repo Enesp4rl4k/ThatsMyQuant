@@ -33,6 +33,7 @@ public class QuantDbContext : DbContext
             entity.Property(s => s.Status).HasConversion<string>().HasMaxLength(20);
             entity.Property(s => s.StrategyTag).HasMaxLength(50);
             entity.Property(s => s.RegimeTag).HasMaxLength(30);
+            entity.Property(s => s.ClaimedBy).HasMaxLength(128);
 
             // Store Dictionary<string,string> as JSON column with a comparer
             entity.Property(s => s.Metadata)
@@ -61,6 +62,7 @@ public class QuantDbContext : DbContext
             entity.HasIndex(s => s.Symbol);
             entity.HasIndex(s => s.Timestamp);
             entity.HasIndex(s => new { s.StrategyTag, s.RegimeTag });
+            entity.HasIndex(s => new { s.Status, s.ClaimedAtUtc });
         });
 
         // Trade Configuration
@@ -79,6 +81,10 @@ public class QuantDbContext : DbContext
             entity.Property(t => t.FeatureDriftImpactLabel).HasMaxLength(120);
             entity.Property(t => t.FeatureDriftSummary).HasMaxLength(500);
             entity.Property(t => t.MlModelVersion).HasMaxLength(120);
+            entity.Property(t => t.ProfitLeakAuditSummary).HasMaxLength(500);
+            entity.Property(t => t.ProfitLeakWorstBucketLabel).HasMaxLength(40);
+            entity.Property(t => t.ProfitLeakWorstBucketBeforeLiveChange).HasMaxLength(160);
+            entity.Property(t => t.ProfitLeakWorstBucketAfterLiveChange).HasMaxLength(200);
             entity.Property(t => t.RequestedQuantity).HasPrecision(18, 8);
             entity.Property(t => t.FilledQuantity).HasPrecision(18, 8);
             entity.Property(t => t.RemainingQuantity).HasPrecision(18, 8);
@@ -92,6 +98,15 @@ public class QuantDbContext : DbContext
             entity.Property(t => t.TrailingStopPrice).HasPrecision(18, 8);
             entity.Property(t => t.OptimalPriceSinceEntry).HasPrecision(18, 8);
             entity.Property(t => t.MarkPrice).HasPrecision(18, 8);
+            entity.Property(t => t.ProfitLeakAuditSizeMultiplier).HasPrecision(18, 8);
+            entity.Property(t => t.ProfitLeakExactNetExpectancy).HasPrecision(18, 8);
+            entity.Property(t => t.ProfitLeakExitPolicyNetExpectancy).HasPrecision(18, 8);
+            entity.Property(t => t.ProfitLeakRegimeNetExpectancy).HasPrecision(18, 8);
+            entity.Property(t => t.ProfitLeakVenueNetExpectancy).HasPrecision(18, 8);
+            entity.Property(t => t.ProfitLeakReducedSizeNetExpectancy).HasPrecision(18, 8);
+            entity.Property(t => t.ProfitLeakLoserClusterRate).HasPrecision(18, 8);
+            entity.Property(t => t.TotalFeesPaid).HasPrecision(18, 8);
+            entity.Property(t => t.NetFunding).HasPrecision(18, 8);
             entity.Property(t => t.ExitReason).HasMaxLength(80);
             entity.Ignore(t => t.IsClosed); // Computed property, not stored
             entity.Ignore(t => t.IsPositionOpen);

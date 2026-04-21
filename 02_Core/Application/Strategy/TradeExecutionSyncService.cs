@@ -88,6 +88,22 @@ public sealed class TradeExecutionSyncService
 
     public async Task<bool> ApplyExecutionReportAsync(ExecutionReport report, CancellationToken cancellationToken = default)
     {
+        var result = await ApplyExecutionReportDetailedAsync(report, cancellationToken);
+        return result.Applied;
+    }
+
+    public sealed record ExecutionReportApplyResult(
+        bool Applied,
+        Guid? SignalId,
+        Trade? Trade,
+        decimal PreviousFilledQuantity,
+        decimal NewFilledQuantity,
+        decimal DeltaFilledQuantity);
+
+    public async Task<ExecutionReportApplyResult> ApplyExecutionReportDetailedAsync(
+        ExecutionReport report,
+        CancellationToken cancellationToken = default)
+    {
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!ExecutionOrderIdentity.TryParseSignalId(report.ClientOrderId, out var signalId))
@@ -96,7 +112,7 @@ public sealed class TradeExecutionSyncService
                 "Execution report for {Symbol} ignored because client order id '{ClientOrderId}' is not a signal-backed id.",
                 report.Symbol,
                 report.ClientOrderId);
-            return false;
+            return new ExecutionReportApplyResult(false, null, null, 0m, 0m, 0m);
         }
 
         var trade = await _tradeRepository.GetBySignalIdAsync(signalId);
@@ -106,8 +122,10 @@ public sealed class TradeExecutionSyncService
                 "Execution report for {Symbol} ignored because no local trade exists for Signal {SignalId}.",
                 report.Symbol,
                 signalId);
-            return false;
+            return new ExecutionReportApplyResult(false, signalId, null, 0m, 0m, 0m);
         }
+
+        var previousFilled = trade.FilledQuantity;
 
         var changed = ApplyVenueState(
             trade,
@@ -116,15 +134,18 @@ public sealed class TradeExecutionSyncService
             report.RemainingQuantity,
             report.AveragePrice,
             report.LastFillPrice,
-            report.TimestampUtc);
+            report.TimestampUtc,
+            report.LatencyMs);
 
         if (!changed)
         {
-            return false;
+            return new ExecutionReportApplyResult(false, signalId, trade, previousFilled, trade.FilledQuantity, 0m);
         }
 
         await _tradeRepository.UpdateAsync(trade);
-        return true;
+        var newFilled = trade.FilledQuantity;
+        var deltaFilled = Math.Max(0m, newFilled - previousFilled);
+        return new ExecutionReportApplyResult(true, signalId, trade, previousFilled, newFilled, deltaFilled);
     }
 
     private static bool RequiresVenuePresence(Trade trade)
@@ -137,7 +158,8 @@ public sealed class TradeExecutionSyncService
         decimal venueRemainingQuantity,
         decimal averagePrice,
         decimal fallbackPrice,
-        DateTime timestampUtc)
+        DateTime timestampUtc,
+        long? latencyMs = null)
     {
         var filledQuantity = Math.Max(trade.FilledQuantity, venueFilledQuantity);
         var requestedQuantity = trade.RequestedQuantity > 0m
@@ -146,21 +168,61 @@ public sealed class TradeExecutionSyncService
         var remainingQuantity = venueRemainingQuantity > 0m
             ? venueRemainingQuantity
             : Math.Max(0m, requestedQuantity - filledQuantity);
-        var lifecycleStatus = ResolveLifecycleStatus(venueStatus, filledQuantity, remainingQuantity);
+        var lifecycleStatus = ResolveLifecycleStatus(venueStatus, trade.Side, filledQuantity, remainingQuantity);
         var status = ResolveTradeStatus(venueStatus, filledQuantity);
         var resolvedPrice = averagePrice > 0m
             ? averagePrice
             : (fallbackPrice > 0m ? fallbackPrice : trade.EntryPrice);
+        var resolvedEntryPrice = trade.EntryPrice > 0m ? trade.EntryPrice : resolvedPrice;
+        var resolvedTimestamp = timestampUtc == default ? DateTime.UtcNow : timestampUtc;
+        var submittedTime = trade.SubmittedTime ?? resolvedTimestamp;
+        var exitTime = trade.ExitTime;
+        var exitPrice = trade.ExitPrice;
+        var averageExitPrice = trade.AverageExitPrice;
+        var closedQuantity = trade.ClosedQuantity;
+        var exitReason = trade.ExitReason;
+        var executionLatencyMs = latencyMs.HasValue
+            ? Math.Max(0L, latencyMs.Value)
+            : Math.Max(0L, trade.ExecutionLatencyMs);
+
+        if (lifecycleStatus == TradeLifecycleStatus.Closed)
+        {
+            exitTime ??= resolvedTimestamp;
+            exitPrice = resolvedPrice;
+            averageExitPrice = resolvedPrice;
+            closedQuantity = Math.Max(closedQuantity, filledQuantity);
+            if (string.IsNullOrWhiteSpace(exitReason))
+            {
+                exitReason = "ExecutionReportFilled";
+            }
+        }
+        else if (lifecycleStatus is TradeLifecycleStatus.Cancelled or TradeLifecycleStatus.Rejected or TradeLifecycleStatus.Failed)
+        {
+            exitTime ??= resolvedTimestamp;
+            if (exitPrice <= 0m)
+            {
+                exitPrice = resolvedPrice;
+            }
+        }
+
         var changed =
-            trade.EntryPrice != resolvedPrice ||
+            trade.EntryPrice != resolvedEntryPrice ||
             trade.MarkPrice != resolvedPrice ||
             trade.Quantity != filledQuantity ||
             trade.FilledQuantity != filledQuantity ||
             trade.RemainingQuantity != remainingQuantity ||
             trade.Status != status ||
-            trade.LifecycleStatus != lifecycleStatus;
+            trade.LifecycleStatus != lifecycleStatus ||
+            trade.SubmittedTime != submittedTime ||
+            trade.LastUpdatedTime != resolvedTimestamp ||
+            trade.ExecutionLatencyMs != executionLatencyMs ||
+            trade.ExitTime != exitTime ||
+            trade.ExitPrice != exitPrice ||
+            trade.AverageExitPrice != averageExitPrice ||
+            trade.ClosedQuantity != closedQuantity ||
+            !string.Equals(trade.ExitReason, exitReason, StringComparison.Ordinal);
 
-        trade.EntryPrice = resolvedPrice;
+        trade.EntryPrice = resolvedEntryPrice;
         trade.MarkPrice = resolvedPrice;
         trade.Quantity = filledQuantity;
         trade.FilledQuantity = filledQuantity;
@@ -168,17 +230,25 @@ public sealed class TradeExecutionSyncService
         trade.RemainingQuantity = remainingQuantity;
         trade.Status = status;
         trade.LifecycleStatus = lifecycleStatus;
-        trade.LastUpdatedTime = timestampUtc == default ? DateTime.UtcNow : timestampUtc;
+        trade.SubmittedTime = submittedTime;
+        trade.LastUpdatedTime = resolvedTimestamp;
+        trade.ExitTime = exitTime;
+        trade.ExitPrice = exitPrice;
+        trade.AverageExitPrice = averageExitPrice;
+        trade.ClosedQuantity = closedQuantity;
+        trade.ExitReason = exitReason;
+        trade.ExecutionLatencyMs = executionLatencyMs;
 
         return changed;
     }
 
-    private static TradeLifecycleStatus ResolveLifecycleStatus(string status, decimal filledQuantity, decimal remainingQuantity)
+    private static TradeLifecycleStatus ResolveLifecycleStatus(string status, TradeSide side, decimal filledQuantity, decimal remainingQuantity)
     {
         switch (status.Trim().ToUpperInvariant())
         {
             case "FILLED":
-                return TradeLifecycleStatus.Active;
+                // Spot sell fills usually represent exit/deallocation, while buy fills open inventory.
+                return side == TradeSide.Sell ? TradeLifecycleStatus.Closed : TradeLifecycleStatus.Active;
 
             case "PARTIALLY_FILLED":
             case "PARTIALLYFILLED":

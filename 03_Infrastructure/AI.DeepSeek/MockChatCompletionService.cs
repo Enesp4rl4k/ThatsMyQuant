@@ -20,12 +20,15 @@ public class MockChatCompletionService : IChatCompletionService
         return Task.FromResult<IReadOnlyList<ChatMessageContent>>(result);
     }
 
-    public IAsyncEnumerable<StreamingChatMessageContent> GetStreamingChatMessageContentsAsync(
-        ChatHistory chatHistory, 
-        PromptExecutionSettings? executionSettings = null, 
-        Kernel? kernel = null, 
-        CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<StreamingChatMessageContent> GetStreamingChatMessageContentsAsync(
+        ChatHistory chatHistory,
+        PromptExecutionSettings? executionSettings = null,
+        Kernel? kernel = null,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException();
+        yield return new StreamingChatMessageContent(
+            AuthorRole.Assistant,
+            "AI Reasoning is in SIMULATION mode (No API Key). DECISION: APPROVE. REASONING: Simulation bypass.");
+        await Task.CompletedTask;
     }
 }

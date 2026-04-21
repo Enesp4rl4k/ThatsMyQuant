@@ -1,7 +1,10 @@
 using MediatR;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Interfaces;
 using System.Collections.Concurrent;
+using System;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -16,6 +19,8 @@ namespace ThatsMyQuant.Application.Strategy;
 public class ArbitrageAgent : INotificationHandler<Signal>
 {
     private readonly ILogger<ArbitrageAgent> _logger;
+    private readonly IMediator _mediator;
+    private readonly ISharedPortfolioStateManager _portfolio;
     
     private sealed class PricePoint
     {
@@ -33,15 +38,17 @@ public class ArbitrageAgent : INotificationHandler<Signal>
     // Example: "BTC" -> { "BINANCE" -> PricePoint, "COINBASE" -> PricePoint }
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, PricePoint>> PricesBySymbol = new();
 
-    public ArbitrageAgent(ILogger<ArbitrageAgent> logger)
+    public ArbitrageAgent(ILogger<ArbitrageAgent> logger, IMediator mediator, ISharedPortfolioStateManager portfolio)
     {
         _logger = logger;
+        _mediator = mediator;
+        _portfolio = portfolio;
     }
 
-    public Task Handle(Signal notification, CancellationToken cancellationToken)
+    public async Task Handle(Signal notification, CancellationToken cancellationToken)
     {
         if (!TryExtractSymbolInfo(notification.Symbol, out var baseSymbol, out var exchange))
-            return Task.CompletedTask;
+            return;
 
         var symbolBook = PricesBySymbol.GetOrAdd(baseSymbol, static _ => new ConcurrentDictionary<string, PricePoint>());
         long nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -50,9 +57,7 @@ public class ArbitrageAgent : INotificationHandler<Signal>
         // Update the current exchange safely
         symbolBook[exchange] = new PricePoint(currentPrice, nowMs);
         
-        EvaluateArbitrageOpportunities(baseSymbol, exchange, currentPrice, nowMs, symbolBook);
-
-        return Task.CompletedTask;
+        await EvaluateArbitrageOpportunitiesAsync(baseSymbol, exchange, currentPrice, nowMs, symbolBook, cancellationToken);
     }
 
     private static bool TryExtractSymbolInfo(string symbol, out string baseSymbol, out string exchange)
@@ -69,12 +74,13 @@ public class ArbitrageAgent : INotificationHandler<Signal>
         return true;
     }
 
-    private void EvaluateArbitrageOpportunities(
+    private async Task EvaluateArbitrageOpportunitiesAsync(
         string baseSymbol, 
         string exchange, 
         double currentPrice, 
         long nowMs, 
-        ConcurrentDictionary<string, PricePoint> symbolBook)
+        ConcurrentDictionary<string, PricePoint> symbolBook,
+        CancellationToken cancellationToken)
     {
         foreach (var kvp in symbolBook)
         {
@@ -94,7 +100,7 @@ public class ArbitrageAgent : INotificationHandler<Signal>
 
             if (IsEligibleForArbitrage(spreadPercent, MinEdge, RequiredProfit)) 
             {
-                LogArbitrageDetection(baseSymbol, exchange, kvp.Key, currentPrice, otherPrice, spreadPercent);
+                await ExecuteArbitrageDualLegAsync(baseSymbol, exchange, kvp.Key, currentPrice, otherPrice, spreadPercent, cancellationToken);
             }
         }
     }
@@ -110,18 +116,75 @@ public class ArbitrageAgent : INotificationHandler<Signal>
         return spreadPercent > (minEdge + requiredProfit);
     }
 
-    private void LogArbitrageDetection(
+    private async Task ExecuteArbitrageDualLegAsync(
         string baseSymbol, 
         string exchange, 
         string otherExchange, 
         double price, 
         double otherPrice, 
-        double spreadPercent)
+        double spreadPercent,
+        CancellationToken ct)
     {
-        string action = price < otherPrice 
-            ? $"BUY {exchange} / SELL {otherExchange}"
-            : $"SELL {exchange} / BUY {otherExchange}";
+        // Volume Scaler: Cüzdan hacmi oranlayıcı (10% max allocation per risk-free arb)
+        decimal maxAllocationUsdt = 0m;
         
-        _logger.LogInformation($"[ARB DETECTED] {baseSymbol} spread is {spreadPercent:F3}%. Action: {action}.");
+        if (Enum.TryParse<VenueKind>(exchange, true, out var venue1) && 
+            Enum.TryParse<VenueKind>(otherExchange, true, out var venue2))
+        {
+            var avb1 = _portfolio.GetAvailableBalance(venue1, "USDT");
+            var avb2 = _portfolio.GetAvailableBalance(venue2, "USDT");
+            
+            // Limit by the lowest balance between the two venues to keep delta-neutral size identical.
+            decimal lowerBalance = Math.Min(avb1, avb2);
+            maxAllocationUsdt = lowerBalance * 0.10m; // 10% per arbitrage stroke
+        }
+
+        // If portfolio mock or not fully funded, fallback to a $1000 standard test block
+        if (maxAllocationUsdt <= 10m) maxAllocationUsdt = 1000m;
+
+        decimal scaledQuantity = Math.Round(maxAllocationUsdt / (decimal)Math.Max(price, otherPrice), 4);
+
+        string actionInfo = price < otherPrice 
+            ? $"BUY {exchange} @ {price} | SELL {otherExchange} @ {otherPrice}"
+            : $"SELL {exchange} @ {price} | BUY {otherExchange} @ {otherPrice}";
+        
+        _logger.LogInformation($"[ARB TRIGGERED] {baseSymbol} VolScaler: {scaledQuantity} units (Max ${maxAllocationUsdt:F2}). Action: {actionInfo}");
+
+        // Leg 1: Current Exchange (Origin of the latest ping)
+        var leg1 = new Signal
+        {
+            Symbol = $"{baseSymbol}-USDT",
+            Exchange = exchange,
+            Side = price < otherPrice ? TradeSide.Buy : TradeSide.Sell,
+            Price = (decimal)price,
+            Quantity = scaledQuantity,
+            Confidence = 99, 
+            Source = "ArbitrageAgent",
+            StrategyTag = "StatisticalArbitrage",
+            RegimeTag = "VolatileCapture",
+            Reasoning = $"Arbitrage dual-leg capture. Spread={spreadPercent:F3}% vs {otherExchange}",
+            Metadata = new Dictionary<string, string> { { "ExecutionMode", "HFT" }, { "OpposingExchange", otherExchange } }
+        };
+
+        // Leg 2: Counterparty Exchange (The stale/differing book)
+        var leg2 = new Signal
+        {
+            Symbol = $"{baseSymbol}-USDT",
+            Exchange = otherExchange,
+            Side = price < otherPrice ? TradeSide.Sell : TradeSide.Buy,
+            Price = (decimal)otherPrice,
+            Quantity = scaledQuantity,
+            Confidence = 99, 
+            Source = "ArbitrageAgent",
+            StrategyTag = "StatisticalArbitrage",
+            RegimeTag = "VolatileCapture",
+            Reasoning = $"Arbitrage dual-leg capture. Spread={spreadPercent:F3}% vs {exchange}",
+            Metadata = new Dictionary<string, string> { { "ExecutionMode", "HFT" }, { "OpposingExchange", exchange } }
+        };
+
+        // Fire & Forget dual execution into the OMS pipeline simultaneously. 
+        // Real-world implementation requires a two-phase commit or immediate fallback if leg 1 fails.
+        _ = _mediator.Send(new ThatsMyQuant.Contracts.Commands.ExecuteTradeCommand(leg1), ct);
+        _ = _mediator.Send(new ThatsMyQuant.Contracts.Commands.ExecuteTradeCommand(leg2), ct);
     }
 }

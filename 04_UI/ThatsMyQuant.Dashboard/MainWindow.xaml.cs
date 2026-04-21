@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
-using System.Windows.Shapes;
 using System.Windows.Threading;
 using ThatsMyQuant.Dashboard.Services;
 using ThatsMyQuant.Dashboard.ViewModels;
@@ -29,22 +28,110 @@ public partial class MainWindow : Window
         }
     }
 
-    private void MainWindow_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    private static bool IsTextInputFocused()
+    {
+        var el = Keyboard.FocusedElement;
+        return el is TextBox or PasswordBox or RichTextBox;
+    }
+
+    private void MainWindow_KeyDown(object sender, KeyEventArgs e)
     {
         // Reset idle timer on any key press (Req 3.1, 3.2)
         _idleTimeoutService?.IdleMonitor.Reset();
 
-        if (e.Key == System.Windows.Input.Key.F11)
+        var textTyping = IsTextInputFocused();
+
+        if (e.Key == Key.F11 && !textTyping)
         {
             ToggleFullScreen();
+            e.Handled = true;
+            return;
         }
-        else if (e.Key == System.Windows.Input.Key.Z)
+
+        if (Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            if (e.Key is >= Key.D1 and <= Key.D9)
+            {
+                SelectMainTabByIndex(e.Key - Key.D1);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.D0)
+            {
+                SelectMainTabByIndex(9);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Next) // PgDn
+            {
+                CycleMainTab(1);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Prior) // PgUp
+            {
+                CycleMainTab(-1);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        if (e.Key == Key.F5 && !textTyping)
+        {
+            _ = ViewModel.RefreshAnalysisCommand.ExecuteAsync(null);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Escape && ViewModel.IsZenMode)
         {
             if (ViewModel.ToggleZenModeCommand.CanExecute(null))
             {
                 ViewModel.ToggleZenModeCommand.Execute(null);
             }
+
+            e.Handled = true;
+            return;
         }
+
+        if (e.Key == Key.Z && !textTyping && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            if (ViewModel.ToggleZenModeCommand.CanExecute(null))
+            {
+                ViewModel.ToggleZenModeCommand.Execute(null);
+                e.Handled = true;
+            }
+        }
+    }
+
+    private void SelectMainTabByIndex(int index)
+    {
+        if (MainTabs is null || index < 0 || index >= MainTabs.Items.Count)
+        {
+            return;
+        }
+
+        MainTabs.SelectedIndex = index;
+    }
+
+    private void CycleMainTab(int delta)
+    {
+        if (MainTabs is null || MainTabs.Items.Count == 0)
+        {
+            return;
+        }
+
+        var n = MainTabs.Items.Count;
+        var next = (MainTabs.SelectedIndex + delta) % n;
+        if (next < 0)
+        {
+            next += n;
+        }
+
+        MainTabs.SelectedIndex = next;
     }
 
     private void ToggleFullScreen()

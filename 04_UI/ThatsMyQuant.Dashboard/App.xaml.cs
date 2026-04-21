@@ -5,6 +5,7 @@ using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
@@ -42,6 +43,7 @@ public partial class App : System.Windows.Application
     {
         try
         {
+            UiMotionPreferences.Initialize();
             RegisterGlobalExceptionHandlers();
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
@@ -152,8 +154,14 @@ public partial class App : System.Windows.Application
         var geminiApiKey = runtimeConfiguration["TMQ_GEMINI_API_KEY"];
         var exchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(runtimeConfiguration);
         var isOkxMode = exchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase);
+        var binancePublicBaseUrl = exchangeMode.Equals("BinanceTestnet", StringComparison.OrdinalIgnoreCase)
+            ? "https://testnet.binance.vision"
+            : "https://api.binance.com";
 
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
+
+        services.AddThatsMyQuantApplication();
+        services.AddThatsMyQuantInfrastructure();
 
         services.AddHttpClient("Yahoo", client =>
         {
@@ -164,12 +172,23 @@ public partial class App : System.Windows.Application
         });
         services.AddHttpClient("Binance", client =>
         {
+            client.BaseAddress = new Uri(binancePublicBaseUrl);
             client.Timeout = TimeSpan.FromSeconds(15);
         });
         services.AddHttpClient("OKX", client =>
         {
             client.Timeout = TimeSpan.FromSeconds(15);
         });
+        services.AddHttpClient("OkxPublic", client =>
+        {
+            client.BaseAddress = new Uri("https://www.okx.com");
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+
+        if (isOkxMode)
+            services.AddSingleton<IStreamingMarketDataService, OkxWebSocketService>();
+        else
+            services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
 
         services.AddSingleton<BorsaMarketDataService>();
         services.AddSingleton<YahooFinanceMarketDataService>();
@@ -206,10 +225,18 @@ public partial class App : System.Windows.Application
                         client,
                         sp.GetRequiredService<IHardwareSecurityModule>(),
                         sp.GetRequiredService<ILogger<BinanceExchangeService>>(),
-                        binanceApiKey));
+                        binanceApiKey,
+                        sp.GetService<IStreamingMarketDataService>()));
             }
             else
             {
+                if (!exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        $"Dashboard is configured for exchange mode '{exchangeMode}', but Binance credentials were not found. " +
+                        "Either set TMQ_EXCHANGE_MODE to 'Mock' or provide TMQ_BINANCE_API_KEY and TMQ_BINANCE_API_SECRET.");
+                }
+
                 services.AddSingleton<IExchangeService, MockBrokerService>();
             }
         }
@@ -231,11 +258,20 @@ public partial class App : System.Windows.Application
                         sp.GetRequiredService<ILogger<OkxExecutionService>>(),
                         sp.GetRequiredService<IHttpClientFactory>().CreateClient("OKX"),
                         runtimeConfiguration,
-                        sp.GetService<ISharedPortfolioStateManager>(),
-                        sp.GetRequiredService<ApiVault>()));
+                        sp.GetRequiredService<ISharedPortfolioStateManager>(),
+                        sp.GetRequiredService<ApiVault>(),
+                        null,
+                        sp.GetRequiredService<IStreamingMarketDataService>()));
             }
             else
             {
+                if (!exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        $"Dashboard is configured for exchange mode '{exchangeMode}', but OKX credentials were not found. " +
+                        "Either set TMQ_EXCHANGE_MODE to 'Mock' or provide OKX__ApiKey, OKX__SecretKey, and OKX__Passphrase.");
+                }
+
                 services.AddSingleton<IExchangeService, MockBrokerService>();
             }
         }
@@ -243,6 +279,13 @@ public partial class App : System.Windows.Application
         {
             services.AddSingleton<IExchangeService, MockBrokerService>();
         }
+
+        services.AddSingleton<IVenueTradeFeeProvider>(sp =>
+        {
+            var ex = sp.GetRequiredService<IExchangeService>();
+            return ex as IVenueTradeFeeProvider ?? new NullVenueTradeFeeProvider();
+        });
+        services.Replace(ServiceDescriptor.Singleton<IExecutionCostSnapshotCache, ExecutionCostSnapshotCache>());
 
         services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
         services.AddTransient<BacktestEngineApp>();
@@ -256,9 +299,6 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
         services.AddScoped<ITradeRepository, Infrastructure.Repositories.TradeRepository>();
 
-        services.AddThatsMyQuantApplication();
-        services.AddThatsMyQuantInfrastructure();
-
         services.AddSingleton<NewsFeedSim>();
         services.AddScoped<ISentimentService, GeminiSentimentService>();
 
@@ -271,14 +311,6 @@ public partial class App : System.Windows.Application
         services.AddSingleton<IUserPromptService, MessageBoxUserPromptService>();
         services.AddSingleton<IAuditLogger, ConsoleAuditLogger>();
 
-        if (isOkxMode)
-        {
-            services.AddSingleton<IStreamingMarketDataService, OkxWebSocketService>();
-        }
-        else
-        {
-            services.AddSingleton<IStreamingMarketDataService, BinanceWebSocketService>();
-        }
         services.AddSingleton<TickPipeline>();
         services.AddSingleton(sp => new MicrosecondPredictionEngine(
             "models/price_prediction.onnx",

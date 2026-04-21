@@ -52,7 +52,14 @@ public class DeepSeekReasoningService : IReasoningProvider
         {
             var results = await _chatService.GetChatMessageContentsAsync(prompt);
             _lastReasoning = results.FirstOrDefault()?.Content ?? "No reasoning provided.";
-            
+
+            if (_lastReasoning.Contains("SIMULATION", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogDebug("DeepSeek is in simulation mode — approving by default.");
+                _lastReasoning = "Simulation mode — AI inference disabled. Defaulting to APPROVE.";
+                return true;
+            }
+
             _logger.LogInformation("AI Decision: {Reasoning}", _lastReasoning);
 
             return _lastReasoning.Contains("APPROVE", StringComparison.OrdinalIgnoreCase);

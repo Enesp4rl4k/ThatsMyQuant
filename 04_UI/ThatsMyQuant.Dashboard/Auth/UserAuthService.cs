@@ -132,9 +132,10 @@ public class UserAuthService : IUserAuthService
     /// <summary>
     /// Updates a user's password. Validates complexity first.
     /// Throws ArgumentException if password is invalid.
-    /// Sets MustChangePassword = false on success.
+    /// When <paramref name="requirePasswordChangeOnNextLogin"/> is false (default), clears the must-change flag.
+    /// When true (e.g. admin reset), sets <see cref="OperatorUser.MustChangePassword"/> so the user must set a new password after login.
     /// </summary>
-    public async Task UpdatePasswordAsync(Guid userId, string newPassword)
+    public async Task UpdatePasswordAsync(Guid userId, string newPassword, bool requirePasswordChangeOnNextLogin = false)
     {
         var validationError = PasswordValidator.Validate(newPassword);
         if (validationError is not null)
@@ -144,7 +145,7 @@ public class UserAuthService : IUserAuthService
             ?? throw new InvalidOperationException($"User {userId} not found.");
 
         user.PasswordHash       = PasswordHasher.Hash(newPassword);
-        user.MustChangePassword = false;
+        user.MustChangePassword = requirePasswordChangeOnNextLogin;
 
         await _db.SaveChangesAsync();
     }

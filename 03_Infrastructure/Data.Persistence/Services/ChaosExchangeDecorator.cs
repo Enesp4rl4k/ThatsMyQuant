@@ -56,6 +56,8 @@ public class ChaosExchangeDecorator : IExchangeService
     }
     public Task<decimal> GetQueuePositionAsync(string symbol, decimal price, ThatsMyQuant.Contracts.Enums.TradeSide side) => _inner.GetQueuePositionAsync(symbol, price, side);
 
+    public bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book) => _inner.TryGetLatestOrderBook(symbol, out book);
+
     public Task<List<string>> GetFavoritesAsync() => _inner.GetFavoritesAsync();
 
     // Emergency halt: NO chaos injection — must always pass through

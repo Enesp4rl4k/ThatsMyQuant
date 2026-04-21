@@ -5,6 +5,7 @@ namespace ThatsMyQuant.Dashboard.ViewModels;
 
 public partial class WatchlistItemViewModel : ObservableObject
 {
+    [ObservableProperty] private bool _isSelectedForBacktest;
     [ObservableProperty] private string _symbol = "";
     [ObservableProperty] private decimal _price;
     [ObservableProperty] private double _changePercent;

@@ -61,6 +61,10 @@ public partial class StrategyStudioViewModel : ObservableObject
     public ObservableCollection<string> TradeTargetModes { get; } = new() { "Hybrid", "Manual", "Auto" };
     public ObservableCollection<int> GridDensityOptions { get; } = new() { 6, 8, 10, 12, 16, 20 };
 
+    /// <summary>Quant Lab tab (and Studio mirror): Normal hides HFT-only latency strip; HFT shows it when the bot is HFT-tagged.</summary>
+    public ObservableCollection<string> EvidenceDeskOptions { get; } = new() { "Normal", "HFT" };
+
+    [ObservableProperty] private string _evidenceDeskMode = "Normal";
     [ObservableProperty] private string _selectedBotStrategy = "Trend Confluence";
     [ObservableProperty] private string _selectedBotObjective = "Capital Growth";
     [ObservableProperty] private string _selectedBotBaseAsset = "BTC";
@@ -102,9 +106,28 @@ public partial class StrategyStudioViewModel : ObservableObject
     [ObservableProperty] private string _backtestEquityLabel = "Final equity: --";
     [ObservableProperty] private string _backtestRiskSummary = "Sharpe -- | Sortino -- | Max DD --";
     [ObservableProperty] private string _backtestTradeBreakdown = "Wins -- | Losses -- | Avg R/R --";
+    [ObservableProperty] private string _backtestWalkForwardEfficiencyLabel = "WFE: --";
+    [ObservableProperty] private string _backtestWalkForwardWindowsLabel = "WF windows: --";
+    [ObservableProperty] private string _backtestWalkForwardPassLabel = "WF pass: --";
+    [ObservableProperty] private Brush _backtestWalkForwardPassBrush = GrayBrush;
+    [ObservableProperty] private string _backtestPromotionGateLabel = "Backtest gate: --";
+    [ObservableProperty] private Brush _backtestPromotionGateBrush = GrayBrush;
+    [ObservableProperty] private string _paperPromotionGateLabel = "Paper gate: PENDING";
+    [ObservableProperty] private Brush _paperPromotionGateBrush = GrayBrush;
+    [ObservableProperty] private string _paperPromotionGateSummary = "Run paper session after backtest PASS to unlock promotion.";
+    [ObservableProperty] private string _backtestReadinessBlockers = "Readiness blockers: --";
+    [ObservableProperty] private string _portfolioValidationSummary = "Portfolio validation is waiting for a multi-asset batch.";
+    [ObservableProperty] private string _portfolioValidationGateLabel = "Portfolio gate: --";
+    [ObservableProperty] private Brush _portfolioValidationGateBrush = GrayBrush;
     [ObservableProperty] private double _winRate = 0;
     [ObservableProperty] private int _totalTrades = 0;
     [ObservableProperty] private double _profitFactor = 0;
+
+    [ObservableProperty] private DateTime _backtestStartDate = DateTime.Now.AddDays(-365);
+    [ObservableProperty] private DateTime _backtestEndDate = DateTime.Now;
+    [ObservableProperty] private bool _isRunningBacktest = false;
+    [ObservableProperty] private double _backtestProgress = 0;
+    public ObservableCollection<string> BacktestLogs { get; } = new();
 
     public ObservableCollection<BacktestTradeViewModel> BacktestTrades { get; } = new();
     public ObservableCollection<GlobalBacktestResultViewModel> GlobalBacktestResults { get; } = new();

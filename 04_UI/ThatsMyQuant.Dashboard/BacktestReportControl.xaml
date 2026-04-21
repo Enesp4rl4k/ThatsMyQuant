@@ -150,7 +150,14 @@
                       AlternatingRowBackground="#1A1A25"
                       CanUserAddRows="False" IsReadOnly="True" GridLinesVisibility="None"
                       VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
-                      HeadersVisibility="Column" RowHeight="38">
+                      HeadersVisibility="Column" RowHeight="38"
+                      EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                      ScrollViewer.CanContentScroll="True">
+                <DataGrid.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel VirtualizationMode="Recycling" />
+                    </ItemsPanelTemplate>
+                </DataGrid.ItemsPanel>
                 <DataGrid.Resources>
                     <Style TargetType="DataGridColumnHeader">
                         <Setter Property="Background" Value="#252535"/>

@@ -14,7 +14,7 @@ public static class TrailingStopService
             if (currentHigh > position.OptimalPriceSinceEntry)
                 position.OptimalPriceSinceEntry = currentHigh;
 
-            decimal activationPrice = position.EntryPrice + (decimal)atr;
+            decimal activationPrice = position.EntryPrice + (decimal)(atr * 2.5);
             if (position.OptimalPriceSinceEntry < activationPrice)
                 return false;
 
@@ -29,7 +29,7 @@ public static class TrailingStopService
             if (currentLow < position.OptimalPriceSinceEntry || position.OptimalPriceSinceEntry == 0)
                 position.OptimalPriceSinceEntry = currentLow;
 
-            decimal activationPrice = position.EntryPrice - (decimal)atr;
+            decimal activationPrice = position.EntryPrice - (decimal)(atr * 2.5);
             if (position.OptimalPriceSinceEntry > activationPrice && (position.OptimalPriceSinceEntry > 0 || position.OptimalPriceSinceEntry == 0))
             {
                 // If it's the first check, we need to handle the 0 initialization
@@ -54,7 +54,7 @@ public static class TrailingStopService
             if (currentHigh > trade.OptimalPriceSinceEntry)
                 trade.OptimalPriceSinceEntry = currentHigh;
 
-            decimal activationPrice = trade.EntryPrice + (decimal)atr;
+            decimal activationPrice = trade.EntryPrice + (decimal)(atr * 2.5);
             if (trade.OptimalPriceSinceEntry < activationPrice)
                 return false;
 
@@ -69,7 +69,7 @@ public static class TrailingStopService
             if (currentLow < trade.OptimalPriceSinceEntry || trade.OptimalPriceSinceEntry == 0)
                 trade.OptimalPriceSinceEntry = currentLow;
 
-            decimal activationPrice = trade.EntryPrice - (decimal)atr;
+            decimal activationPrice = trade.EntryPrice - (decimal)(atr * 2.5);
             if (trade.OptimalPriceSinceEntry > activationPrice && (trade.OptimalPriceSinceEntry > 0 || trade.OptimalPriceSinceEntry == 0))
             {
                 if (trade.OptimalPriceSinceEntry == 0) trade.OptimalPriceSinceEntry = currentLow;

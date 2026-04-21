@@ -13,12 +13,14 @@ namespace ThatsMyQuant.Execution.Worker;
 
 public class ExecutionWorker : BackgroundService
 {
+    private static readonly TimeSpan ClaimLeaseTimeout = TimeSpan.FromSeconds(30);
     private readonly ILogger<ExecutionWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly TickPipeline _tickPipeline;
     private readonly ExecutionSignalQueue _executionSignalQueue;
     private readonly OperationalTelemetry _telemetry;
     private readonly CircuitBreakerService _circuitBreaker;
+    private readonly string _workerId = $"exec-{Environment.MachineName}-{Environment.ProcessId}";
 
     public ExecutionWorker(
         ILogger<ExecutionWorker> logger, 
@@ -73,12 +75,9 @@ public class ExecutionWorker : BackgroundService
             {
                 using var scope = _serviceProvider.CreateScope();
                 var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
-                var queuedSignals = await signalRepository.GetByStatusAsync(TradeStatus.Queued, 25);
+                await ClaimAndEnqueueSignalsAsync(signalRepository, 25, stoppingToken);
 
-                foreach (var signal in queuedSignals)
-                {
-                    _executionSignalQueue.TryEnqueue(signal);
-                }
+                _telemetry.SetExecutionSignalQueueDepth(_executionSignalQueue.PendingCount);
             }
             catch (Exception ex)
             {
@@ -113,6 +112,8 @@ public class ExecutionWorker : BackgroundService
         {
             await foreach (var signal in _executionSignalQueue.ReadAllAsync(stoppingToken))
             {
+                _telemetry.SetExecutionSignalQueueDepth(_executionSignalQueue.PendingCount);
+
                 using var scope = _serviceProvider.CreateScope();
                 var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
                 var mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
@@ -136,12 +137,7 @@ public class ExecutionWorker : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
-        var queuedSignals = await signalRepository.GetByStatusAsync(TradeStatus.Queued, 100);
-
-        foreach (var signal in queuedSignals)
-        {
-            _executionSignalQueue.TryEnqueue(signal);
-        }
+        await ClaimAndEnqueueSignalsAsync(signalRepository, 100, stoppingToken);
     }
 
     private async Task RunStartupReconciliationAsync(CancellationToken stoppingToken)
@@ -183,6 +179,7 @@ public class ExecutionWorker : BackgroundService
         {
             signal.Status = TradeStatus.Rejected;
             signal.Reasoning += $" | CircuitBreaker: {blockReason}";
+            ReleaseClaim(signal);
             _logger.LogWarning("Signal {Id} blocked by circuit breaker: {Reason}", signal.Id, blockReason);
             await signalRepository.UpdateAsync(signal);
             return;
@@ -201,7 +198,26 @@ public class ExecutionWorker : BackgroundService
         }
         finally
         {
+            ReleaseClaim(signal);
             await signalRepository.UpdateAsync(signal);
+        }
+    }
+
+    private async Task ClaimAndEnqueueSignalsAsync(ISignalRepository signalRepository, int count, CancellationToken stoppingToken)
+    {
+        var now = DateTime.UtcNow;
+        var staleClaimBeforeUtc = now - ClaimLeaseTimeout;
+        var candidates = await signalRepository.GetExecutionClaimCandidatesAsync(count, staleClaimBeforeUtc);
+
+        foreach (var candidate in candidates)
+        {
+            if (!await signalRepository.TryClaimQueuedAsync(candidate.Id, _workerId, now, staleClaimBeforeUtc))
+                continue;
+
+            candidate.Status = TradeStatus.Processing;
+            candidate.ClaimedAtUtc = now;
+            candidate.ClaimedBy = _workerId;
+            await _executionSignalQueue.EnqueueAsync(candidate, stoppingToken);
         }
     }
 
@@ -239,6 +255,15 @@ public class ExecutionWorker : BackgroundService
             signal.Reasoning = $"{signal.Reasoning} | Worker execution failed (Retry {signal.RetryCount}): {ex.Message}";
         }
         _logger.LogError(ex, "Failed executing queued signal {SignalId} (Attempt {Attempt})", signal.Id, signal.RetryCount);
+    }
+
+    private static void ReleaseClaim(Signal signal)
+    {
+        signal.ClaimedAtUtc = null;
+        signal.ClaimedBy = null;
+
+        if (signal.Status == TradeStatus.Processing)
+            signal.Status = TradeStatus.Queued;
     }
 
 }
