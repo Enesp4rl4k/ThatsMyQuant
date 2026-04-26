@@ -83,3 +83,19 @@ tmq-tests.log
 # Test output (local / CI artifacts)
 **/TestResults/
 *.trx
+
+# Environment overlays — contain OKX / Telegram / broker credentials.
+# NEVER commit these. Use the committed template as a reference only.
+**/appsettings.Paper.json
+**/appsettings.Live.json
+**/appsettings.Production.json
+**/appsettings.*.local.json
+**/secrets.json
+
+# Local paper portfolio snapshot (user-specific runtime state)
+paper_portfolio.json
+
+# Dashboard-written credential stores at repo root
+telegram_settings.json
+exchange_credentials.dpapi
+exchange_settings.json
