@@ -77,7 +77,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldReduceSize_WhenPaperReadyButLiveSampleIsThin()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -106,10 +106,41 @@ public class StrategyPromotionServiceTests
     }
 
     [Fact]
+    public async Task RecordBacktestState_ShouldPersistPortfolioValidationSummary_WhenMultiSymbolBatchClearsGate()
+    {
+        var store = new InMemoryStrategyPerformanceStore();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Promotion:Backtest:MinTrades"] = "6",
+                ["Promotion:Backtest:MinProfitFactor"] = "1.15",
+                ["Promotion:Backtest:MinWinRate"] = "0.42",
+                ["Backtest:QualityGate:MinPortfolioReadySymbols"] = "4",
+                ["Backtest:QualityGate:ShortMinSharpe"] = "0.10",
+                ["Backtest:QualityGate:LongMinSharpe"] = "0.10",
+                ["Backtest:QualityGate:MaxDrawdownPercent"] = "25"
+            })
+            .Build();
+        var service = new StrategyPromotionService(store, configuration: configuration);
+
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "ETH-USD"));
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "SOL-USD"));
+        await service.RecordBacktestState(CreateBacktestResult(symbol: "AVAX-USD"));
+
+        var state = service.GetState();
+
+        state.PortfolioValidationReady.Should().BeTrue();
+        state.PortfolioReadySymbols.Should().Be(4);
+        state.PortfolioRequiredSymbols.Should().Be(4);
+        state.PortfolioValidationSummary.Should().Contain("4/4 symbols");
+    }
+
+    [Fact]
     public async Task EvaluateFinalAllocatorBias_ShouldBoost_WhenExactBucketAndLiveExitPolicyAreHealthy()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -146,7 +177,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldTrim_WhenLiveExitPolicyDriftsFromPaper()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -180,7 +211,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldIncludeExactBucketLearning_WhenExactBucketIsHealthy()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -217,7 +248,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulBoostedAllocations()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -254,7 +285,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldCutBackAfterBoostedAllocationsUnderperform()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -289,7 +320,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldBoost_WhenVenueExecutionIsClean()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -326,7 +357,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldTrim_WhenVenueExecutionIsDegraded()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", strategyTag: "TrendConfluence", regimeTag: "Trending", exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -363,7 +394,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldLearnFromSuccessfulVenueBoosts()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -400,7 +431,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldCutBackAfterVenueBoostsUnderperform()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD", exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -437,7 +468,7 @@ public class StrategyPromotionServiceTests
     public async Task EvaluateFinalAllocatorBias_ShouldApplyConcordanceOverlay_WhenExactBucketAndVenueBothSupport()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD=", exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -476,7 +507,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBoostSize_WhenExactSymbolSessionBucketIsScaledLiveAndHealthy()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -514,7 +545,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldDemote_WhenExactBucketLearningShowsExactOutcomesAreSoft()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -548,7 +579,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBlock_WhenPaperLiveDriftIsSevere()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -582,7 +613,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBlock_WhenExitPolicyDriftIsSevere()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -614,7 +645,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldReduceSize_WhenExitPolicyDriftIsElevated()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(exitPolicyTag: "TrendRunner"));
         await service.RecordPaperState(new[]
         {
@@ -648,26 +679,26 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBlock_HftBucket_WhenLatencyBudgetIsBlown()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult("BTC-USD", "HftMicroEdge", "Volatile"));
         await service.RecordPaperState(new[]
         {
-            CreatePaperPosition(80m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
-            CreatePaperPosition(85m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
-            CreatePaperPosition(75m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
-            CreatePaperPosition(90m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
-            CreatePaperPosition(78m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
-            CreatePaperPosition(82m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
-            CreatePaperPosition(70m, strategyTag: "HftMicroEdge", regimeTag: "Volatile"),
-            CreatePaperPosition(88m, strategyTag: "HftMicroEdge", regimeTag: "Volatile")
+            CreatePaperPosition(80m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD"),
+            CreatePaperPosition(85m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD"),
+            CreatePaperPosition(75m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD"),
+            CreatePaperPosition(90m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD"),
+            CreatePaperPosition(78m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD"),
+            CreatePaperPosition(82m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD"),
+            CreatePaperPosition(70m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD"),
+            CreatePaperPosition(88m, strategyTag: "HftMicroEdge", regimeTag: "Volatile", symbol: "BTC-USD")
         });
 
         var liveTrades = new[]
         {
-            CreateLiveTrade(15m, 0.05m, 240, "HftMicroEdge", "Volatile"),
-            CreateLiveTrade(12m, 0.04m, 235, "HftMicroEdge", "Volatile"),
-            CreateLiveTrade(11m, 0.05m, 245, "HftMicroEdge", "Volatile"),
-            CreateLiveTrade(10m, 0.05m, 255, "HftMicroEdge", "Volatile")
+            CreateLiveTrade(15m, 0.05m, 240, "HftMicroEdge", "Volatile", symbol: "BTC-USD"),
+            CreateLiveTrade(12m, 0.04m, 235, "HftMicroEdge", "Volatile", symbol: "BTC-USD"),
+            CreateLiveTrade(11m, 0.05m, 245, "HftMicroEdge", "Volatile", symbol: "BTC-USD"),
+            CreateLiveTrade(10m, 0.05m, 255, "HftMicroEdge", "Volatile", symbol: "BTC-USD")
         };
 
         var signal = CreateSignal();
@@ -685,7 +716,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBlock_WhenLiveAverageEdgeScoreIsTooWeak()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -717,7 +748,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldDemoteToPaper_WhenCriticalMlDriftPersists()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -751,7 +782,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldHoldInLiveProbe_WhenMlDriftKeepsTrimmingSize()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -785,7 +816,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBlock_WhenHighEdgeTradesStillLoseDespiteOkayOverallBucket()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult());
         await service.RecordPaperState(new[]
         {
@@ -817,7 +848,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldDemoteToPaper_WhenVenueBoostsKeepUnderperforming()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
         await service.RecordPaperState(new[]
         {
@@ -854,7 +885,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldForceLiveProbe_WhenTrimmedVenueExecutionStillOutperforms()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "EURUSD="));
         await service.RecordPaperState(new[]
         {
@@ -892,7 +923,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBlock_WhenExactBucketAndVenueAreBothWeak()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordBacktestState(CreateBacktestResult(symbol: "BTC-USD"));
         await service.RecordPaperState(new[]
         {
@@ -929,7 +960,7 @@ public class StrategyPromotionServiceTests
     public async Task Evaluate_ShouldBlock_WhenBacktestLadderGateIsMissing()
     {
         var store = new InMemoryStrategyPerformanceStore();
-        var service = new StrategyPromotionService(store);
+        var service = CreateService(store);
         await service.RecordPaperState(new[]
         {
             CreatePaperPosition(120m),
@@ -1078,6 +1109,15 @@ public class StrategyPromotionServiceTests
 
         public Task SaveAsync(StrategyPerformanceState state) { _state = state; return Task.CompletedTask; }
     }
+
+    private static StrategyPromotionService CreateService(InMemoryStrategyPerformanceStore store)
+        => new(store, configuration: BuildPromotionConfig(
+            backtestMinTrades: 6,
+            backtestMinProfitFactor: 1.15,
+            backtestMinWinRate: 0.42,
+            paperMinTrades: 8,
+            paperMinProfitFactor: 1.20,
+            paperMinWinRate: 0.45));
 
     private static IConfiguration BuildPromotionConfig(
         int backtestMinTrades,

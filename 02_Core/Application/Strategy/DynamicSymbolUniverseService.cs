@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
@@ -16,15 +18,18 @@ public sealed class DynamicSymbolUniverseService
     private readonly IMarketDataService _marketDataService;
     private readonly IBistMarketGateway? _bistMarketGateway;
     private readonly ILogger<DynamicSymbolUniverseService> _logger;
+    private readonly MarketUniverseOptions _universeOptions;
 
     public DynamicSymbolUniverseService(
         IMarketDataService marketDataService,
         ILogger<DynamicSymbolUniverseService> logger,
-        IBistMarketGateway? bistMarketGateway = null)
+        IBistMarketGateway? bistMarketGateway = null,
+        IOptions<MarketUniverseOptions>? universeOptions = null)
     {
         _marketDataService = marketDataService;
         _logger = logger;
         _bistMarketGateway = bistMarketGateway;
+        _universeOptions = universeOptions?.Value ?? new MarketUniverseOptions();
     }
 
     public async Task<DynamicSymbolUniverseResult> BuildUniverseAsync(
@@ -33,7 +38,18 @@ public sealed class DynamicSymbolUniverseService
         int maxSymbols = 8,
         CancellationToken cancellationToken = default)
     {
-        var normalizedMarket = string.IsNullOrWhiteSpace(market) ? "BIST" : market;
+        // Default to Crypto when unspecified — BIST as the old fallback made no sense
+        // once we gated non-crypto markets behind feature flags.
+        var normalizedMarket = string.IsNullOrWhiteSpace(market) ? "Crypto" : market;
+
+        if (!_universeOptions.IsEnabled(normalizedMarket))
+        {
+            _logger.LogWarning(
+                "Market {Market} is disabled via MarketUniverseOptions — returning empty universe. " +
+                "Enable via Markets:Enable{Market}.", normalizedMarket, normalizedMarket);
+            return new DynamicSymbolUniverseResult(normalizedMarket, 0, Array.Empty<UniverseCandidate>());
+        }
+
         var candidates = await ResolveCandidatesAsync(normalizedMarket, cancellationToken);
         var expectancyLookup = BuildExpectancyLookup(recentTrades ?? []);
         var ranked = new List<UniverseCandidate>();
@@ -87,7 +103,7 @@ public sealed class DynamicSymbolUniverseService
 
         return DefaultUniverse.TryGetValue(market, out var symbols)
             ? symbols
-            : DefaultUniverse["BIST"];
+            : DefaultUniverse["Crypto"];
     }
 
     private static Dictionary<string, decimal> BuildExpectancyLookup(IEnumerable<Trade> trades)

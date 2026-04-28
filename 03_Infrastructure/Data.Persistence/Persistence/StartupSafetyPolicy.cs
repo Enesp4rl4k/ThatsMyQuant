@@ -20,7 +20,8 @@ public static class StartupSafetyPolicy
         bool isOkxDemo,
         bool allowLiveTrading,
         bool hasOkxCredentials,
-        bool hasBinanceCredentials)
+        bool hasBinanceCredentials,
+        bool requiresTradingCredentials = true)
     {
         if (isOkxMode && !isOkxDemo && !allowLiveTrading)
         {
@@ -29,6 +30,11 @@ public static class StartupSafetyPolicy
                 "For safety, OKX requires demo mode by default. " +
                 "Set OKX__IsDemoMode=true (recommended) or explicitly acknowledge live trading by setting TMQ_ALLOW_LIVE_TRADING=true.");
         }
+
+        // Services that don't place orders (e.g., Listener.Api webhook receiver,
+        // Gateway.Api gRPC facade) can boot without trading credentials — they
+        // simply forward signals or stream read-only state.
+        if (!requiresTradingCredentials) return;
 
         if (!isMockMode && !hasOkxCredentials && !hasBinanceCredentials)
         {

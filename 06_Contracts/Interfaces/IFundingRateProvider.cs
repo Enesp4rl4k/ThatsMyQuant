@@ -26,6 +26,15 @@ public interface IFundingRateProvider
     /// </summary>
     Task PrefetchAsync(IEnumerable<string> symbols, DateTime fromUtc, CancellationToken ct = default)
         => Task.CompletedTask;
+
+    /// <summary>
+    /// Returns the full funding-rate history for <paramref name="symbol"/> in the
+    /// [<paramref name="fromUtc"/>, <paramref name="toUtc"/>] window, ordered oldest → newest.
+    /// Used by sparkline / history visualisations in the dashboard. Default returns
+    /// empty — implementations backed by real history should override.
+    /// </summary>
+    IReadOnlyList<(DateTime Timestamp, decimal Rate)> GetHistory(string symbol, DateTime fromUtc, DateTime toUtc)
+        => Array.Empty<(DateTime, decimal)>();
 }
 
 public sealed class NullFundingRateProvider : IFundingRateProvider

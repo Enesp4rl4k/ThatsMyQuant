@@ -1,5 +1,6 @@
 using System.Text;
 using ThatsMyQuant.Application.Strategy;
+using ThatsMyQuant.Contracts.Interfaces;
 
 namespace ThatsMyQuant.Application.Observability;
 
@@ -8,7 +9,8 @@ public static class PrometheusMetricsFormatter
     public static string Format(
         ServiceRuntimeState runtimeState,
         OperationalTelemetry telemetry,
-        CircuitBreakerStatus? circuitBreakerStatus = null)
+        CircuitBreakerStatus? circuitBreakerStatus = null,
+        IPortfolioManager? portfolio = null)
     {
         ArgumentNullException.ThrowIfNull(runtimeState);
         ArgumentNullException.ThrowIfNull(telemetry);
@@ -42,6 +44,9 @@ public static class PrometheusMetricsFormatter
         AppendCounter(builder, "tmq_entry_slippage_observations_total", "Entry slippage samples recorded (|signal price vs fill|)", labels, snapshot.EntrySlippageSamples);
         AppendGauge(builder, "tmq_entry_slippage_abs_percent_average", "Average absolute entry slippage percent across recorded fills", labels, snapshot.AverageAbsEntrySlippagePercent);
         AppendGauge(builder, "tmq_entry_slippage_abs_percent_last", "Most recent absolute entry slippage percent", labels, snapshot.LastAbsEntrySlippagePercent);
+        AppendGauge(builder, "tmq_entry_slippage_abs_bps_average", "Average absolute entry slippage in basis points (1bp = 0.01%)", labels, snapshot.AverageAbsEntrySlippagePercent * 100d);
+        AppendGauge(builder, "tmq_entry_slippage_abs_bps_last", "Most recent absolute entry slippage in basis points", labels, snapshot.LastAbsEntrySlippagePercent * 100d);
+        AppendCounter(builder, "tmq_entry_slippage_breaches_total", "Entry slippage events exceeding the configured alert threshold", labels, snapshot.EntrySlippageBreaches);
 
         if (snapshot.InferencePoolTargetSize > 0 || snapshot.InferenceLazyPoolBackgroundFailuresTotal > 0)
         {
@@ -58,6 +63,29 @@ public static class PrometheusMetricsFormatter
             AppendCounter(builder, "tmq_circuit_breaker_orders_blocked_total", "Orders blocked by the circuit breaker", labels, circuitBreakerStatus.TotalOrdersBlocked);
             AppendCounter(builder, "tmq_circuit_breaker_rate_limit_hits_total", "Rate-limit hits observed by the circuit breaker", labels, circuitBreakerStatus.TotalRateLimitHits);
             AppendGauge(builder, "tmq_circuit_breaker_consecutive_errors", "Consecutive execution errors tracked by the circuit breaker", labels, circuitBreakerStatus.ConsecutiveErrors);
+        }
+
+        if (portfolio is not null)
+        {
+            try
+            {
+                var usdt = (double)portfolio.GetAvailableBalance("USDT");
+                var dd = (double)portfolio.GetDrawdownPercent();
+                var positions = portfolio.GetAllPositions();
+                AppendGauge(builder, "tmq_portfolio_available_usdt", "Available USDT balance reported by portfolio manager", labels, usdt);
+                AppendGauge(builder, "tmq_portfolio_drawdown_percent", "Portfolio drawdown from peak equity (percent)", labels, dd);
+                AppendGauge(builder, "tmq_portfolio_open_positions_count", "Number of currently-open positions in the portfolio book", labels, positions.Count);
+                double grossNotional = 0d;
+                foreach (var p in positions.Values)
+                {
+                    grossNotional += (double)(p.EntryPrice * p.Quantity);
+                }
+                AppendGauge(builder, "tmq_portfolio_gross_notional_approx", "Approximate gross notional across open positions (entry-price × qty)", labels, grossNotional);
+            }
+            catch
+            {
+                // Portfolio metrics are best-effort; failures must not break the /metrics endpoint.
+            }
         }
 
         return builder.ToString();

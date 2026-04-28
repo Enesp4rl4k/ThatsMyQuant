@@ -1,13 +1,16 @@
+using MediatR;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Notifications;
 using ThatsMyQuant.Contracts.Options;
 
 namespace ThatsMyQuant.Application.Strategy;
 
 public class PaperTradingService
 {
+    private readonly IMediator? _mediator;
     private readonly ITechnicalAnalysisService _analysis;
     private readonly IMarketDataService _marketData;
     private readonly ILogger<PaperTradingService> _logger;
@@ -20,10 +23,16 @@ public class PaperTradingService
     private readonly IEnumerable<ISignalValidator> _validators;
     private readonly string _timeframe;
     private readonly PaperLeverageOptions _leverageOptions;
+    private readonly PaperPortfolioLimitsOptions _limitsOptions;
     private readonly BacktestCostModel _parityCostModel;
     private readonly PaperExecutionRealismOptions _realismOptions;
     private readonly Random _realismRng;
-    public PaperPortfolio Portfolio { get; } = new();
+    private readonly PaperPortfolioPersistenceService? _persistence;
+    private readonly MarketUniverseOptions _universeOptions;
+    // Portfolio is shared across hosted services (directional + pairs + funding) so the unified
+    // cash, open positions and PnL all live in one place. Injected via DI as Singleton — fall
+    // back to a fresh instance only when used outside DI (legacy tests).
+    public PaperPortfolio Portfolio { get; }
 
     public PaperTradingService(
         ITechnicalAnalysisService analysis,
@@ -39,8 +48,15 @@ public class PaperTradingService
         string? timeframe = null,
         PaperLeverageOptions? leverageOptions = null,
         BacktestCostModel? parityCostModel = null,
-        PaperExecutionRealismOptions? realismOptions = null)
+        PaperExecutionRealismOptions? realismOptions = null,
+        PaperPortfolioLimitsOptions? limitsOptions = null,
+        IMediator? mediator = null,
+        PaperPortfolioPersistenceService? persistence = null,
+        MarketUniverseOptions? universeOptions = null,
+        PaperPortfolio? portfolio = null)
     {
+        Portfolio = portfolio ?? new PaperPortfolio();
+        _mediator = mediator;
         _analysis = analysis;
         _marketData = marketData;
         _logger = logger;
@@ -53,9 +69,12 @@ public class PaperTradingService
         _validators = validators ?? Array.Empty<ISignalValidator>();
         _timeframe = string.IsNullOrWhiteSpace(timeframe) ? "15m" : timeframe!;
         _leverageOptions = leverageOptions ?? new PaperLeverageOptions();
+        _limitsOptions = limitsOptions ?? new PaperPortfolioLimitsOptions();
         _parityCostModel = parityCostModel ?? new BacktestCostModel();
         _realismOptions = realismOptions ?? new PaperExecutionRealismOptions();
         _realismRng = _realismOptions.RandomSeed > 0 ? new Random(_realismOptions.RandomSeed) : new Random();
+        _persistence = persistence;
+        _universeOptions = universeOptions ?? new MarketUniverseOptions();
     }
 
     public async Task<string> ProcessSymbolAsync(string symbol)
@@ -63,6 +82,11 @@ public class PaperTradingService
         await (_costSnapshotCache?.RefreshAsync(symbol) ?? Task.CompletedTask);
 
         string market = ResolveMarketType(symbol);
+
+        if (!_universeOptions.IsEnabled(market))
+        {
+            return $"SKIP {symbol}: market {market} disabled via Markets:Enable{market}.";
+        }
 
         var session = MarketHoursScheduler.GetCurrentSession(market);
         if (!session.CanTrade)
@@ -104,7 +128,10 @@ public class PaperTradingService
         if (constraintMessage != null) return constraintMessage;
 
         var openSymbols = Portfolio.OpenPositions.Select(p => p.Symbol).ToList();
-        var corrCheck = CorrelationService.CheckCorrelation(symbol, openSymbols);
+        // Crypto-only paper portfolio (TRX/XLM, LTC, DOGE, AAVE, SOL/AVAX, SOL/LINK) is by design
+        // 100% crypto-sector. Real concentration enforcement lives in ConcentrationGuard (per-symbol
+        // notional caps); the legacy 40% sector cap here was blocking every entry.
+        var corrCheck = CorrelationService.CheckCorrelation(symbol, openSymbols, maxSectorExposurePercent: 100.0);
         if (corrCheck.ExceedsSectorLimit)
         {
             _logger.LogWarning("Correlation block: {Rec}", corrCheck.Recommendation);
@@ -143,7 +170,7 @@ public class PaperTradingService
             return await ClosePosition(position, candles.Last(), lifecycleAction.Reason);
         }
 
-        return $"{position.Symbol} position open — UnrealizedPnL: ₺{position.UnrealizedPnL:N2}";
+        return $"{position.Symbol} position open — UnrealizedPnL: ${position.UnrealizedPnL:N2}";
     }
 
     private double CalculateAtrProxy(IReadOnlyList<Candle> candles, decimal currentPrice)
@@ -151,6 +178,98 @@ public class PaperTradingService
         return candles.Count > 14
             ? (double)(candles.TakeLast(15).Max(c => c.High) - candles.TakeLast(15).Min(c => c.Low)) / 14
             : (double)currentPrice * 0.02;
+    }
+
+    /// <summary>
+    /// Emergency-flatten every open position. Called on circuit-breaker trip, kill
+    /// switch press, or correlation panic. Uses the LAST cached candle per symbol
+    /// as exit reference (no new market data fetched — must be fast). Returns a
+    /// concise summary suitable for the alert payload.
+    ///
+    /// Added 2026-04-24 to close the "CB blocks entries but positions keep bleeding"
+    /// gap identified in the pre-paper readiness audit.
+    /// </summary>
+    public async Task<string> FlattenAllPositionsAsync(string reason)
+    {
+        var snapshot = Portfolio.OpenPositions.ToList();
+        if (snapshot.Count == 0) return $"FLATTEN [{reason}] — no open positions.";
+
+        int closed = 0;
+        decimal totalPnl = 0m;
+        foreach (var pos in snapshot)
+        {
+            try
+            {
+                var refCandle = new Candle
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Open = pos.CurrentPrice,
+                    High = pos.CurrentPrice,
+                    Low = pos.CurrentPrice,
+                    Close = pos.CurrentPrice,
+                    Volume = 0m
+                };
+                await ClosePosition(pos, refCandle, $"FLATTEN:{reason}").ConfigureAwait(false);
+                closed++;
+                totalPnl += pos.RealizedPnL;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "FlattenAll: failed to close {Symbol}", pos.Symbol);
+            }
+        }
+        _logger.LogError("FLATTEN ALL [{Reason}] — closed {N} positions, net PnL {PnL:N2}", reason, closed, totalPnl);
+        return $"FLATTEN [{reason}] — closed {closed} positions, net PnL {totalPnl:N2}";
+    }
+
+    /// <summary>
+    /// Closes a single open position by symbol (and optionally side, when there are multiple
+    /// legs). Triggered by the operator from the Cockpit UI's "Close" button. Uses the
+    /// position's last cached price as the exit reference — same behaviour as the existing
+    /// FlattenAll path, just scoped to one symbol.
+    ///
+    /// Returns null when no matching position is found; otherwise the closed-position summary.
+    /// </summary>
+    public async Task<string?> CloseSinglePositionAsync(string symbol, TradeSide? side, string reason)
+    {
+        if (string.IsNullOrWhiteSpace(symbol)) return null;
+
+        // Snapshot under the same conventions used in FlattenAllPositionsAsync — caller is the
+        // request-handling thread; PaperPortfolio mutations elsewhere are guarded by lock(_portfolio).
+        var snapshot = Portfolio.OpenPositions
+            .Where(p => string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase))
+            .Where(p => side is null || p.Side == side.Value)
+            .ToList();
+        if (snapshot.Count == 0) return null;
+
+        var sb = new System.Text.StringBuilder();
+        decimal totalPnl = 0m;
+        int closed = 0;
+        foreach (var pos in snapshot)
+        {
+            try
+            {
+                var refCandle = new Candle
+                {
+                    Timestamp = DateTime.UtcNow,
+                    Open  = pos.CurrentPrice,
+                    High  = pos.CurrentPrice,
+                    Low   = pos.CurrentPrice,
+                    Close = pos.CurrentPrice,
+                    Volume = 0m
+                };
+                var msg = await ClosePosition(pos, refCandle, $"MANUAL:{reason}").ConfigureAwait(false);
+                sb.AppendLine(msg);
+                closed++;
+                totalPnl += pos.RealizedPnL;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "CloseSingle: failed to close {Symbol}", pos.Symbol);
+            }
+        }
+        _logger.LogWarning("MANUAL CLOSE {Symbol} [{Reason}] — closed {N}, net PnL {PnL:N2}", symbol, reason, closed, totalPnl);
+        return sb.ToString();
     }
 
     private async Task<string> ClosePosition(
@@ -169,7 +288,7 @@ public class PaperTradingService
             position.ExitReason = exitReason;
             Portfolio.ClosedPositions.Add(position);
             Portfolio.OpenPositions.Remove(position);
-            return $"CLOSED {position.Symbol} via {exitReason} — PnL: ₺{position.RealizedPnL:N2}";
+            return $"CLOSED {position.Symbol} via {exitReason} — PnL: ${position.RealizedPnL:N2}";
         }
 
         var refPrice = forcedExitPrice ?? lastCandle.Close;
@@ -232,10 +351,42 @@ public class PaperTradingService
         await (_promotionService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
         await (_exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
 
-        _logger.LogInformation("PAPER {Exit}: {Symbol} PnL=₺{PnL:N2} ({Reason})",
+        // Broadcast close event so ChampionChallenger / analytics subscribers can attribute.
+        if (_mediator is not null)
+        {
+            try
+            {
+                var pnlPct = position.EntryPrice > 0 && exitQuantity > 0
+                    ? (exitPnl / (position.EntryPrice * exitQuantity)) * 100m
+                    : 0m;
+                await _mediator.Publish(new PositionClosedNotification(
+                    Symbol: position.Symbol,
+                    StrategyTag: position.StrategyTag ?? "Unknown",
+                    RegimeTag: position.RegimeTag ?? "Unknown",
+                    ExitPolicyTag: position.ExitPolicyTag ?? "Unknown",
+                    ExitReason: exitReason,
+                    ExecutionMode: "PAPER",
+                    Side: position.Side,
+                    EntryPrice: position.EntryPrice,
+                    ExitPrice: adjustedExit,
+                    Quantity: exitQuantity,
+                    NetPnl: exitPnl,
+                    NetPnlPercent: pnlPct,
+                    EntryTimeUtc: position.EntryTime,
+                    ExitTimeUtc: position.ExitTime ?? DateTime.UtcNow,
+                    CorrelationId: null));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "PositionClosedNotification publish failed — continuing");
+            }
+        }
+
+        _logger.LogInformation("PAPER {Exit}: {Symbol} PnL=${PnL:N2} ({Reason})",
             exitReason, position.Symbol, position.RealizedPnL, exitReason);
 
-        return $"CLOSED {position.Symbol} via {exitReason} — PnL: ₺{position.RealizedPnL:N2}";
+        _persistence?.RequestWrite(Portfolio);
+        return $"CLOSED {position.Symbol} via {exitReason} — PnL: ${position.RealizedPnL:N2}";
     }
 
     private async Task<string> ApplyPartialExit(PaperPosition position, Candle lastCandle, PositionLifecycleAction action)
@@ -243,7 +394,7 @@ public class PaperTradingService
         var exitQuantity = Math.Min(Math.Max(0m, position.Quantity), action.Quantity);
         if (exitQuantity <= 0m)
         {
-            return $"{position.Symbol} position open — UnrealizedPnL: ₺{position.UnrealizedPnL:N2}";
+            return $"{position.Symbol} position open — UnrealizedPnL: ${position.UnrealizedPnL:N2}";
         }
 
         var adjustedExit = _executionProfiles.ApplyExecutionPrice(
@@ -299,7 +450,7 @@ public class PaperTradingService
         Portfolio.DailyPnL += partialPnl;
         Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
 
-        _logger.LogInformation("PAPER PARTIAL EXIT: {Symbol} Qty={Qty} PnL=₺{PnL:N2} ({Reason})",
+        _logger.LogInformation("PAPER PARTIAL EXIT: {Symbol} Qty={Qty} PnL=${PnL:N2} ({Reason})",
             position.Symbol, exitQuantity, partialPnl, action.Reason);
 
         if (position.Quantity <= 0m)
@@ -307,41 +458,37 @@ public class PaperTradingService
             return await ClosePosition(position, lastCandle, action.Reason);
         }
 
-        return $"PARTIAL {position.Symbol} via {action.Reason} — booked ₺{partialPnl:N2}, remaining {position.Quantity:N4}";
+        _persistence?.RequestWrite(Portfolio);
+        return $"PARTIAL {position.Symbol} via {action.Reason} — booked ${partialPnl:N2}, remaining {position.Quantity:N4}";
     }
-
-    // Portfolio-level concurrency + exposure caps. Kelly sizing per trade ignores portfolio-wide
-    // correlation drag, so a multi-symbol Trend+Range+Breakout firing day can stack to 3x intended
-    // exposure in correlated assets. These caps are the blunt instrument that prevents that.
-    private const int MaxConcurrentPositions = 2;
-    private const decimal MaxTotalNotionalRatio = 0.40m;
 
     private string? CheckTradingConstraints()
     {
-        if (Portfolio.DailyPnL < -(Portfolio.InitialBalance * 0.02m))
+        var dailyLossLimit = Portfolio.InitialBalance * _limitsOptions.DailyLossLimitRatio;
+        if (Portfolio.DailyPnL < -dailyLossLimit)
         {
-            return $"⚠️ Daily loss limit hit (₺{Portfolio.DailyPnL:N2}). No new trades today.";
+            return $"⚠️ Daily loss limit hit (${Portfolio.DailyPnL:N2}). No new trades today.";
         }
 
-        if (Portfolio.OpenPositions.Count >= MaxConcurrentPositions)
+        if (Portfolio.OpenPositions.Count >= _limitsOptions.MaxConcurrentPositions)
         {
-            return $"Max concurrent positions reached ({Portfolio.OpenPositions.Count}/{MaxConcurrentPositions}). Close one before opening another.";
+            return $"Max concurrent positions reached ({Portfolio.OpenPositions.Count}/{_limitsOptions.MaxConcurrentPositions}). Close one before opening another.";
         }
 
         var totalNotional = Portfolio.OpenPositions.Sum(p => p.Quantity * p.CurrentPrice);
         var equity = Portfolio.TotalEquity;
-        if (equity > 0m && totalNotional / equity >= MaxTotalNotionalRatio)
+        if (equity > 0m && totalNotional / equity >= _limitsOptions.MaxTotalNotionalRatio)
         {
-            return $"Total open notional {totalNotional:N0} exceeds {MaxTotalNotionalRatio:P0} of equity.";
+            return $"Total open notional {totalNotional:N0} exceeds {_limitsOptions.MaxTotalNotionalRatio:P0} of equity.";
         }
 
         var consecutiveLosses = Portfolio.ClosedPositions
             .OrderByDescending(p => p.ExitTime)
-            .Take(4)
+            .Take(Math.Max(1, _limitsOptions.ConsecutiveLossLookback))
             .TakeWhile(p => p.RealizedPnL < 0)
             .Count();
 
-        if (consecutiveLosses >= 3)
+        if (consecutiveLosses >= _limitsOptions.ConsecutiveLossCooldownThreshold)
         {
             return $"Cooldown active after {consecutiveLosses} consecutive paper losses. Wait for a cleaner window.";
         }
@@ -498,11 +645,37 @@ public class PaperTradingService
         Portfolio.OpenPositions.Add(newPosition);
         Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
 
-        _logger.LogInformation("PAPER TRADE: {Side} {Qty} {Symbol} @ ₺{Price:F2} | SL=₺{SL:F2} TP=₺{TP:F2}",
+        _logger.LogInformation("PAPER TRADE: {Side} {Qty} {Symbol} @ ${Price:F2} | SL=${SL:F2} TP=${TP:F2}",
             decision.Side, quantity, symbol, currentPrice, decision.StopLoss, decision.TakeProfit);
 
+        // Surface the open as a PositionOpenedNotification so Telegram push and the
+        // Dashboard live-activity feed can render the bot's reasoning + risk plan.
+        try
+        {
+            await _mediator.Publish(new ThatsMyQuant.Contracts.Notifications.PositionOpenedNotification(
+                Symbol: symbol,
+                StrategyTag: decision.StrategyTag ?? "",
+                RegimeTag: decision.RegimeTag ?? "",
+                ExitPolicyTag: decision.ExitPolicyTag ?? "",
+                ExecutionMode: "PAPER",
+                Side: decision.Side,
+                EntryPrice: entryPrice,
+                Quantity: quantity,
+                StopLoss: decision.StopLoss,
+                TakeProfit: decision.TakeProfit,
+                EdgeScore: 0m,
+                Confidence: (decimal)consensusConfidence,
+                Reasoning: decision.Reasoning ?? "",
+                EntryTimeUtc: newPosition.EntryTime)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "PositionOpenedNotification publish failed — continuing");
+        }
+
         var leverageLabel = isLeveragedPaperPosition ? $" x{leverage:F2}" : string.Empty;
-        return $"OPENED {decision.Side} {quantity} {symbol}{leverageLabel} @ ₺{currentPrice:F2} (Score: {Math.Clamp((int)consensusConfidence, 0, 100)}/100)";
+        _persistence?.RequestWrite(Portfolio);
+        return $"OPENED {decision.Side} {quantity} {symbol}{leverageLabel} @ ${currentPrice:F2} (Score: {Math.Clamp((int)consensusConfidence, 0, 100)}/100)";
     }
 
     private decimal ResolveLeverage(Signal signal)

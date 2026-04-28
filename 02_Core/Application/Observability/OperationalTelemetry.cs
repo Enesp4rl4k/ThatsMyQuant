@@ -29,7 +29,8 @@ public sealed record OperationalTelemetrySnapshot(
     long VenueHttpFailuresTotal,
     long EntrySlippageSamples,
     double AverageAbsEntrySlippagePercent,
-    double LastAbsEntrySlippagePercent);
+    double LastAbsEntrySlippagePercent,
+    long EntrySlippageBreaches);
 
 public sealed class OperationalTelemetry : IDisposable
 {
@@ -74,6 +75,7 @@ public sealed class OperationalTelemetry : IDisposable
     private long _slippageSamples;
     private double _totalAbsEntrySlippagePercent;
     private double _lastAbsEntrySlippagePercent;
+    private long _slippageBreaches;
     private long _lastUpdatedTicks;
 
     public OperationalTelemetry(string serviceName = "ThatsMyQuant")
@@ -242,6 +244,18 @@ public sealed class OperationalTelemetry : IDisposable
     }
 
     /// <summary>
+    /// Records a slippage breach event (|entry slippage| exceeded the configured
+    /// alert threshold). Used by the Prometheus /metrics exposition and by
+    /// Grafana alerting dashboards. Independent of the alerting channel itself —
+    /// the caller is responsible for firing the actual Telegram / log alert.
+    /// </summary>
+    public void RecordSlippageBreach(string? symbol = null)
+    {
+        Interlocked.Increment(ref _slippageBreaches);
+        Touch();
+    }
+
+    /// <summary>
     /// Non-success HTTP responses from venue REST APIs (e.g. OKX/Binance).
     /// </summary>
     public void RecordVenueHttpFailure(string? venue = null)
@@ -289,7 +303,8 @@ public sealed class OperationalTelemetry : IDisposable
             Interlocked.Read(ref _venueHttpFailures),
             Interlocked.Read(ref _slippageSamples),
             avgSlip,
-            lastSlip);
+            lastSlip,
+            Interlocked.Read(ref _slippageBreaches));
     }
 
     public void Dispose() => _meter.Dispose();

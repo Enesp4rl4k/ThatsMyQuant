@@ -16,8 +16,41 @@ public partial class PortfolioViewModel : ObservableObject
     [ObservableProperty] private decimal _realizedPnL = 0;
     [ObservableProperty] private decimal _unrealizedPnL = 0;
 
+    /// <summary>Closed-trade win rate (0..1). Updated by MainViewModel.RefreshTradingMetrics.</summary>
+    [ObservableProperty] private double _winRate = 0d;
+    [ObservableProperty] private int _closedTradeCount = 0;
+    [ObservableProperty] private int _winningTradeCount = 0;
+    [ObservableProperty] private int _losingTradeCount = 0;
+
+    /// <summary>Average realized risk/reward multiple (|avg win| / |avg loss|).</summary>
+    [ObservableProperty] private double _averageRiskReward = 0d;
+
+    /// <summary>Profit factor = gross wins / gross losses.</summary>
+    [ObservableProperty] private double _profitFactor = 0d;
+
+    /// <summary>Average PnL per closed trade.</summary>
+    [ObservableProperty] private decimal _averageTradePnL = 0m;
+
+    /// <summary>Total equity = Balance + UnrealizedPnL.</summary>
+    public decimal TotalEquity => Balance + UnrealizedPnL;
+
     public double RealizedPnLPercent => Balance == 0 ? 0 : (double)(RealizedPnL / Balance * 100);
     public Brush RealizedPnLColor => RealizedPnL >= 0 ? GreenBrush : RedBrush;
+    public Brush UnrealizedPnLColor => UnrealizedPnL >= 0 ? GreenBrush : RedBrush;
+    public Brush WinRateColor => WinRate >= 0.55 ? GreenBrush : WinRate >= 0.45 ? GrayBrush : RedBrush;
+    public Brush RiskRewardColor => AverageRiskReward >= 1.5 ? GreenBrush : AverageRiskReward >= 1.0 ? GrayBrush : RedBrush;
+    public Brush ProfitFactorColor => ProfitFactor >= 1.5 ? GreenBrush : ProfitFactor >= 1.0 ? GrayBrush : RedBrush;
+
+    partial void OnUnrealizedPnLChanged(decimal value)
+    {
+        OnPropertyChanged(nameof(TotalEquity));
+        OnPropertyChanged(nameof(UnrealizedPnLColor));
+    }
+    partial void OnRealizedPnLChanged(decimal value) => OnPropertyChanged(nameof(RealizedPnLColor));
+    partial void OnBalanceChanged(decimal value) => OnPropertyChanged(nameof(TotalEquity));
+    partial void OnWinRateChanged(double value) => OnPropertyChanged(nameof(WinRateColor));
+    partial void OnAverageRiskRewardChanged(double value) => OnPropertyChanged(nameof(RiskRewardColor));
+    partial void OnProfitFactorChanged(double value) => OnPropertyChanged(nameof(ProfitFactorColor));
     
     [ObservableProperty] private string _portfolioGrowthHeadline = "100,000";
     [ObservableProperty] private string _portfolioGrowthSubtext = "No realized growth history yet";

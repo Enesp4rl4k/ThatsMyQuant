@@ -13,7 +13,8 @@ namespace ThatsMyQuant.Application.Analytics;
 /// </summary>
 internal readonly record struct FeatureBreakdown(
     int Rsi, int Macd, int Ema, int Bollinger, int Volume,
-    int AlphaTrend, int PMax, int Sr, int Pattern, int Regime);
+    int AlphaTrend, int PMax, int Sr, int Pattern, int Regime,
+    int Adx, int Roc, int StochRsi);
 
 /// <summary>
 /// Alpha-predictiveness audit: replays the signal decision chain over historical
@@ -131,6 +132,9 @@ public sealed class SignalQualityAuditService
                     ["SR"]         = fb.Sr,
                     ["Pattern"]    = fb.Pattern,
                     ["Regime"]     = fb.Regime,
+                    ["ADX"]        = fb.Adx,
+                    ["ROC"]        = fb.Roc,
+                    ["StochRSI"]   = fb.StochRsi,
                 };
             }
 
@@ -219,7 +223,7 @@ public sealed class SignalQualityAuditService
     private static IReadOnlyDictionary<string, FeatureIc> ComputeFeatureIcs(IReadOnlyList<SignalAuditRecord> candidates)
     {
         var result = new Dictionary<string, FeatureIc>();
-        var features = new[] { "RSI", "MACD", "EMA", "Bollinger", "Volume", "AlphaTrend", "PMax", "SR", "Pattern", "Regime" };
+        var features = new[] { "RSI", "MACD", "EMA", "Bollinger", "Volume", "AlphaTrend", "PMax", "SR", "Pattern", "Regime", "ADX", "ROC", "StochRSI" };
         foreach (var f in features)
         {
             var rows = candidates
@@ -272,18 +276,21 @@ public sealed class SignalQualityAuditService
         }
 
         int macdBuy = 0, macdSell = 0;
-        if (ind.MACDHistogram.HasValue)
-        {
-            if (ind.MACDHistogram > 0 && ind.MACD > ind.MACDSignal) macdBuy = 25;
-            else if (ind.MACDHistogram < 0 && ind.MACD < ind.MACDSignal) macdSell = 25;
-        }
 
         int emaBuy = 0, emaSell = 0;
         if (ind.EMA20.HasValue && ind.EMA50.HasValue)
         {
             double price = (double)ind.CurrentPrice;
-            if (price > ind.EMA20 && ind.EMA20 > ind.EMA50) emaBuy = 0;  // zeroed per IC audit
-            else if (price < ind.EMA20 && ind.EMA20 < ind.EMA50) emaSell = 0;  // zeroed per IC audit
+            if (price > ind.EMA20 && ind.EMA20 > ind.EMA50)
+            {
+                if (regime.Regime == MarketRegime.Trending) emaBuy = 20;
+                else if (regime.Regime == MarketRegime.Ranging && price > ind.EMA20 * 1.02) emaSell = 15;
+            }
+            else if (price < ind.EMA20 && ind.EMA20 < ind.EMA50)
+            {
+                if (regime.Regime == MarketRegime.Trending) emaSell = 20;
+                else if (regime.Regime == MarketRegime.Ranging && price < ind.EMA20 * 0.98) emaBuy = 15;
+            }
         }
 
         int bbBuy = 0, bbSell = 0;
@@ -291,16 +298,24 @@ public sealed class SignalQualityAuditService
         {
             double price = (double)ind.CurrentPrice;
             double width = ind.BollingerUpper.Value - ind.BollingerLower.Value;
-            if (price <= ind.BollingerLower.Value + width * 0.1) bbBuy = 15;
-            else if (price >= ind.BollingerUpper.Value - width * 0.1) bbSell = 15;
+            int points = regime.Regime switch
+            {
+                MarketRegime.Ranging => 30,
+                MarketRegime.Trending => 20,
+                MarketRegime.Volatile => 15,
+                _ => 15
+            };
+            if (price <= ind.BollingerLower.Value + width * 0.1) bbBuy = points;
+            else if (price >= ind.BollingerUpper.Value - width * 0.1) bbSell = points;
         }
 
-        // Volume bonus is rubber-stamp for whichever side is leading pre-volume —
-        // approximation here: award to the decision side when ratio >= 1.3.
         int volBuy = 0, volSell = 0;
-        if ((ind.VolumeRatio ?? 0) >= 1.3)
+        if ((ind.VolumeRatio ?? 0) >= 1.5)
         {
-            if (side == TradeSide.Buy) volBuy = 20; else volSell = 20;
+            bool isUp = ind.BarOpen > 0 && ind.CurrentPrice > ind.BarOpen;
+            bool isDown = ind.BarOpen > 0 && ind.CurrentPrice < ind.BarOpen;
+            if (isUp) volBuy = 20;
+            else if (isDown) volSell = 20;
         }
 
         int atBuy = 0, atSell = 0;
@@ -313,44 +328,78 @@ public sealed class SignalQualityAuditService
         }
 
         int pmaxBuy = 0, pmaxSell = 0;
-        if (ind.PMax != null)
-        {
-            if (ind.PMax.Signal == TradeSide.Buy || (ind.PMax.IsBullish && ind.CurrentPrice > (decimal)ind.PMax.Value)) pmaxBuy = 15;
-            else if (ind.PMax.Signal == TradeSide.Sell || (!ind.PMax.IsBullish && ind.CurrentPrice < (decimal)ind.PMax.Value)) pmaxSell = 15;
-        }
+        if (ind.PMax != null) { pmaxBuy = 0; pmaxSell = 0; }
 
         int srBuy = 0, srSell = 0;
         if (ind.NearestSupport != null)
         {
             decimal d = Math.Abs(ind.CurrentPrice - ind.NearestSupport.Price) / ind.CurrentPrice;
-            if (d < 0.02m) srBuy = 20;  // was 15; IC-boosted
+            if (d <= 0.012m && ind.NearestSupport.TestCount >= 2) srBuy = 25;
         }
         if (ind.NearestResistance != null)
         {
             decimal d = Math.Abs(ind.NearestResistance.Price - ind.CurrentPrice) / ind.CurrentPrice;
-            if (d < 0.02m) srSell = 20;  // was 15; IC-boosted
+            if (d <= 0.012m && ind.NearestResistance.TestCount >= 2) srSell = 25;
         }
 
         int patBuy = 0, patSell = 0;
-        if (!string.IsNullOrEmpty(ind.DetectedPattern) && ind.DetectedPattern != "None")
-        {
-            if (ind.DetectedPattern.Contains("Bullish", StringComparison.OrdinalIgnoreCase)) patBuy = 12;  // was 25; halved pass 2
-            else if (ind.DetectedPattern.Contains("Bearish", StringComparison.OrdinalIgnoreCase)) patSell = 12;
-        }
+        if (!string.IsNullOrEmpty(ind.DetectedPattern) && ind.DetectedPattern != "None") { patBuy = 0; patSell = 0; }
 
         int regBuy = 0, regSell = 0;
         switch (regime.Regime)
         {
             case MarketRegime.Trending:
-                if (ind.EMA20 > ind.EMA50 && ind.MACDHistogram > 0) regBuy = 10;
-                if (ind.EMA20 < ind.EMA50 && ind.MACDHistogram < 0) regSell = 10;
+                if (ind.EMA20 > ind.EMA50) regBuy = 8;
+                if (ind.EMA20 < ind.EMA50) regSell = 8;
                 break;
             case MarketRegime.Ranging:
                 if (!(ind.RSI is > 40 and < 60)) { regBuy = -5; regSell = -5; }
                 break;
             case MarketRegime.Volatile:
-                if ((ind.VolumeRatio ?? 0) < 1.8) { regBuy = -10; regSell = -10; }
+                if ((ind.VolumeRatio ?? 0) < 1.25) { regBuy = -5; regSell = -5; }
                 break;
+        }
+
+        // --- ADX/DI (2026-04-24 alpha expansion) ---
+        int adxBuy = 0, adxSell = 0;
+        if (ind.ADX.HasValue && ind.DIPlus.HasValue && ind.DIMinus.HasValue && regime.Regime != MarketRegime.Ranging)
+        {
+            double adx = ind.ADX.Value;
+            int points = adx >= 30 ? 18 : adx >= 22 ? 10 : 0;
+            if (points > 0)
+            {
+                if (ind.DIPlus.Value > ind.DIMinus.Value) adxBuy = points;
+                else if (ind.DIMinus.Value > ind.DIPlus.Value) adxSell = points;
+            }
+        }
+
+        // --- ROC ---
+        int rocBuy = 0, rocSell = 0;
+        if (ind.ROC.HasValue)
+        {
+            double roc = ind.ROC.Value;
+            double strong = regime.Regime == MarketRegime.Volatile ? 2.0 : 1.0;
+            double weak = regime.Regime == MarketRegime.Volatile ? 1.0 : 0.3;
+            if (roc >= strong) rocBuy = 12;
+            else if (roc >= weak) rocBuy = 6;
+            else if (roc <= -strong) rocSell = 12;
+            else if (roc <= -weak) rocSell = 6;
+        }
+
+        // --- StochRSI ---
+        int stochBuy = 0, stochSell = 0;
+        if (ind.StochRsiK.HasValue)
+        {
+            double k = ind.StochRsiK.Value;
+            int extreme = regime.Regime == MarketRegime.Ranging ? 18 : regime.Regime == MarketRegime.Trending ? 6 : 10;
+            if (k <= 20) stochBuy = extreme;
+            else if (k >= 80) stochSell = extreme;
+
+            if (ind.StochRsiD.HasValue)
+            {
+                if (k > ind.StochRsiD.Value && k < 50) stochBuy += 4;
+                else if (k < ind.StochRsiD.Value && k > 50) stochSell += 4;
+            }
         }
 
         // Sign by decision side: positive = supported the chosen direction.
@@ -366,7 +415,10 @@ public sealed class SignalQualityAuditService
             PMax: Net(pmaxBuy, pmaxSell),
             Sr: Net(srBuy, srSell),
             Pattern: Net(patBuy, patSell),
-            Regime: Net(regBuy, regSell));
+            Regime: Net(regBuy, regSell),
+            Adx: Net(adxBuy, adxSell),
+            Roc: Net(rocBuy, rocSell),
+            StochRsi: Net(stochBuy, stochSell));
     }
 
     // --- router replay (mirror of BacktestEngine.ApplyStrategyRouter) ---

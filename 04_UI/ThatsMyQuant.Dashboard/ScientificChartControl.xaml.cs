@@ -332,6 +332,30 @@ public partial class ScientificChartControl : UserControl
     private async void ResetView_Click(object sender, RoutedEventArgs e)
         => await SendChartCommandAsync(new { type = "reset" });
 
+    private void SymbolSelector_KeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Enter || _viewModel is null || sender is not ComboBox combo)
+        {
+            return;
+        }
+
+        var typed = combo.Text?.Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(typed))
+        {
+            return;
+        }
+
+        // If the typed symbol isn't in the known universe, add it so it persists in the dropdown
+        // and downstream subscribers (streaming, analysis) pick it up automatically.
+        if (!_viewModel.Symbols.Contains(typed))
+        {
+            _viewModel.Symbols.Add(typed);
+        }
+
+        _viewModel.SelectedSymbol = typed;
+        e.Handled = true;
+    }
+
     private IEnumerable<object> BuildOrderLines()
     {
         if (_hostViewModel is null)

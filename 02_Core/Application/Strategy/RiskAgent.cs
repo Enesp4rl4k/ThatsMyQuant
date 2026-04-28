@@ -37,15 +37,48 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
     public string SoftPauseReason => _softPauseReason;
     public bool IsKillSwitchArmed => IsSoftPauseArmed;
 
+    private readonly PortfolioRiskAnalytics? _portfolioRisk;
+
     public RiskAgent(
         ILogger<RiskAgent> logger,
         IPortfolioManager? portfolioManager = null,
-        IOptions<RiskGovernorOptions>? options = null)
+        IOptions<RiskGovernorOptions>? options = null,
+        PortfolioRiskAnalytics? portfolioRisk = null)
     {
         _logger = logger;
         _portfolioManager = portfolioManager;
         _options = options?.Value ?? new RiskGovernorOptions();
         _rateLimiter = new TokenBucketRateLimiter(10, 10.0);
+        _portfolioRisk = portfolioRisk;
+    }
+
+    /// <summary>Minimum periodic-return samples before CVaR compression activates.</summary>
+    private const int CvarMinSamples = 30;
+    /// <summary>Confidence level for historical CVaR computation (95th percentile tail).</summary>
+    private const double CvarConfidenceLevel = 0.95;
+    /// <summary>Default baseline CVaR; compression kicks in when tail exceeds this value.</summary>
+    private const decimal CvarBaseline = 0.02m;
+    /// <summary>Fractional size reduction applied per 1× of excess tail-risk above baseline (20%).</summary>
+    private const decimal CvarCompressionStep = 0.2m;
+    /// <summary>Hard floor for CVaR-driven position-size compression (40% of nominal).</summary>
+    private const decimal CvarCompressionFloor = 0.4m;
+
+    /// <summary>
+    /// CVaR-based compression: when the recent periodic-return tail is heavy, we
+    /// shrink position sizing beyond the standard drawdown multiplier. This catches
+    /// scenarios where drawdown hasn't yet accumulated but the *distribution* of
+    /// returns has fattened — a leading indicator of trouble.
+    /// Returns a multiplier in [<see cref="CvarCompressionFloor"/>, 1.0].
+    /// </summary>
+    public decimal ResolveCvarCompression(IReadOnlyList<decimal> periodicReturns, decimal baselineCvar = CvarBaseline)
+    {
+        if (_portfolioRisk is null || periodicReturns.Count < CvarMinSamples) return 1.0m;
+        var cvar = _portfolioRisk.ComputeHistoricalCVaR(periodicReturns, confidence: CvarConfidenceLevel);
+        if (cvar <= baselineCvar) return 1.0m;
+        // Each 1× baseline of excess tail compresses size by CvarCompressionStep, floor at CvarCompressionFloor.
+        var excess = (cvar - baselineCvar) / baselineCvar;
+        var compression = Math.Max(CvarCompressionFloor, 1.0m - CvarCompressionStep * excess);
+        return compression;
     }
 
     public Task ResetAsync(string symbol, CancellationToken ct = default)
@@ -149,7 +182,7 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
         if (state.ExecutionHealth < _options.MinimumExecutionHealthToTrade)
             return Task.FromResult((false, "Execution quality is too weak for new risk.", 0m));
 
-        decimal confidenceKelly = CalculateConfidenceKelly(candidate, riskProfile);
+        decimal confidenceKelly = CalculateConfidenceKelly(candidate, riskProfile, state.ClosedTrades, signal);
         decimal requestedFraction = candidate.PositionSizePercent > 0m
             ? candidate.PositionSizePercent
             : riskProfile.MaxPositionSizePercent / 100m;
@@ -279,16 +312,45 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
     {
         if (_observedTrades.Count <= _options.MaxTrackedTrades) return;
 
-        var staleTradeIds = _observedTrades.Values
+        var overflow = _observedTrades.Count - _options.MaxTrackedTrades;
+
+        // Phase 1: evict closed trades first (oldest by exit/entry time).
+        var closedIds = _observedTrades.Values
             .Where(t => t.IsClosed)
             .OrderBy(t => t.ExitTime ?? t.EntryTime)
-            .Take(Math.Max(1, _observedTrades.Count - _options.MaxTrackedTrades))
+            .Take(overflow)
             .Select(t => t.Id)
             .ToList();
 
-        foreach (var tradeId in staleTradeIds)
+        foreach (var tradeId in closedIds)
         {
             _observedTrades.TryRemove(tradeId, out _);
+        }
+
+        // Phase 2: if we're still over the cap (all trades are open — rare, but possible
+        // under 24/7 operation with many symbols and no closures for extended periods),
+        // age-out the oldest-opened trades too. Without this the dictionary grows
+        // unbounded and eventually OOMs.
+        var stillOver = _observedTrades.Count - _options.MaxTrackedTrades;
+        if (stillOver <= 0) return;
+
+        var oldestOpenIds = _observedTrades.Values
+            .OrderBy(t => t.EntryTime)
+            .Take(stillOver)
+            .Select(t => t.Id)
+            .ToList();
+
+        foreach (var tradeId in oldestOpenIds)
+        {
+            _observedTrades.TryRemove(tradeId, out _);
+        }
+
+        if (oldestOpenIds.Count > 0)
+        {
+            _logger.LogWarning(
+                "RiskAgent._observedTrades capacity guard aged out {Count} open trade records " +
+                "(dictionary exceeded MaxTrackedTrades={Max} with no closed trades to evict).",
+                oldestOpenIds.Count, _options.MaxTrackedTrades);
         }
     }
 
@@ -407,12 +469,20 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
         var symbolRecentTrades = closedTrades
             .Where(t => string.Equals(t.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(t => t.ExitTime)
-            .Take(3)
+            .Take(Math.Max(_options.LossStreakLookbackTrades, _options.LossStreakThreshold))
             .ToList();
 
-        if (symbolRecentTrades.Count >= 3 && symbolRecentTrades.All(t => CalculateNetPnl(t) < 0m))
+        if (symbolRecentTrades.Any(t => ResolveSingleTradeLossPercent(t) >= _options.SevereSingleLossPercent))
         {
-            return (false, $"Loss-streak guard: 3 consecutive losses on {signal.Symbol}.");
+            return (false, $"Loss-streak guard: severe single loss >= {_options.SevereSingleLossPercent:F1}% on {signal.Symbol}.");
+        }
+
+        var consecutiveLosses = symbolRecentTrades
+            .TakeWhile(t => CalculateNetPnl(t, _options.CommissionPercentPerSide) < 0m)
+            .Count();
+        if (consecutiveLosses >= _options.LossStreakThreshold)
+        {
+            return (false, $"Loss-streak guard: {consecutiveLosses} consecutive losses on {signal.Symbol}.");
         }
 
         return (true, "");
@@ -490,11 +560,17 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
 
     private decimal ResolveOpenHeat(IReadOnlyList<Trade> openTrades, decimal baseEquity)
     {
-        var explicitHeat = openTrades.Sum(t => Math.Max(0m, t.PositionSizePercent));
-        if (explicitHeat > 0m) return explicitHeat;
-
         if (baseEquity <= 0m) return 0m;
-        return openTrades.Sum(t => Math.Max(0m, t.EntryPrice * t.Quantity) / baseEquity);
+        return openTrades.Sum(t =>
+        {
+            var explicitHeat = Math.Max(0m, t.PositionSizePercent);
+            if (explicitHeat > 0m)
+            {
+                return explicitHeat;
+            }
+
+            return Math.Max(0m, t.EntryPrice * t.Quantity) / baseEquity;
+        });
     }
 
     private decimal ResolveDrawdownPercent(decimal baseEquity, IReadOnlyList<Trade> closedTrades)
@@ -513,7 +589,7 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
 
         foreach (var trade in closedTrades.OrderBy(t => t.ExitTime ?? t.EntryTime))
         {
-            runningEquity += CalculateNetPnl(trade);
+            runningEquity += CalculateNetPnl(trade, _options.CommissionPercentPerSide);
             if (runningEquity > peakEquity) peakEquity = runningEquity;
             if (peakEquity <= 0m) continue;
 
@@ -524,13 +600,13 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
         return Math.Max(0m, maxDrawdown);
     }
 
-    private static decimal ResolveDailyLossPercent(decimal baseEquity, IReadOnlyList<Trade> closedTrades)
+    private decimal ResolveDailyLossPercent(decimal baseEquity, IReadOnlyList<Trade> closedTrades)
     {
         if (baseEquity <= 0m) return 0m;
 
         var dailyPnl = closedTrades
             .Where(t => t.ExitTime.HasValue && t.ExitTime.Value.Date == DateTime.UtcNow.Date)
-            .Sum(CalculateNetPnl);
+            .Sum(trade => CalculateNetPnl(trade, _options.CommissionPercentPerSide));
         return Math.Abs(Math.Min(0m, dailyPnl) / baseEquity) * 100m;
     }
 
@@ -581,10 +657,10 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
         if (sample.Count < _options.MinimumClosedTradesForAdaptiveSizing)
             return 1m;
 
-        var wins = sample.Where(t => CalculateNetPnl(t) > 0m).ToList();
-        var losses = sample.Where(t => CalculateNetPnl(t) < 0m).ToList();
-        var grossProfit = wins.Sum(CalculateNetPnl);
-        var grossLoss = Math.Abs(losses.Sum(CalculateNetPnl));
+        var wins = sample.Where(t => CalculateNetPnl(t, _options.CommissionPercentPerSide) > 0m).ToList();
+        var losses = sample.Where(t => CalculateNetPnl(t, _options.CommissionPercentPerSide) < 0m).ToList();
+        var grossProfit = wins.Sum(trade => CalculateNetPnl(trade, _options.CommissionPercentPerSide));
+        var grossLoss = Math.Abs(losses.Sum(trade => CalculateNetPnl(trade, _options.CommissionPercentPerSide)));
         var winRate = sample.Count == 0 ? 0m : wins.Count / (decimal)sample.Count;
         var profitFactor = grossLoss <= 0m
             ? (grossProfit > 0m ? 3m : 1m)
@@ -661,11 +737,15 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
         return caps.Min();
     }
 
-    private decimal CalculateConfidenceKelly(TradeDecision candidate, RiskParameters riskProfile)
+    private decimal CalculateConfidenceKelly(
+        TradeDecision candidate,
+        RiskParameters riskProfile,
+        IReadOnlyList<Trade> closedTrades,
+        Signal? signal)
     {
         var p = Clamp(candidate.Confidence / 100m, 0m, 0.99m);
         var q = 1m - p;
-        const decimal b = 1.5m;
+        var b = ResolveKellyEdgeRatio(candidate, closedTrades, signal);
         var rawKelly = Math.Max(0m, (b * p - q) / b);
 
         return Math.Min(rawKelly * _options.FractionalKelly, riskProfile.MaxPositionSizePercent / 100m);
@@ -687,12 +767,82 @@ public class RiskAgent : IFocusedAgent, INotificationHandler<VpinToxicityAlert>,
            || (!string.IsNullOrWhiteSpace(trade.PromotionStage)
                && trade.PromotionStage.Contains("Live", StringComparison.OrdinalIgnoreCase));
 
-    private static decimal CalculateNetPnl(Trade trade)
+    private static decimal CalculateNetPnl(Trade trade, decimal commissionPercentPerSide)
     {
         var direction = trade.Side == TradeSide.Sell ? -1m : 1m;
         var grossPnl = (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * direction;
         var slippageCost = trade.EntryPrice * trade.Quantity * (Math.Abs(trade.EntrySlippagePercent) / 100m);
-        return grossPnl - slippageCost;
+        var feeRate = Math.Max(0m, commissionPercentPerSide) / 100m;
+        var fees = ((trade.EntryPrice * trade.Quantity) + (trade.ExitPrice * trade.Quantity)) * feeRate;
+        return grossPnl - slippageCost - fees;
+    }
+
+    private decimal ResolveKellyEdgeRatio(TradeDecision candidate, IReadOnlyList<Trade> closedTrades, Signal? signal)
+    {
+        var impliedDecisionRr = ResolveDecisionRiskReward(candidate, signal);
+        var symbol = signal?.Symbol;
+        var strategyTag = string.IsNullOrWhiteSpace(candidate.StrategyTag) ? null : candidate.StrategyTag;
+        var sample = closedTrades
+            .Where(t =>
+                (string.IsNullOrWhiteSpace(symbol) || string.Equals(t.Symbol, symbol, StringComparison.OrdinalIgnoreCase)) &&
+                (string.IsNullOrWhiteSpace(strategyTag) || string.Equals(t.StrategyTag, strategyTag, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(t => t.ExitTime ?? t.EntryTime)
+            .Take(Math.Max(5, _options.AdaptiveLookbackTrades))
+            .ToList();
+
+        if (sample.Count < 3)
+        {
+            return impliedDecisionRr;
+        }
+
+        var wins = sample
+            .Select(t => CalculateNetPnl(t, _options.CommissionPercentPerSide))
+            .Where(pnl => pnl > 0m)
+            .ToList();
+        var losses = sample
+            .Select(t => CalculateNetPnl(t, _options.CommissionPercentPerSide))
+            .Where(pnl => pnl < 0m)
+            .Select(Math.Abs)
+            .ToList();
+
+        if (wins.Count == 0 || losses.Count == 0)
+        {
+            return impliedDecisionRr;
+        }
+
+        var historicalAverageRr = wins.Average() / Math.Max(0.0001m, losses.Average());
+        return Clamp(historicalAverageRr, 0.5m, 5.0m);
+    }
+
+    private static decimal ResolveDecisionRiskReward(TradeDecision candidate, Signal? signal)
+    {
+        if (signal?.Price is not > 0m || candidate.StopLoss <= 0m || candidate.TakeProfit <= 0m)
+        {
+            return 1.5m;
+        }
+
+        var entry = signal.Price;
+        var reward = Math.Abs(candidate.TakeProfit - entry);
+        var risk = Math.Abs(entry - candidate.StopLoss);
+        if (reward <= 0m || risk <= 0m)
+        {
+            return 1.5m;
+        }
+
+        return Clamp(reward / risk, 0.5m, 5.0m);
+    }
+
+    private static decimal ResolveSingleTradeLossPercent(Trade trade)
+    {
+        var notional = Math.Max(0m, trade.EntryPrice * trade.Quantity);
+        if (notional <= 0m)
+        {
+            return 0m;
+        }
+
+        var direction = trade.Side == TradeSide.Sell ? -1m : 1m;
+        var grossPnl = (trade.ExitPrice - trade.EntryPrice) * trade.Quantity * direction;
+        return grossPnl < 0m ? Math.Abs(grossPnl) / notional * 100m : 0m;
     }
 
     private static bool IsCorrelated(string left, string right)

@@ -1,0 +1,130 @@
+using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Contracts.Models;
+
+namespace ThatsMyQuant.Application.Strategy;
+
+/// <summary>
+/// Objective, criteria-based promotion gate for the backtest → paper → live pipeline.
+/// Each stage has quantitative thresholds that MUST be met; no subjective overrides.
+/// This is what separates "my bot works on backtests" from "my bot should run live".
+///
+/// Typical use: orchestrator runs backtest → gate evaluates → if pass, promote to
+/// paper and keep evaluating paper-stage trade stream until live gate clears.
+/// </summary>
+public sealed class FormalPromotionGate
+{
+    private readonly ILogger<FormalPromotionGate> _logger;
+
+    public FormalPromotionGate(ILogger<FormalPromotionGate> logger)
+    {
+        _logger = logger;
+    }
+
+    /// <summary>Backtest → Paper promotion.</summary>
+    public PromotionDecision EvaluateBacktestToPaper(BacktestResult result, PromotionThresholds? thresholds = null)
+    {
+        var t = thresholds ?? PromotionThresholds.DefaultBacktestToPaper;
+        var failures = new List<string>();
+        var passes = new List<string>();
+
+        Check(result.TotalTrades >= t.MinTrades, $"Trades {result.TotalTrades} ≥ {t.MinTrades}", failures, passes);
+        Check(result.SharpeRatio >= t.MinSharpe, $"Sharpe {result.SharpeRatio:F2} ≥ {t.MinSharpe:F2}", failures, passes);
+        Check(result.ProfitFactor >= t.MinProfitFactor, $"ProfitFactor {result.ProfitFactor:F2} ≥ {t.MinProfitFactor:F2}", failures, passes);
+        Check(result.MaxDrawdownPercent <= t.MaxDrawdownPct, $"MaxDD {result.MaxDrawdownPercent:F1}% ≤ {t.MaxDrawdownPct:F1}%", failures, passes);
+        Check(result.WinRate >= t.MinWinRate, $"WinRate {result.WinRate:F1}% ≥ {t.MinWinRate:F1}%", failures, passes);
+        Check(result.AverageRR >= t.MinAvgRR, $"AvgRR {result.AverageRR:F2} ≥ {t.MinAvgRR:F2}", failures, passes);
+        Check(result.CostLeakagePercent <= t.MaxCostLeakagePct, $"CostLeakage {result.CostLeakagePercent:F1}% ≤ {t.MaxCostLeakagePct:F1}%", failures, passes);
+
+        return Finalise("BacktestToPaper", failures, passes);
+    }
+
+    /// <summary>Paper → Live promotion. Requires longer track record + cost parity.</summary>
+    /// <param name="backtestResult">The backtest that cleared the paper gate.</param>
+    /// <param name="paperResult">Paper trading stats over the evaluation window.</param>
+    /// <param name="thresholds">Stage-specific thresholds; defaults stricter than backtest gate.</param>
+    public PromotionDecision EvaluatePaperToLive(
+        BacktestResult backtestResult,
+        BacktestResult paperResult,
+        PromotionThresholds? thresholds = null)
+    {
+        var t = thresholds ?? PromotionThresholds.DefaultPaperToLive;
+        var failures = new List<string>();
+        var passes = new List<string>();
+
+        Check(paperResult.TotalTrades >= t.MinTrades, $"PaperTrades {paperResult.TotalTrades} ≥ {t.MinTrades}", failures, passes);
+        Check(paperResult.SharpeRatio >= t.MinSharpe, $"PaperSharpe {paperResult.SharpeRatio:F2} ≥ {t.MinSharpe:F2}", failures, passes);
+        Check(paperResult.ProfitFactor >= t.MinProfitFactor, $"PaperPF {paperResult.ProfitFactor:F2} ≥ {t.MinProfitFactor:F2}", failures, passes);
+        Check(paperResult.MaxDrawdownPercent <= t.MaxDrawdownPct, $"PaperDD {paperResult.MaxDrawdownPercent:F1}% ≤ {t.MaxDrawdownPct:F1}%", failures, passes);
+
+        // Parity check: paper Sharpe must be within tolerance of backtest Sharpe, else a
+        // regime change / overfitting signal. Allow ±30% slack by default.
+        double parityTolerance = t.PaperBacktestSharpeTolerance;
+        double backSharpe = backtestResult.SharpeRatio;
+        double paperSharpe = paperResult.SharpeRatio;
+        bool parityOk = backSharpe <= 0 || Math.Abs(paperSharpe - backSharpe) / Math.Max(0.01, Math.Abs(backSharpe)) <= parityTolerance;
+        Check(parityOk, $"Paper/Backtest Sharpe parity (|Δ|/|back| ≤ {parityTolerance:P0})", failures, passes);
+
+        Check(paperResult.CostLeakagePercent <= t.MaxCostLeakagePct, $"PaperCostLeakage {paperResult.CostLeakagePercent:F1}% ≤ {t.MaxCostLeakagePct:F1}%", failures, passes);
+
+        return Finalise("PaperToLive", failures, passes);
+    }
+
+    private static void Check(bool condition, string desc, List<string> failures, List<string> passes)
+    {
+        if (condition) passes.Add(desc); else failures.Add(desc);
+    }
+
+    private PromotionDecision Finalise(string stage, List<string> failures, List<string> passes)
+    {
+        bool approved = failures.Count == 0;
+        var decision = new PromotionDecision(
+            Stage: stage,
+            Approved: approved,
+            PassedCriteria: passes,
+            FailedCriteria: failures);
+        if (approved)
+            _logger.LogInformation("Promotion {Stage} APPROVED | {Passed}/{Total} criteria", stage, passes.Count, passes.Count + failures.Count);
+        else
+            _logger.LogWarning("Promotion {Stage} REJECTED | failures: {Failures}", stage, string.Join(" ; ", failures));
+        return decision;
+    }
+}
+
+/// <summary>Stage thresholds for promotion decisions. Defaults are calibrated for
+/// crypto intraday strategies; tighten for production.</summary>
+public sealed record PromotionThresholds(
+    int MinTrades,
+    double MinSharpe,
+    double MinProfitFactor,
+    decimal MaxDrawdownPct,
+    double MinWinRate,
+    double MinAvgRR,
+    double MaxCostLeakagePct,
+    double PaperBacktestSharpeTolerance)
+{
+    public static PromotionThresholds DefaultBacktestToPaper => new(
+        MinTrades: 50,
+        MinSharpe: 1.0,
+        MinProfitFactor: 1.3,
+        MaxDrawdownPct: 15m,
+        MinWinRate: 40.0,
+        MinAvgRR: 1.2,
+        MaxCostLeakagePct: 40.0,
+        PaperBacktestSharpeTolerance: 1.0);
+
+    public static PromotionThresholds DefaultPaperToLive => new(
+        MinTrades: 30,
+        MinSharpe: 0.9,
+        MinProfitFactor: 1.25,
+        MaxDrawdownPct: 10m,
+        MinWinRate: 40.0,
+        MinAvgRR: 1.15,
+        MaxCostLeakagePct: 45.0,
+        PaperBacktestSharpeTolerance: 0.30);
+}
+
+public sealed record PromotionDecision(
+    string Stage,
+    bool Approved,
+    List<string> PassedCriteria,
+    List<string> FailedCriteria);

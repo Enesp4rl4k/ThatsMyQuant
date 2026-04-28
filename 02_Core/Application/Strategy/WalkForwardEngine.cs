@@ -50,9 +50,10 @@ public sealed class WalkForwardEngine
         int trainSize = (int)(windowSize * trainRatio);
         int testSize = windowSize - trainSize;
 
-        if (trainSize < 80 || testSize < 30)
+        if (trainSize < WalkForwardConstants.MinTrainBars || testSize < WalkForwardConstants.MinTestBars)
         {
-            _logger.LogWarning("Window sizes too small: train={Train}, test={Test}. Need train>=80, test>=30", trainSize, testSize);
+            _logger.LogWarning("Window sizes too small: train={Train}, test={Test}. Need train>={MinTrain}, test>={MinTest}",
+                trainSize, testSize, WalkForwardConstants.MinTrainBars, WalkForwardConstants.MinTestBars);
             return new WalkForwardResult { Symbol = symbol };
         }
 
@@ -141,11 +142,31 @@ public sealed class WalkForwardEngine
             return new WalkForwardResult { Symbol = symbol };
 
         double avgTrainSharpe = totalTrainSharpe / windows.Count;
-        double avgOosSharpe = totalOosSharpe / windows.Count;
+
+        // Pooled OOS Sharpe: combine all per-window OOS PnL into a single return series
+        // and compute one Sharpe from the pooled distribution. This is more robust than
+        // averaging per-window Sharpes which can be noisy with small per-window trade counts.
+        var pooledOosReturns = windows
+            .Where(w => w.OosTrades > 0)
+            .Select(w => (double)w.OosPnL)
+            .ToList();
+        double pooledOosSharpe;
+        if (pooledOosReturns.Count >= 2)
+        {
+            var mean = pooledOosReturns.Average();
+            var variance = pooledOosReturns.Sum(r => (r - mean) * (r - mean)) / (pooledOosReturns.Count - 1);
+            var stdDev = Math.Sqrt(Math.Max(variance, 0));
+            pooledOosSharpe = stdDev > 0 ? mean / stdDev * Math.Sqrt(Math.Min(252d, pooledOosReturns.Count)) : 0;
+        }
+        else
+        {
+            // Fallback: use average of per-window Sharpes if insufficient pooled windows
+            pooledOosSharpe = totalOosSharpe / windows.Count;
+        }
 
         // Walk-Forward Efficiency: ratio of OOS to train performance
         double wfe = Math.Abs(avgTrainSharpe) > 0.001
-            ? avgOosSharpe / avgTrainSharpe
+            ? pooledOosSharpe / avgTrainSharpe
             : 0;
 
         // Regime stability: how often train and OOS regimes match
@@ -162,7 +183,7 @@ public sealed class WalkForwardEngine
         double pfDegradation = avgTrainPF > 0 ? (avgTrainPF - avgOosPF) / avgTrainPF : 0;
 
         bool isRobust = wfe > 0.3
-            && avgOosSharpe > 0
+            && pooledOosSharpe > 0
             && oosConsistency >= 0.5
             && pfDegradation < 0.6
             && windows.Average(w => w.OosMaxDD) < 30;
@@ -173,7 +194,7 @@ public sealed class WalkForwardEngine
             WindowResults = windows,
             WalkForwardEfficiency = wfe,
             AggregateTrainSharpe = avgTrainSharpe,
-            AggregateOosSharpe = avgOosSharpe,
+            AggregateOosSharpe = pooledOosSharpe,
             AggregateOosPnL = windows.Sum(w => w.OosPnL),
             AggregateOosWinRate = windows.Average(w => w.OosWinRate),
             OosConsistency = oosConsistency,
@@ -192,7 +213,17 @@ public sealed class WalkForwardEngine
         double mean = returns.Average();
         double variance = returns.Sum(r => (r - mean) * (r - mean)) / (returns.Count - 1);
         double stdDev = Math.Sqrt(Math.Max(variance, 0));
-        return stdDev > 0 ? mean / stdDev * Math.Sqrt(252) : 0;
+        if (stdDev <= 0) return 0;
+
+        var timestamps = result.Trades.Select(t => t.ExitTime).OrderBy(t => t).ToList();
+        if (timestamps.Count < 2)
+        {
+            return mean / stdDev * Math.Sqrt(Math.Min(252d, returns.Count));
+        }
+
+        var spanDays = Math.Max(1d / 24d, (timestamps[^1] - timestamps[0]).TotalDays);
+        var tradesPerYear = Math.Max(1d, returns.Count / spanDays * 365d);
+        return mean / stdDev * Math.Sqrt(tradesPerYear);
     }
 }
 

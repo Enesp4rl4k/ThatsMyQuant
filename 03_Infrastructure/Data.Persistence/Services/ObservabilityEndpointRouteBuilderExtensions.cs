@@ -3,8 +3,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.AspNetCore.Http;
 using ThatsMyQuant.Application.Observability;
 using ThatsMyQuant.Application.Strategy;
+using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Infrastructure.Persistence;
 
 namespace ThatsMyQuant.Infrastructure.Services;
@@ -51,12 +53,36 @@ public static class ObservabilityEndpointRouteBuilderExtensions
         endpoints.MapGet("/metrics", (ServiceRuntimeState runtimeState, OperationalTelemetry telemetry) =>
         {
             var circuitBreaker = rootProvider.GetService<CircuitBreakerService>()?.GetStatus();
-            var payload = PrometheusMetricsFormatter.Format(runtimeState, telemetry, circuitBreaker);
+            var portfolio = rootProvider.GetService<IPortfolioManager>();
+            var payload = PrometheusMetricsFormatter.Format(runtimeState, telemetry, circuitBreaker, portfolio);
             return Results.Text(payload, "text/plain; version=0.0.4; charset=utf-8");
         });
 
         endpoints.MapGet("/metrics.json", (OperationalTelemetry telemetry) =>
             Results.Json(telemetry.GetSnapshot()));
+
+        endpoints.MapGet("/exchange/health", () =>
+        {
+            var health = rootProvider.GetService<IExchangeHealthProvider>();
+            if (health is null)
+            {
+                return Results.Json(new
+                {
+                    venue = "unknown",
+                    credentialsConfigured = false,
+                    isConnected = false,
+                    lastError = "IExchangeHealthProvider not registered."
+                }, statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            var snap = health.Current;
+            var status = snap.IsConnected
+                ? StatusCodes.Status200OK
+                : snap.CredentialsConfigured
+                    ? StatusCodes.Status503ServiceUnavailable
+                    : StatusCodes.Status424FailedDependency;
+            return Results.Json(snap, statusCode: status);
+        });
 
         endpoints.MapGet("/ops", (ServiceRuntimeState runtimeState, OperationalTelemetry telemetry) =>
         {

@@ -119,6 +119,12 @@ public partial class StrategyStudioViewModel : ObservableObject
     [ObservableProperty] private string _portfolioValidationSummary = "Portfolio validation is waiting for a multi-asset batch.";
     [ObservableProperty] private string _portfolioValidationGateLabel = "Portfolio gate: --";
     [ObservableProperty] private Brush _portfolioValidationGateBrush = GrayBrush;
+    [ObservableProperty] private string _costRealismGateLabel = "Cost gate: --";
+    [ObservableProperty] private Brush _costRealismGateBrush = GrayBrush;
+    [ObservableProperty] private string _costRealismSummary = "Cost realism is waiting for the next backtest session.";
+    [ObservableProperty] private string _paperDriftGateLabel = "Drift gate: --";
+    [ObservableProperty] private Brush _paperDriftGateBrush = GrayBrush;
+    [ObservableProperty] private string _paperDriftSummary = "Paper drift proxy is waiting for the next gate evaluation.";
     [ObservableProperty] private double _winRate = 0;
     [ObservableProperty] private int _totalTrades = 0;
     [ObservableProperty] private double _profitFactor = 0;

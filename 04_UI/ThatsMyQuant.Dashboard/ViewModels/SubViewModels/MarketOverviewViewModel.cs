@@ -36,10 +36,14 @@ public partial class MarketOverviewViewModel : ObservableObject
     [ObservableProperty] private Brush _xautryColor = GrayBrush;
 
     // --- Market & Symbol Selector ---
-    public ObservableCollection<string> Markets { get; } = new() { "BIST", "Crypto", "Forex" };
-    [ObservableProperty] private string _selectedMarket = "BIST";
+    // 2026-04-24: default to Crypto BTC-USDT 1h — aligns with validated strategy set
+    // (TRX/XLM, SOL/AVAX, SOL/LINK pairs + DOGE/LTC/AAVE funding alpha). Prior default
+    // (BIST THYAO) produced an empty chart at first launch since the current portfolio
+    // is crypto-only. Operator can still switch via the market/symbol selector.
+    public ObservableCollection<string> Markets { get; } = new() { "Crypto", "BIST", "Forex" };
+    [ObservableProperty] private string _selectedMarket = "Crypto";
     public ObservableCollection<string> Symbols { get; } = new();
-    [ObservableProperty] private string _selectedSymbol = "THYAO";
+    [ObservableProperty] private string _selectedSymbol = "BTC-USDT";
 
     // --- Timeframe Selection (for selector) ---
     public ObservableCollection<string> TimeframeOptions { get; } = new() { "1m", "5m", "15m", "1h", "4h", "1d" };

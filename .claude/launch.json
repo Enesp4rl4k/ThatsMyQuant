@@ -1,0 +1,37 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Web Dashboard (Vite)",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--host", "--port", "5173", "--strictPort"],
+      "port": 5173,
+      "autoPort": false,
+      "cwd": "04_UI/ThatsMyQuant.Web"
+    },
+    {
+      "name": "Listener.Api",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "01_Services/Listener.Api/Listener.Api.csproj", "--no-launch-profile"],
+      "port": 5266
+    },
+    {
+      "name": "Gateway.Api",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "01_Services/Gateway.Api/Gateway.Api.csproj", "--no-launch-profile"],
+      "port": 5181
+    },
+    {
+      "name": "QuantEngine.Worker",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "01_Services/QuantEngine.Worker/ThatsMyQuant.Bot.csproj"],
+      "port": 0
+    },
+    {
+      "name": "Execution.Worker",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "01_Services/Execution.Worker/Execution.Worker.csproj"],
+      "port": 0
+    }
+  ]
+}

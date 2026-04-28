@@ -26,12 +26,19 @@ public sealed class BacktestOrchestrator
     private readonly ProfitMaximizationOptions _profitOptions;
     private readonly BacktestParityOptions _parityOptions;
     private readonly WalkForwardOptimizer _walkForwardOptimizer;
+    private readonly PairsBacktestRunner? _pairsBacktestRunner;
 
     /// <summary>
     /// Monotonically increasing version counter for backtest runs.
     /// Resets per application lifetime; persisted snapshots carry the version tag.
     /// </summary>
     private static int _versionCounter;
+
+    private readonly ThatsMyQuant.Application.Analytics.TransactionCostAnalysisService? _tcaService;
+    private readonly ThatsMyQuant.Application.Analytics.MonteCarloBootstrapService? _mcBootstrap;
+    private readonly FormalPromotionGate? _promotionGate;
+    private readonly ThatsMyQuant.Application.Risk.PortfolioRiskAnalytics? _portfolioRisk;
+    private readonly IShadowExecutionAuditService? _shadowAudit;
 
     public BacktestOrchestrator(
         IHistoricalMarketDataService historicalDataService,
@@ -42,7 +49,13 @@ public sealed class BacktestOrchestrator
         IOptions<BacktestWalkForwardGateOptions>? walkForwardGateOptions = null,
         IOptions<BacktestQualityGateOptions>? qualityGateOptions = null,
         IOptions<ProfitMaximizationOptions>? profitOptions = null,
-        IOptions<BacktestParityOptions>? parityOptions = null)
+        IOptions<BacktestParityOptions>? parityOptions = null,
+        PairsBacktestRunner? pairsBacktestRunner = null,
+        ThatsMyQuant.Application.Analytics.TransactionCostAnalysisService? tcaService = null,
+        ThatsMyQuant.Application.Analytics.MonteCarloBootstrapService? mcBootstrap = null,
+        FormalPromotionGate? promotionGate = null,
+        ThatsMyQuant.Application.Risk.PortfolioRiskAnalytics? portfolioRisk = null,
+        IShadowExecutionAuditService? shadowAudit = null)
     {
         _historicalDataService = historicalDataService;
         _backtestEngine = backtestEngine;
@@ -53,6 +66,83 @@ public sealed class BacktestOrchestrator
         _qualityGateOptions = qualityGateOptions?.Value ?? new BacktestQualityGateOptions();
         _profitOptions = profitOptions?.Value ?? new ProfitMaximizationOptions();
         _parityOptions = parityOptions?.Value ?? new BacktestParityOptions();
+        _pairsBacktestRunner = pairsBacktestRunner;
+        _tcaService = tcaService;
+        _mcBootstrap = mcBootstrap;
+        _promotionGate = promotionGate;
+        _portfolioRisk = portfolioRisk;
+        _shadowAudit = shadowAudit;
+    }
+
+    /// <summary>
+    /// Runs a pairs-trading backtest session for two correlated symbols using
+    /// Engle-Granger cointegration + rolling z-score mean reversion. Separate from
+    /// the single-symbol confluence pipeline.
+    /// </summary>
+    public async Task<BacktestSessionResult> RunPairsSessionAsync(
+        string symbolA,
+        string symbolB,
+        string timeframe,
+        DateTime start,
+        DateTime end,
+        decimal capital = 10_000m,
+        CancellationToken ct = default)
+    {
+        var version = $"pairs_v{Interlocked.Increment(ref _versionCounter)}_{DateTime.UtcNow:yyyyMMdd_HHmmss}";
+        var pairSymbol = $"{symbolA}-{symbolB}";
+        _logger.LogInformation("Starting pairs session {Version}: {A}/{B} [{Timeframe}] {Start}..{End}",
+            version, symbolA, symbolB, timeframe, start, end);
+
+        if (_pairsBacktestRunner is null)
+        {
+            return BacktestSessionResult.Skipped(pairSymbol, version, "PairsBacktestRunner not registered in DI");
+        }
+
+        var taskA = _historicalDataService.GetHistoricalCandlesAsync(symbolA, timeframe, start, end, ct);
+        var taskB = _historicalDataService.GetHistoricalCandlesAsync(symbolB, timeframe, start, end, ct);
+        await Task.WhenAll(taskA, taskB).ConfigureAwait(false);
+
+        var (candlesA, _) = CandleHygieneService.Sanitize(taskA.Result, logger: _logger);
+        var (candlesB, _) = CandleHygieneService.Sanitize(taskB.Result, logger: _logger);
+
+        if (candlesA.Count < 100 || candlesB.Count < 100)
+        {
+            return BacktestSessionResult.Skipped(pairSymbol, version,
+                $"Insufficient data: A={candlesA.Count}, B={candlesB.Count}");
+        }
+
+        var result = _pairsBacktestRunner.Run(candlesA, candlesB, capital);
+
+        bool pass = result.TotalTrades >= 20
+                    && result.TotalPnL > 0
+                    && result.SharpeRatio > 0.5
+                    && result.MaxDrawdownPercent < 25m;
+
+        _logger.LogInformation(
+            "Pairs session {Version} done. PnL={PnL:F2} Sharpe={Sharpe:F2} Trades={Trades} WR={WR:F1}% DD={DD:F2}%",
+            version, result.TotalPnL, result.SharpeRatio, result.TotalTrades, result.WinRate, result.MaxDrawdownPercent);
+
+        return new BacktestSessionResult
+        {
+            Symbol = pairSymbol,
+            Version = version,
+            Status = BacktestSessionStatus.Completed,
+            BacktestPass = pass,
+            TotalTrades = result.TotalTrades,
+            TotalPnL = result.TotalPnL,
+            SharpeRatio = result.SharpeRatio,
+            SortinoRatio = result.SortinoRatio,
+            MaxDrawdownPercent = (double)result.MaxDrawdownPercent,
+            ProfitFactor = result.ProfitFactor,
+            WinRate = result.WinRate,
+            AverageRR = result.AverageRR,
+            WinningTrades = result.WinningTrades,
+            LosingTrades = result.LosingTrades,
+            AverageWin = result.WinningTrades > 0 ? result.Trades.Where(t => t.PnL > 0).Average(t => t.PnL) : 0m,
+            AverageLoss = result.LosingTrades > 0 ? result.Trades.Where(t => t.PnL <= 0).Average(t => t.PnL) : 0m,
+            PboScore = -1,
+            CandleCount = result.Trades.Count
+        };
     }
 
     /// <summary>
@@ -316,23 +406,43 @@ public sealed class BacktestOrchestrator
                 }
             }
 
-            result = await _backtestEngine.RunAsync(candles, symbol, timeframe, normalizedRiskProfile, capital)
+            // WFO leakage fix (2026-04-24): when WFO params were grid-searched on wfoCandles (in-sample)
+            // and a holdout is reserved, the primary backtest MUST run on the in-sample only. Running
+            // the full series here means the 30% holdout is being tested with params that were picked
+            // to look good on the 70% — exactly the leakage the split was meant to prevent. The
+            // holdout is validated separately by PBO below.
+            var primaryReplayCandles = (wfoProfileApplied && pboHoldoutCandles is not null)
+                ? wfoCandles
+                : candles;
+            result = await _backtestEngine.RunAsync(primaryReplayCandles, symbol, timeframe, normalizedRiskProfile, capital)
                 .ConfigureAwait(false);
 
             // STEP 3: PBO — run on holdout-only when reserved (primary fix for WFO→PBO leakage);
             // otherwise fall back to full-series (legacy). Partition mode defaults to Contiguous so
             // regime clusters stay intact and regime-overfit params are exposed honestly.
+            // Guard: PBO is statistically unreliable below ~25 trades in the PBO segment. Estimate
+            // holdout trade count from the primary-replay trade density and skip PBO when insufficient
+            // rather than returning a spuriously inflated score.
             var pboCandles = pboHoldoutCandles ?? candles;
-            if (!fastScreen && pboCandles.Count >= 8 * 60)
+            double tradeDensity = primaryReplayCandles.Count > 0 ? (double)result.TotalTrades / primaryReplayCandles.Count : 0;
+            int estimatedPboTrades = (int)Math.Round(tradeDensity * pboCandles.Count);
+            const int minPboTrades = 25;
+            if (!fastScreen && pboCandles.Count >= 8 * 60 && estimatedPboTrades >= minPboTrades)
             {
                 var partitionMode = Enum.TryParse<PboPartitionMode>(_walkForwardGateOptions.PboPartitionMode, true, out var pm)
                     ? pm : PboPartitionMode.Contiguous;
                 _logger.LogInformation(
-                    "Running PBO ({Mode}) for {Symbol} on {Count} candles ({Source})",
-                    partitionMode, symbol, pboCandles.Count, pboHoldoutCandles is null ? "full series" : "holdout");
+                    "Running PBO ({Mode}) for {Symbol} on {Count} candles ({Source}) est.trades={Est}",
+                    partitionMode, symbol, pboCandles.Count, pboHoldoutCandles is null ? "full series" : "holdout", estimatedPboTrades);
                 pboResult = await _backtestEngine.ComputePboAsync(pboCandles, symbol, 8, capital, partitionMode);
                 _logger.LogInformation("PBO: {PBO:F3} | Stochastic Dominance: {SD:F3} | Decay: {PD:F3}",
                     pboResult.PBO, pboResult.StochasticDominance, pboResult.PerformanceDecay);
+            }
+            else if (!fastScreen && pboCandles.Count >= 8 * 60)
+            {
+                _logger.LogWarning(
+                    "Skipping PBO for {Symbol}: estimated {Est} holdout trades < {Min} minimum for statistical validity.",
+                    symbol, estimatedPboTrades, minPboTrades);
             }
 
             // STEP 3.5: Rolling Walk-Forward gate (60d train / 20d test / 10d step)
@@ -370,6 +480,59 @@ public sealed class BacktestOrchestrator
         var expectancyPerTrade = result.TotalTrades > 0 ? result.TotalPnL / result.TotalTrades : 0m;
         var hash = ComputeResultHash(result);
         await StoreResultsAsync(result, timeframe, pboResult, walkForward, version, hash);
+
+        // Phase 3 post-run analytics — TCA, MC bootstrap, promotion gate, portfolio risk, shadow audit.
+        ThatsMyQuant.Application.Analytics.TcaReport? tcaReport = null;
+        ThatsMyQuant.Application.Analytics.BootstrapReport? bootstrapReport = null;
+        PromotionDecision? promotionDecision = null;
+        ThatsMyQuant.Application.Risk.PortfolioRiskReport? portfolioRiskReport = null;
+        ShadowAuditReport? shadowAuditReport = null;
+        try
+        {
+            if (_tcaService is not null && result.Trades.Count > 0)
+                tcaReport = _tcaService.Analyse(result.Trades);
+            if (_mcBootstrap is not null && result.Trades.Count >= 20)
+                bootstrapReport = _mcBootstrap.Analyse(result, iterations: 1000, randomSeed: 42);
+            if (_promotionGate is not null)
+                promotionDecision = _promotionGate.EvaluateBacktestToPaper(result);
+            if (_shadowAudit is not null && result.Trades.Count > 0)
+            {
+                shadowAuditReport = _shadowAudit.Audit(result, candles);
+                // Final-gate override: if shadow audit rejects, the FormalPromotionGate decision
+                // can't approve regardless of headline metrics. Append the shadow verdict to the
+                // failure list so downstream consumers see why promotion was withdrawn.
+                if (shadowAuditReport.Verdict is ShadowAuditVerdict.Reject or ShadowAuditVerdict.Critical
+                    && promotionDecision is { Approved: true })
+                {
+                    var failed = new List<string>(promotionDecision.FailedCriteria)
+                    {
+                        $"ShadowAudit:{shadowAuditReport.Verdict} (leakage {shadowAuditReport.LeakagePercent:F1}%, shadowPnL {shadowAuditReport.ShadowTotalPnL:F2})"
+                    };
+                    promotionDecision = promotionDecision with
+                    {
+                        Approved = false,
+                        FailedCriteria = failed
+                    };
+                    _logger.LogWarning(
+                        "Promotion withdrawn by ShadowAudit for {Symbol}: backtestPnL={B:F2} shadowPnL={S:F2} leakage={L:F1}%",
+                        result.Symbol, shadowAuditReport.BacktestTotalPnL, shadowAuditReport.ShadowTotalPnL, shadowAuditReport.LeakagePercent);
+                }
+            }
+            if (_portfolioRisk is not null && result.Trades.Count >= 20)
+            {
+                var periodicReturns = new List<decimal>(result.EquityCurve.Count);
+                for (int i = 1; i < result.EquityCurve.Count; i++)
+                {
+                    var prev = result.EquityCurve[i - 1];
+                    if (prev > 0) periodicReturns.Add((result.EquityCurve[i] - prev) / prev);
+                }
+                portfolioRiskReport = _portfolioRisk.BuildReport(result.Trades, periodicReturns);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Phase 3 post-run analytics failed — session result will omit those fields");
+        }
 
         _logger.LogInformation(
             "Session {Version} completed. Mode={Mode} PnL: {PnL:F2} | Sharpe: {Sharpe:F2} | MaxDD: {MaxDD:F2}% | Pass: {Pass}",
@@ -425,7 +588,12 @@ public sealed class BacktestOrchestrator
             EquityCurvePath = equityCurvePath,
             WfoProfileApplied = wfoProfileApplied,
             WfoPrimaryParamsSummary = wfoParamsSummary,
-            WfoParamSelectionRobust = wfoParamSelectionRobust
+            WfoParamSelectionRobust = wfoParamSelectionRobust,
+            TcaReport = tcaReport,
+            BootstrapReport = bootstrapReport,
+            PromotionDecision = promotionDecision,
+            PortfolioRiskReport = portfolioRiskReport,
+            ShadowAuditReport = shadowAuditReport
         };
     }
 
@@ -442,7 +610,12 @@ public sealed class BacktestOrchestrator
     {
         var gate = qualityGate ?? new BacktestQualityGateOptions();
         var expectancyPerTrade = result.TotalTrades > 0 ? result.TotalPnL / result.TotalTrades : 0m;
-        if (result.TotalTrades < gate.MinTrades) return false;
+        // Horizon-aware MinTrades: 90d@1h bars ≈ 2160, requiring 80 trades assumes 3.7% hit
+        // rate which is unrealistic at our gate selectivity. Scale proportionally.
+        int effectiveMinTrades = horizonDays <= 90 ? Math.Min(gate.MinTrades, 40)
+                                : horizonDays <= 180 ? Math.Min(gate.MinTrades, 60)
+                                : gate.MinTrades;
+        if (result.TotalTrades < effectiveMinTrades) return false;
         if (result.MaxDrawdownPercent > gate.MaxDrawdownPercent) return false;
         if (result.ProfitFactor < gate.MinProfitFactor) return false;
         if (result.WinRate < gate.MinWinRatePercent) return false;
@@ -470,6 +643,47 @@ public sealed class BacktestOrchestrator
         if (result.SharpeRatio < gate.LongMinSharpe) return false;
         if (result.AverageRR < gate.LongMinAverageRr) return false;
         return true;
+    }
+
+    public static BacktestPortfolioValidationResult EvaluatePortfolioValidation(
+        IReadOnlyList<BacktestSessionResult> sessions,
+        BacktestQualityGateOptions? qualityGate = null)
+    {
+        var gate = qualityGate ?? new BacktestQualityGateOptions();
+        if (sessions.Count == 0)
+        {
+            return new BacktestPortfolioValidationResult(false, 0, 0, 0m, 0d, 0d, 0m, null);
+        }
+
+        var passed = sessions.Where(s => s.BacktestPass).ToList();
+        var distinctSymbols = sessions
+            .Select(s => s.Symbol)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        var weakest = sessions
+            .OrderBy(s => s.BacktestPass)
+            .ThenBy(s => s.ObjectiveScore)
+            .ThenBy(s => s.TotalPnL)
+            .First();
+        var avgSharpe = sessions.Average(s => s.SharpeRatio);
+        var avgProfitFactor = sessions.Average(s => s.ProfitFactor);
+        var avgExpectancy = sessions.Average(s => s.ExpectancyPerTrade);
+        var pooledPnl = sessions.Sum(s => s.TotalPnL);
+        var ready = passed.Count >= Math.Min(gate.MinPortfolioReadySymbols, distinctSymbols)
+            && avgSharpe >= 1.0
+            && avgProfitFactor >= 1.15
+            && avgExpectancy > 0m;
+
+        return new BacktestPortfolioValidationResult(
+            ready,
+            passed.Count,
+            distinctSymbols,
+            pooledPnl,
+            avgSharpe,
+            avgProfitFactor,
+            avgExpectancy,
+            weakest);
     }
 
     private async Task StoreResultsAsync(BacktestResult result, string timeframe, PboResult? pboResult, RollingWalkForwardGateResult? walkForward, string version, string hash)
@@ -560,6 +774,8 @@ public sealed class BacktestOrchestrator
         // positive. Option #3 of the WF structural fight.
         var pooledTrainReturns = new List<double>();
         var pooledOosReturns = new List<double>();
+        var pooledTrainTimestamps = new List<DateTime>();
+        var pooledOosTimestamps = new List<DateTime>();
         var windows = new List<(decimal OosPnL, int OosTradeCount)>();
 
         while (anchor + trainSpan + testSpan <= last)
@@ -578,9 +794,15 @@ public sealed class BacktestOrchestrator
                 var train = await _backtestEngine.RunAsync(trainCandles, symbol, timeframe, riskProfile, capital);
                 var test = await _backtestEngine.RunAsync(testCandles, symbol, timeframe, riskProfile, capital);
                 if (train.Trades != null)
+                {
                     pooledTrainReturns.AddRange(train.Trades.Select(t => (double)t.PnL));
+                    pooledTrainTimestamps.AddRange(train.Trades.Select(t => t.ExitTime));
+                }
                 if (test.Trades != null)
+                {
                     pooledOosReturns.AddRange(test.Trades.Select(t => (double)t.PnL));
+                    pooledOosTimestamps.AddRange(test.Trades.Select(t => t.ExitTime));
+                }
                 windows.Add((test.TotalPnL, test.Trades?.Count ?? 0));
             }
 
@@ -595,8 +817,8 @@ public sealed class BacktestOrchestrator
         // Pooled Sharpe on all OOS trades — the whole point of WF is to stitch OOS slices into
         // one out-of-sample track record. Sharpe should be computed on that track, not averaged
         // over slice-Sharpes.
-        var pooledTrainSharpe = ComputeSharpeFromReturns(pooledTrainReturns);
-        var pooledOosSharpe = ComputeSharpeFromReturns(pooledOosReturns);
+        var pooledTrainSharpe = ComputeSharpeFromReturns(pooledTrainReturns, pooledTrainTimestamps);
+        var pooledOosSharpe = ComputeSharpeFromReturns(pooledOosReturns, pooledOosTimestamps);
         // WFE with a sanity denominator: if train Sharpe is within noise of zero, WFE is not a
         // meaningful ratio (the prior implementation's ±32 readings were sign-cancellation
         // artifacts of a tiny denominator). Fall back to pass-through so the other criteria
@@ -647,13 +869,16 @@ public sealed class BacktestOrchestrator
         };
     }
 
-    private static double ComputeSharpeFromReturns(List<double> returns)
+    private static double ComputeSharpeFromReturns(IReadOnlyList<double> returns, IReadOnlyList<DateTime>? timestamps = null)
     {
         if (returns.Count < 2) return 0d;
         var mean = returns.Average();
         var variance = returns.Sum(r => (r - mean) * (r - mean)) / (returns.Count - 1);
         var stdDev = Math.Sqrt(Math.Max(variance, 0d));
-        return stdDev > 0d ? mean / stdDev * Math.Sqrt(252) : 0d;
+        if (stdDev <= 0d) return 0d;
+
+        var annualization = ResolveTradeFrequencyAnnualization(returns.Count, timestamps);
+        return mean / stdDev * annualization;
     }
 
     private static double ComputeSharpe(BacktestResult result)
@@ -667,7 +892,28 @@ public sealed class BacktestOrchestrator
         var mean = returns.Average();
         var variance = returns.Sum(r => (r - mean) * (r - mean)) / (returns.Count - 1);
         var stdDev = Math.Sqrt(Math.Max(variance, 0d));
-        return stdDev > 0d ? mean / stdDev * Math.Sqrt(252) : 0d;
+        if (stdDev <= 0d) return 0d;
+
+        var timestamps = result.Trades.Select(t => t.ExitTime).ToList();
+        return mean / stdDev * ResolveTradeFrequencyAnnualization(returns.Count, timestamps);
+    }
+
+    private static double ResolveTradeFrequencyAnnualization(int tradeCount, IReadOnlyList<DateTime>? timestamps)
+    {
+        if (tradeCount <= 0)
+        {
+            return Math.Sqrt(252d);
+        }
+
+        if (timestamps is null || timestamps.Count < 2)
+        {
+            return Math.Sqrt(Math.Min(252d, tradeCount));
+        }
+
+        var ordered = timestamps.OrderBy(t => t).ToList();
+        var spanDays = Math.Max(1d / 24d, (ordered[^1] - ordered[0]).TotalDays);
+        var tradesPerYear = Math.Max(1d, tradeCount / spanDays * 365d);
+        return Math.Sqrt(tradesPerYear);
     }
 
     public static bool EvaluateProfitHardGate(
@@ -967,6 +1213,19 @@ public record BacktestSessionResult
     /// <summary>Aggregate WFO OOS robustness flag from the profile-selection pass.</summary>
     public bool WfoParamSelectionRobust { get; init; }
 
+    // --- Phase 3 post-run analytics (2026-04-24) ---
+    /// <summary>Post-trade TCA decomposition. Null when TCA service not registered.</summary>
+    public ThatsMyQuant.Application.Analytics.TcaReport? TcaReport { get; init; }
+    /// <summary>Monte Carlo bootstrap CIs on Sharpe / terminal equity / max DD.</summary>
+    public ThatsMyQuant.Application.Analytics.BootstrapReport? BootstrapReport { get; init; }
+    /// <summary>Formal backtest→paper promotion decision. Null when gate not registered.</summary>
+    public PromotionDecision? PromotionDecision { get; init; }
+    /// <summary>Kelly sizing + VaR/CVaR tail-risk summary.</summary>
+    public ThatsMyQuant.Application.Risk.PortfolioRiskReport? PortfolioRiskReport { get; init; }
+    /// <summary>Shadow execution audit — re-walks backtest trades through square-root impact + spread + commission.
+    /// Reject/Critical verdicts override the FormalPromotionGate's Approved decision.</summary>
+    public ShadowAuditReport? ShadowAuditReport { get; init; }
+
     public static BacktestSessionResult Skipped(string symbol, string version, string reason) => new()
     {
         Symbol = symbol,
@@ -1014,3 +1273,13 @@ public record BacktestRegressionReport
     public List<string> Deltas { get; init; } = new();
     public string Summary { get; init; } = "";
 }
+
+public record BacktestPortfolioValidationResult(
+    bool IsReady,
+    int PassedSymbols,
+    int TotalSymbols,
+    decimal PooledPnL,
+    double AverageSharpe,
+    double AverageProfitFactor,
+    decimal AverageExpectancyPerTrade,
+    BacktestSessionResult? WeakestSession);

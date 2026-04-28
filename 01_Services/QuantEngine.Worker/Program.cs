@@ -25,8 +25,25 @@ using ThatsMyQuant.Application.Observability;
 PerformanceBootstrapper.OptimizeForHft();
 
 var builder = Host.CreateApplicationBuilder(args);
+// Defence-in-depth: explicitly load appsettings.Paper.json when running in paper mode so we
+// never silently fall back to main appsettings.json defaults. The implicit env-overlay
+// (`appsettings.{EnvironmentName}.json`) is fragile because Properties/launchSettings.json
+// can override DOTNET_ENVIRONMENT — Launch-PaperTrade-Clean.ps1 passes --no-launch-profile
+// to prevent this, but the explicit AddJsonFile here makes the path bulletproof either way.
+{
+    var tmqModeStartup = (Environment.GetEnvironmentVariable("TMQ_MODE") ?? string.Empty).ToLowerInvariant();
+    if (tmqModeStartup == "paper")
+    {
+        var explicitPaperJson = Path.Combine(builder.Environment.ContentRootPath, "appsettings.Paper.json");
+        if (File.Exists(explicitPaperJson))
+        {
+            builder.Configuration.AddJsonFile(explicitPaperJson, optional: false, reloadOnChange: true);
+        }
+    }
+}
 builder.Configuration.AddJsonFile("exchange_settings.json", optional: true, reloadOnChange: true);
 builder.Configuration.ApplySharedExchangeConfiguration();
+builder.Configuration.ApplySharedTelegramConfiguration();
 var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
 var isBinanceMode =
     selectedExchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
@@ -59,9 +76,20 @@ builder.Services.AddHttpClient("OkxPublic", c =>
 });
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
 
+var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "logs");
+Directory.CreateDirectory(logDir);
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
+    .Enrich.WithProperty("Service", "QuantEngine.Worker")
     .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({CorrelationId}) {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File(
+        new Serilog.Formatting.Compact.CompactJsonFormatter(),
+        Path.Combine(logDir, "quantengine-.clef"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        fileSizeLimitBytes: 50L * 1024 * 1024,
+        rollOnFileSizeLimit: true,
+        shared: true)
     .CreateLogger();
 builder.Logging.ClearProviders();
 builder.Services.AddSerilog();
@@ -83,7 +111,11 @@ builder.Services.AddScoped<ITechnicalAnalysisService, QuantIndicatorService>();
 // Exchange-aware streaming: OKX or Binance based on TMQ_EXCHANGE_MODE
 if (isOkxMode)
 {
-    builder.Services.AddSingleton<IStreamingMarketDataService, OkxWebSocketService>();
+    // Register concrete first so consumers (LiquidationCascadeHostedService) that depend
+    // on the OKX-specific event surface can resolve it; expose the streaming abstraction
+    // as a forward.
+    builder.Services.AddSingleton<OkxWebSocketService>();
+    builder.Services.AddSingleton<IStreamingMarketDataService>(sp => sp.GetRequiredService<OkxWebSocketService>());
 }
 else
 {
@@ -104,8 +136,23 @@ else
     builder.Services.AddSingleton<IChatCompletionService, MockChatCompletionService>();
 }
 
+// Bind TelegramOptions from "Telegram" configuration section so handlers that depend on
+// IOptions<TelegramOptions> (e.g. TelegramPositionPushHandler) get the bot token + chat id.
+// Without this binding the handler silently no-ops because BotToken/ChatId are empty —
+// IRealtimeAlerter still works because it reads IConfiguration directly, masking the bug.
+builder.Services.Configure<ThatsMyQuant.Contracts.Options.TelegramOptions>(
+    builder.Configuration.GetSection("Telegram"));
+builder.Services.AddHttpClient(); // for IHttpClientFactory used by TelegramPositionPushHandler
+
 // MediatR
-builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
+builder.Services.AddMediatR(cfg =>
+{
+    cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly);
+    // Application assembly hosts TelegramPositionPushHandler + ChampionChallengerService etc.
+    cfg.RegisterServicesFromAssembly(typeof(ThatsMyQuant.Application.Alerts.TelegramPositionPushHandler).Assembly);
+    // Worker assembly hosts AiTradeReviewHandler (uses Microsoft.SemanticKernel which Application doesn't reference).
+    cfg.RegisterServicesFromAssembly(typeof(ThatsMyQuant.Bot.AiTradeReviewHandler).Assembly);
+});
 
 // Persistence
 builder.Services.AddDbContextPool<QuantDbContext>(options =>
@@ -116,6 +163,11 @@ builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
 builder.Services.AddScoped<ReconciliationAgent>();
+// Cross-process operator alert publisher — INSERTs into OperatorAlertEvents,
+// Listener.Api's OperatorAlertDbReaderWorker republishes via SignalR.
+builder.Services.AddSingleton<IOperatorAlertPublisher, DbOperatorAlertPublisher>();
+// Phase 13 — heartbeat for the System Health page in the dashboard
+builder.Services.AddHostedService<ServiceHeartbeatHostedService>();
 
 var hasOkxCredentials =
     !string.IsNullOrWhiteSpace(builder.Configuration["OKX:ApiKey"]) &&
@@ -143,6 +195,13 @@ Log.Information(
     credentialSource,
     executionSyncEnabled);
 
+// Paper mode uses PaperTradingService internally — the exchange is only consulted
+// for market data and an optional balance probe. Missing credentials degrade those
+// features but should not block the paper loop from starting. Live/real-trade modes
+// keep the strict credential requirement.
+var tmqMode = (builder.Configuration["TMQ_MODE"] ?? "live").Trim().ToLowerInvariant();
+var requiresCredsForMode = !string.Equals(tmqMode, "paper", StringComparison.OrdinalIgnoreCase);
+
 StartupSafetyPolicy.EnforceOrThrow(
     "QuantEngine.Worker",
     selectedExchangeMode,
@@ -151,7 +210,8 @@ StartupSafetyPolicy.EnforceOrThrow(
     isOkxDemo,
     allowLiveTrading,
     hasOkxCredentials,
-    hasBinanceCredentials);
+    hasBinanceCredentials,
+    requiresTradingCredentials: requiresCredsForMode);
 
 // Execution routing follows the launcher-selected venue.
 if (isOkxMode && hasOkxCredentials)
@@ -216,7 +276,21 @@ builder.Services.AddSingleton<IVenueTradeFeeProvider>(sp =>
     var ex = sp.GetRequiredService<IExchangeService>();
     return ex as IVenueTradeFeeProvider ?? new NullVenueTradeFeeProvider();
 });
+// Expose IExchangePositionReader from the same OKX service when available — the hybrid
+// reconciliation loop needs it to compare local state against actual OKX open positions.
+builder.Services.AddSingleton<IExchangePositionReader>(sp =>
+{
+    var ex = sp.GetRequiredService<IExchangeService>();
+    if (ex is IExchangePositionReader reader) return reader;
+    Log.Warning("Active IExchangeService does not implement IExchangePositionReader — reconciliation will skip checks.");
+    return new NullExchangePositionReader();
+});
 builder.Services.Replace(ServiceDescriptor.Singleton<IExecutionCostSnapshotCache, ExecutionCostSnapshotCache>());
+// CRITICAL: Application's TryAddSingleton wires NullFundingRateProvider (returns 0 for every
+// symbol/timestamp). The funding-alpha strategy uses EntryThreshold=0.0003 (3bp/8h) — a 0
+// rate from the Null provider means ZERO entries ever fire. Replace with the real OKX-backed
+// provider so paper-trade funding alpha actually sees real funding rates.
+builder.Services.Replace(ServiceDescriptor.Singleton<IFundingRateProvider, ThatsMyQuant.Infrastructure.Services.OkxFundingRateProvider>());
 
 builder.Services.TryAddSingleton<ThatsMyQuant.Application.Security.ApiVault>();
 builder.Services.AddSingleton<IHardwareSecurityModule, HardwareSecurityModule>();
@@ -233,8 +307,124 @@ var runMode = (builder.Configuration["TMQ_MODE"] ?? "live").ToLowerInvariant();
 switch (runMode)
 {
     case "paper":
+        builder.Services.AddSingleton<IRealtimeAlerter, TelegramRealtimeAlerter>();
+        // GlobalCircuitBreaker — cross-tier daily PnL aggregation. All 4 tier executors
+        // (Funding Long+Short, Pairs Long+Short) report close events here. When global
+        // threshold breached, ALL tiers block new entries.
+        builder.Services.AddSingleton<GlobalCircuitBreaker>();
+        // NotionalExposureGuard — cross-tier total open notional cap. Each executor calls
+        // TryReserve before opening; aborts if would breach cap. Released on close.
+        // Prevents cash overrun when many tiers fire simultaneously.
+        builder.Services.AddSingleton<NotionalExposureGuard>();
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>();
+        builder.Services.AddHostedService<ExchangeBalanceSyncHostedService>();
         builder.Services.AddHostedService<PaperTradingHostedService>();
-        Log.Information("QuantEngine.Worker: TMQ_MODE=paper. PaperTradingHostedService registered.");
+        builder.Services.AddHostedService<PairsTradingPaperHostedService>();
+        // Barbell pairs: Long tier = high-conviction (entry |z|≥2.5, multi-day hold, big size, low lev)
+        //                Short tier = scalp (entry |z|≥1.5, hours hold, small size, high lev)
+        // NOTE: use AddSingleton<IHostedService> directly because AddHostedService<T>(factory)
+        // dedupes by concrete type via TryAddEnumerable — second registration becomes a no-op.
+        builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new PairsHybridExecutor(
+            sp.GetRequiredService<ILogger<PairsHybridExecutor>>(),
+            sp,
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<PaperPortfolio>(),
+            sp.GetService<IRealtimeAlerter>(),
+            tierName: "Long",
+            globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
+            notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+        builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new PairsHybridExecutor(
+            sp.GetRequiredService<ILogger<PairsHybridExecutor>>(),
+            sp,
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<PaperPortfolio>(),
+            sp.GetService<IRealtimeAlerter>(),
+            tierName: "Short",
+            globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
+            notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+        // Funding execution path:
+        //   - When Funding:HybridMode=off → legacy FundingAlphaPaperHostedService mirrors closed
+        //     backtest trades into PaperPortfolio (local sim only, no OKX orders).
+        //   - When Funding:HybridMode=dry-run|live → FundingHybridExecutor takes over: live signal
+        //     evaluation per tick, real OKX demo order placement (live) or order-intent logging
+        //     (dry-run). The legacy mirror service stays registered but its config check skips
+        //     execution when HybridMode != off.
+        builder.Services.AddHostedService<FundingAlphaPaperHostedService>();
+        // Barbell tier registrations:
+        //   - Long  : conviction bucket (high threshold, big size, low lev, low frequency)
+        //   - Short : scalp bucket (low threshold, small size, high lev, high frequency)
+        // Both share runner/portfolio/exchange but maintain separate state files + position caps.
+        // Each tier reads Funding:Long:* / Funding:Short:* config (falls back to Funding:* legacy).
+        // To run single-tier mode: set HybridMode=off on one tier and the other tier carries the strategy alone.
+        builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new FundingHybridExecutor(
+            sp.GetRequiredService<ILogger<FundingHybridExecutor>>(),
+            sp,
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<PaperPortfolio>(),
+            sp.GetService<IRealtimeAlerter>(),
+            sp.GetService<ThatsMyQuant.Application.Strategy.ProMode.FundingOpportunityScanner>(),
+            tierName: "Long",
+            globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
+            notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+        builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new FundingHybridExecutor(
+            sp.GetRequiredService<ILogger<FundingHybridExecutor>>(),
+            sp,
+            sp.GetRequiredService<IConfiguration>(),
+            sp.GetRequiredService<PaperPortfolio>(),
+            sp.GetService<IRealtimeAlerter>(),
+            sp.GetService<ThatsMyQuant.Application.Strategy.ProMode.FundingOpportunityScanner>(),
+            tierName: "Short",
+            globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
+            notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+        builder.Services.AddHostedService<HybridReconciliationHostedService>();
+        builder.Services.AddHostedService<DailyTelegramDigestHostedService>();
+        // TelegramCommandHostedService — two-way bot: long-polls /status /pnl /positions /help.
+        // Independent of digest service; replies only to the configured chat id.
+        builder.Services.AddHostedService<TelegramCommandHostedService>();
+        // ManualCloseRequestProcessor — polls cross-process ManualCloseRequests table every 3s
+        // for operator-initiated close requests from the Cockpit UI.
+        builder.Services.AddHostedService<ManualCloseRequestProcessor>();
+        // PairsDiscoveryHostedService — every 6h scans 30-symbol crypto universe for fresh
+        // cointegrating pair candidates, writes to LocalAppData/ThatsMyQuant/pairs_discovery_candidates.json
+        // for human review. NEVER auto-promotes; operator manually edits AllowedPairsCsv.
+        builder.Services.AddHostedService<PairsDiscoveryHostedService>();
+        // [P1.1] LiquidationCascadeHostedService — consumes OKX liquidation-orders WS channel,
+        // detects cascades (default 5M BTC / 1M alt notional in 5min @ 70% dominance) and
+        // dispatches a fade ExecuteTradeCommand. Disabled by default
+        // (LiquidationCascade:Enabled=true to arm). Requires OKX mode (concrete WS service).
+        if (isOkxMode)
+        {
+            builder.Services.AddOptions<ThatsMyQuant.Contracts.Options.LiquidationCascadeOptions>()
+                .BindConfiguration(ThatsMyQuant.Contracts.Options.LiquidationCascadeOptions.SectionName);
+            builder.Services.AddHostedService<LiquidationCascadeHostedService>();
+        }
+        // FundingScoutHostedService — every 5m polls watchlist funding rates, fires Telegram
+        // alert when |rate| crosses 0.5bp (half of hybrid entry threshold). Heads-up so the
+        // operator sees funding building before a real entry signal triggers.
+        builder.Services.AddHostedService<FundingScoutHostedService>();
+        // MacroEventCalendarService — polls economic calendar (FOMC, CPI, NFP) and exposes a
+        // global pause flag (MacroEventCalendarService.Current). Hybrid executors check this
+        // and block NEW entries within the [pre-event, +post-event] window. Existing
+        // positions still managed. Auto-resumes after the post-window.
+        builder.Services.AddHostedService<MacroEventCalendarService>();
+        // Real-time TCA — every 30min runs cost-leakage analysis on rolling closed-trade window.
+        // Read-only; alerts when leakage > threshold (default 30%).
+        builder.Services.AddHostedService<TcaLiveAnalyzerHostedService>();
+        // Shadow execution audit — every 60min, re-prices closed trades through square-root impact
+        // model + spread + commission and compares to paper PnL. Tells us if alpha is decaying
+        // because EDGE is failing or EXECUTION is failing.
+        builder.Services.AddHostedService<ShadowAuditLiveHostedService>();
+        // Portfolio risk analytics — every 15min publishes Kelly recommendation + VaR/CVaR.
+        // Alerts when tail risk exceeds % of basis. Read-only.
+        builder.Services.AddHostedService<PortfolioRiskLiveHostedService>();
+        // Daily 23:55 UTC paper→live promotion gate verdict (objective criteria, not gut feel).
+        builder.Services.AddHostedService<PromotionGateLiveHostedService>();
+        Log.Information(
+            "QuantEngine.Worker: TMQ_MODE=paper. Hosted services: ExchangeBalanceSync, PaperTrading (directional disabled), Pairs, FundingMirror+FundingHybrid, PairsDiscovery, TcaLiveAnalyzer, ShadowAuditLive, PortfolioRiskLive, PromotionGateLive, DailyTelegramDigest.");
         break;
 
     case "live":

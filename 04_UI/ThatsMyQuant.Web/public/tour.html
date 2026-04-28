@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<title>ThatsMyQuant · Web Panel Tour</title>
+<style>
+  :root {
+    --bg: #050505;
+    --panel: #0d0d0d;
+    --fg: #ebebeb;
+    --muted: #888;
+    --accent: #4adef0;
+    --good: #22c55e;
+    --warn: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: 'Inter', system-ui, sans-serif; overflow: hidden; }
+  .stage { position: fixed; inset: 0; display: grid; grid-template-rows: 88px 1fr 64px; }
+  header.bar {
+    display: flex; align-items: center; gap: 16px; padding: 16px 28px;
+    background: linear-gradient(180deg, #0a0a0a, #000);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  header.bar h1 { font-size: 20px; font-weight: 700; margin: 0; letter-spacing: -.01em; }
+  header.bar h1 span { color: var(--accent); }
+  header.bar .step {
+    margin-left: auto; font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px; color: var(--muted); letter-spacing: .15em; text-transform: uppercase;
+  }
+  header.bar .meta {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px; color: var(--good); letter-spacing: .12em;
+  }
+  .frame-wrap { position: relative; }
+  iframe {
+    width: 100%; height: 100%; border: 0; background: #000;
+    transition: opacity .35s ease;
+  }
+  .caption {
+    position: absolute; left: 28px; bottom: 24px; max-width: 540px;
+    background: rgba(0,0,0,0.78); backdrop-filter: blur(12px);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 14px 18px;
+  }
+  .caption .title { font-size: 14px; font-weight: 700; color: var(--accent); margin: 0 0 4px; }
+  .caption .desc  { font-size: 12px; color: rgba(255,255,255,0.78); margin: 0; line-height: 1.5; }
+  footer.controls {
+    display: flex; align-items: center; gap: 12px; padding: 14px 28px;
+    background: #050505; border-top: 1px solid rgba(255,255,255,0.05);
+    font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px;
+  }
+  footer button {
+    background: rgba(255,255,255,0.06); color: var(--fg); border: 1px solid rgba(255,255,255,0.10);
+    padding: 6px 14px; border-radius: 6px; font-size: 11px; cursor: pointer;
+    font-family: inherit; letter-spacing: .1em; text-transform: uppercase;
+  }
+  footer button:hover { background: rgba(255,255,255,0.10); }
+  footer button.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 700; }
+  footer .progress {
+    flex: 1; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden;
+    margin: 0 16px;
+  }
+  footer .progress .bar { height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }
+  footer .timer { color: var(--muted); }
+  .fade-out { opacity: 0.2; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <header class="bar">
+    <h1>ThatsMyQuant<span>.</span></h1>
+    <span class="meta" id="meta">LIVE · OKX DEMO · Paper Trade</span>
+    <span class="step" id="step">01 / 13</span>
+  </header>
+  <div class="frame-wrap">
+    <iframe id="frame" src="/" allow="clipboard-write"></iframe>
+    <div class="caption" id="caption">
+      <p class="title" id="cap-title">Dashboard</p>
+      <p class="desc"  id="cap-desc">Operator brief · paper portfolio canlı equity · 16 satır pozisyon (state + OKX)</p>
+    </div>
+  </div>
+  <footer class="controls">
+    <button id="btn-prev">◀ Prev</button>
+    <button id="btn-play" class="primary">⏸ Pause</button>
+    <button id="btn-next">Next ▶</button>
+    <div class="progress"><div class="bar" id="bar"></div></div>
+    <span class="timer" id="timer">5.0s</span>
+    <span class="meta">⌨ ←/→ navigate · Space pause</span>
+  </footer>
+</div>
+<script>
+  const HOST = 'http://localhost:5173';
+  const SLIDES = [
+    { url: '/',                    title: 'Dashboard',              desc: 'Operator brief, paper portfolio (TOTAL EQUITY, P&L, OPEN/CLOSED), HeadlineRings.' },
+    { url: '/',                    title: 'Active Positions · Live',desc: 'Bot state files (10) + OKX live (5) yan yana — bot içi vs gerçek borsa.', scrollY: 800 },
+    { url: '/cockpit',             title: 'Live Cockpit',           desc: 'Regime, leverage, drawdown · Tradable Now (5 READY · 1 NEAR · 1 WATCH · 2 IDLE).' },
+    { url: '/markets',             title: 'Markets · Watchlist',    desc: '20 sembol watchlist · core/defi/meme · canlı price + sparkline + AI analyst.' },
+    { url: '/markets',             title: 'Markets · Trade Mode',   desc: 'Full-screen chart · 1000-bar history · Y/X axes · grid · R:R zones · post-fill OCO.', click: 'TRADE MODE' },
+    { url: '/funding',             title: 'Funding Monitor',        desc: '8h funding rates · NEUTRAL / FUND SHORTS / FUND LONGS sinyalleri.' },
+    { url: '/pairs',               title: 'Pairs Discovery',        desc: 'Engle-Granger cointegration · Hurst · half-life · OU calibration.' },
+    { url: '/alpha',               title: 'Alpha Portfolio',        desc: '6-position Kelly: 3 pairs + 3 funding alpha · Sharpe / PF / WR per leg.' },
+    { url: '/quant-lab',           title: 'Quant Lab',              desc: 'Single-strategy backtest · A/B variant comparison · walk-forward optimizer.' },
+    { url: '/pro-mode',            title: 'Pro Mode · Risk Console',desc: 'Circuit breaker · effective sizing · operator ARM / DISARM / KILL kontrolleri.' },
+    { url: '/health',              title: 'System Health',          desc: 'Listener.Api + ThatsMyQuant.Bot HEALTHY · OKX DEMO ACTIVE · last heartbeat.' },
+    { url: '/audit',               title: 'Audit Log',              desc: 'Operator audit trail · ERROR/WARNING/SUCCESS/INFO filtreleri.' },
+    { url: '/settings',            title: 'Settings',               desc: 'Exchange config · DPAPI credentials · runtime knobs · config file map.' },
+  ];
+
+  const frame    = document.getElementById('frame');
+  const stepEl   = document.getElementById('step');
+  const titleEl  = document.getElementById('cap-title');
+  const descEl   = document.getElementById('cap-desc');
+  const barEl    = document.getElementById('bar');
+  const timerEl  = document.getElementById('timer');
+  const playBtn  = document.getElementById('btn-play');
+
+  const SLIDE_MS = 5000;
+  let idx = 0;
+  let playing = true;
+  let lastTick = performance.now();
+  let elapsed = 0;
+
+  function render() {
+    const s = SLIDES[idx];
+    frame.classList.add('fade-out');
+    setTimeout(() => {
+      frame.src = HOST + s.url;
+      frame.classList.remove('fade-out');
+      // Optional in-page actions after frame loads
+      frame.onload = () => {
+        try {
+          if (s.scrollY) frame.contentWindow.scrollTo(0, s.scrollY);
+          if (s.click) {
+            setTimeout(() => {
+              const doc = frame.contentDocument;
+              if (!doc) return;
+              const btns = [...doc.querySelectorAll('button')].filter(b => b.textContent.match(new RegExp(s.click, 'i')));
+              btns.forEach(b => b.click());
+            }, 1500);
+          }
+        } catch (e) { /* cross-origin or not-ready: ignore */ }
+      };
+    }, 300);
+    stepEl.textContent  = String(idx + 1).padStart(2, '0') + ' / ' + String(SLIDES.length).padStart(2, '0');
+    titleEl.textContent = s.title;
+    descEl.textContent  = s.desc;
+    elapsed = 0;
+    barEl.style.width = '0%';
+  }
+
+  function tick(t) {
+    const dt = t - lastTick;
+    lastTick = t;
+    if (playing) {
+      elapsed += dt;
+      const pct = Math.min(100, (elapsed / SLIDE_MS) * 100);
+      barEl.style.width = pct + '%';
+      timerEl.textContent = ((SLIDE_MS - elapsed) / 1000).toFixed(1) + 's';
+      if (elapsed >= SLIDE_MS) next();
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function next() { idx = (idx + 1) % SLIDES.length; render(); }
+  function prev() { idx = (idx - 1 + SLIDES.length) % SLIDES.length; render(); }
+  function togglePlay() {
+    playing = !playing;
+    playBtn.textContent = playing ? '⏸ Pause' : '▶ Play';
+  }
+
+  document.getElementById('btn-prev').onclick = () => { prev(); };
+  document.getElementById('btn-next').onclick = () => { next(); };
+  playBtn.onclick = togglePlay;
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight') { next(); }
+    else if (e.key === 'ArrowLeft') { prev(); }
+    else if (e.key === ' ') { togglePlay(); e.preventDefault(); }
+  });
+
+  render();
+  requestAnimationFrame(tick);
+</script>
+</body>
+</html>

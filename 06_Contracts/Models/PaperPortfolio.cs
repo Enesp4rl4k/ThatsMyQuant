@@ -7,8 +7,12 @@ namespace ThatsMyQuant.Contracts.Models;
 /// </summary>
 public class PaperPortfolio
 {
-    public decimal InitialBalance { get; set; } = 100_000m;
-    public decimal Cash { get; set; } = 100_000m;
+    // Defaults are zero — paper portfolio MUST be seeded explicitly (from OKX demo balance via
+    // ExchangeBalanceSyncHostedService, from a snapshot via PaperPortfolioPersistenceService, or
+    // from config). Trading code should refuse to size positions when InitialBalance==0 rather
+    // than fall back to a fake $100k that misleads PnL/Sharpe/Kelly computations.
+    public decimal InitialBalance { get; set; }
+    public decimal Cash { get; set; }
     public List<PaperPosition> OpenPositions { get; set; } = new();
     public List<PaperPosition> ClosedPositions { get; set; } = new();
     public List<decimal> EquityCurve { get; set; } = new();

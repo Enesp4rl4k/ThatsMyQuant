@@ -1,10 +1,12 @@
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using NSubstitute;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Strategy;
@@ -22,10 +24,17 @@ public class DynamicSymbolUniverseServiceTests
         gateway.GetUniverseAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult<IReadOnlyList<string>>(["THYAO", "GARAN", "AKBNK"]));
 
+        var universeOptions = Options.Create(new MarketUniverseOptions
+        {
+            EnableCrypto = true,
+            EnableBist = true,
+            EnableForex = true
+        });
         var sut = new DynamicSymbolUniverseService(
             marketData,
             NullLogger<DynamicSymbolUniverseService>.Instance,
-            gateway);
+            gateway,
+            universeOptions);
 
         var result = await sut.BuildUniverseAsync("BIST", new[]
         {

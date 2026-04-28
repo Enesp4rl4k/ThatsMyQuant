@@ -32,6 +32,10 @@ public static class MarketRegimeDetector
     private const int BaselineLookback = 100;
     // ADX > 20 = directional market (Wilder). Combined with entropy gate, blocks false-trend
     // classifications from short 2-3 bar pushes that fool pure entropy.
+    // 2026-04-24: tested raising to 25 concurrently with RSI scoring fix; 3-fold WFO showed
+    // trade count collapsed 80→13 (6x), all 3 folds negative OOS Sharpe. The ADX raise was
+    // over-filtering — reverted to 20. Do not re-test without concrete evidence that ADX
+    // 20-25 classifications are net-negative EV for trend strategies.
     private const double TrendingMinAdx = 20.0;
     private const int AdxPeriod = 14;
 
@@ -125,6 +129,99 @@ public static class MarketRegimeDetector
             StopLossMultiplier = 1.5,  // Tighter stops in range
             TakeProfitMultiplier = 2.0,
             Description = $"RANGING — Entropy={normalizedEntropy:F2}, ATR ratio={atrRatio:F2}x. High noise {trendStrength:P0} directional. Mean-reversion mode."
+        };
+    }
+
+    /// <summary>
+    /// [F1] Spread-aware regime classifier. For pairs trading, the SPREAD's regime —
+    /// not leg A's — determines whether mean reversion is viable. This variant accepts a
+    /// log-return (or arithmetic-return) series of the spread and classifies regime
+    /// using vol-ratio + entropy. ADX is omitted (no OHLC available on a residual series).
+    ///
+    /// The volatility-ratio is recent-window vol / baseline-window vol, mirroring the
+    /// candle-based detector's atrRatio. Entropy uses the same Shannon-on-discretized-
+    /// returns method as the candle path.
+    /// </summary>
+    public static RegimeResult ClassifyFromReturns(IReadOnlyList<double> returns, int lookback = 20)
+    {
+        int minBars = lookback + AdxPeriod + 1; // match candle path's "Insufficient data" threshold
+        if (returns.Count < minBars)
+            return new RegimeResult
+            {
+                Regime = MarketRegime.Unknown,
+                AdaptedRsiPeriod = 14,
+                AdaptedEmaFast = 20,
+                AdaptedEmaSlow = 50,
+                StopLossMultiplier = 2.0,
+                TakeProfitMultiplier = 3.0,
+                Description = "Insufficient data"
+            };
+
+        var recent = returns.Skip(Math.Max(0, returns.Count - lookback)).ToList();
+        double recentVol = GetStandardDeviation(recent);
+
+        int baselineWin = Math.Min(returns.Count, BaselineLookback);
+        double volRatio = 1.0;
+        if (baselineWin >= lookback * 2)
+        {
+            var baseline = returns.Skip(Math.Max(0, returns.Count - baselineWin)).ToList();
+            double baselineVol = GetStandardDeviation(baseline);
+            volRatio = baselineVol > 0 ? recentVol / baselineVol : 1.0;
+        }
+
+        double normalizedEntropy = 1.0;
+        if (Math.Abs(recentVol) >= 1e-12)
+        {
+            var counts = DiscretizeReturns(recent, recentVol);
+            double entropy = CalculateEntropyFromBins(counts, recent.Count);
+            normalizedEntropy = entropy / Math.Log2(5);
+        }
+        else
+        {
+            normalizedEntropy = 0.0; // flat spread → ordered → counts as "trending" by entropy
+        }
+
+        bool isVolatile = volRatio > VolatileRatioThreshold;
+        bool isTrending = normalizedEntropy < TrendingEntropyCeiling
+                          && volRatio < TrendingRatioCeiling;
+
+        if (isVolatile)
+        {
+            return new RegimeResult
+            {
+                Regime = MarketRegime.Volatile,
+                AdaptedRsiPeriod = 14,
+                AdaptedEmaFast = 20,
+                AdaptedEmaSlow = 50,
+                StopLossMultiplier = 3.0,
+                TakeProfitMultiplier = 4.5,
+                Description = $"VOLATILE (spread) — vol ratio={volRatio:F2}x, entropy={normalizedEntropy:F2}."
+            };
+        }
+
+        if (isTrending)
+        {
+            return new RegimeResult
+            {
+                Regime = MarketRegime.Trending,
+                AdaptedRsiPeriod = 10,
+                AdaptedEmaFast = 15,
+                AdaptedEmaSlow = 40,
+                StopLossMultiplier = 2.0,
+                TakeProfitMultiplier = 4.0,
+                Description = $"TRENDING (spread) — entropy={normalizedEntropy:F2}, vol ratio={volRatio:F2}x."
+            };
+        }
+
+        return new RegimeResult
+        {
+            Regime = MarketRegime.Ranging,
+            AdaptedRsiPeriod = 20,
+            AdaptedEmaFast = 20,
+            AdaptedEmaSlow = 50,
+            StopLossMultiplier = 1.5,
+            TakeProfitMultiplier = 2.0,
+            Description = $"RANGING (spread) — entropy={normalizedEntropy:F2}, vol ratio={volRatio:F2}x. Mean-reversion viable."
         };
     }
 

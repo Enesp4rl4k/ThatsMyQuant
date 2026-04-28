@@ -94,7 +94,11 @@ public class BacktestEngineApp
             _htfCursor = value;
         }
     }
-    private string CurrentTimeframe => CurrentExecutionSettings.Timeframe;
+    // Always normalize — callers have been seen to pass "1H"/"4H" from config and the
+    // switch expressions below are case-sensitive. One source of truth here guarantees
+    // "1h" / "4h" / "15m" regardless of caller casing.
+    private string CurrentTimeframe =>
+        (CurrentExecutionSettings.Timeframe ?? string.Empty).Trim().ToLowerInvariant();
     private string CurrentRiskProfile => CurrentExecutionSettings.RiskProfile;
     private BacktestCostModel CurrentCosts => CurrentExecutionSettings.Costs;
 
@@ -129,15 +133,27 @@ public class BacktestEngineApp
 
     private Queue<double> GetConfidenceHistory() => RequireRunContext().ConfidenceHistory;
     private const int ConfidenceHistoryWindow = 500;
-    // Minimum samples before the rolling percentile gate activates. Raised 50 → 200 on
-    // 2026-04-18 (Option #2 of WF structural fight). At N=50 the sample 70th-percentile
-    // has standard error ≈ 0.065× the population IQR — large enough that early-fold
-    // trades see a materially different threshold than late-fold trades, which is the
-    // path-dependency that broke walk-forward comparability. N=200 cuts SE roughly in
-    // half and, combined with TrainDays=120 (~720 4h candles), means the gate engages
-    // only once the estimator is trustworthy. Cost: first ~200 candidate signals per
-    // fold are evaluated by the other gates alone, applied identically to train and OOS.
-    private const int ConfidenceHistoryMinActivation = 200;
+    /// <summary>Replay warm-up bars fed to indicators before signal generation begins.
+    /// Kept at 60 — tested at 120 twice: both times activated VolatilityFloor/VolumeFloor gates
+    /// that systematically rejected higher-quality trades. See comment on RunAsync for full history.</summary>
+    private const int WarmupBars = 60;
+    /// <summary>Default number of segments for Probability of Backtest Overfitting (PBO) analysis.</summary>
+    private const int PboDefaultSegments = 16;
+    // Minimum samples before the rolling percentile gate activates. Now timeframe-dependent:
+    // higher TFs have fewer bars per session, so the activation threshold scales down.
+    // Formula: max(60, barsPerDay × 10). 4h ≈ 60, 1h ≈ 240, 15m ≈ 960.
+    // This fixes the MinTrades<30 blocker on short horizons (90d × 4h = 540 bars total,
+    // a 200-sample activation meant the gate barely engaged).
+    private int ResolveConfidenceHistoryMinActivation() => CurrentTimeframe switch
+    {
+        "1m" => 500,
+        "5m" => 400,
+        "15m" => 300,
+        "1h" => 200,
+        "4h" => 60,
+        "1d" => 30,
+        _ => 200
+    };
     // 2026-04-18: tested asymmetric-sizing shrinkage (size *= 80/conf when conf>80).
     // Hypothesis was that high-confidence losers scale faster than winners (per the cap-raise
     // regression). Falsified: winners shrunk 5%, losers shrunk 4% — symmetric, no confidence
@@ -152,8 +168,11 @@ public class BacktestEngineApp
     // 2026-04-18: tried 0.75 (top 25%) and it was a no-op — trade count/WR/pooled-Sharpe all
     // identical to 0.70. Interpretation: confidence distribution is bimodal (passes strongly
     // above threshold, rejects strongly below), so slider moves in the 0.60–0.80 band are
-    // inert. Moving this threshold is not a useful lever. Revisit only if the underlying
-    // confidence calibration changes.
+    // inert.
+    // 2026-04-24: retested 0.55 with EnsembleVote relaxed concurrently — WR collapsed 57%→21%
+    // (+23 extra trades were net-negative expectancy). The bimodal-split interpretation holds:
+    // below ~0.65 we dip into the low-quality peak. Reverted to 0.70. Do not re-test without
+    // new evidence that confidence calibration has changed (e.g. after model retraining).
     private const double ConfidencePercentileFloor = 0.70;
 
     // Higher-timeframe candles for real MTF confluence gate (e.g. 4h series on a 1h session).
@@ -304,7 +323,7 @@ public class BacktestEngineApp
 
         _executionSettings.Value!.Timeframe = NormalizeTimeframe(_executionSettings.Value.Timeframe);
         _executionSettings.Value.RiskProfile = NormalizeRiskProfile(_executionSettings.Value.RiskProfile);
-        if (historicalCandles == null || historicalCandles.Count < 60)
+        if (historicalCandles == null || historicalCandles.Count < WarmupBars)
         {
             _logger.LogWarning("Insufficient data for {Symbol}", symbol);
             return new BacktestResult { Symbol = symbol };
@@ -339,13 +358,8 @@ public class BacktestEngineApp
                 Console.WriteLine($"[Backtest] Replaying {barsToReplay} candles for {symbol}...");
             }
 
-            // Replay warmup. Tested 120 twice (once on fake costs, once on real costs) — both
-            // times the widened-warmup activated VolatilityFloor + VolumeFloor gates that
-            // systematically rejected HIGHER-quality trades (BTC 4h WR dropped 45.3% → 41.8%,
-            // PBO exploded 0.37 → 0.92 on real costs; SOL 1h collapsed to WR 26%). The gates
-            // are anti-signal for this strategy, empirically. Kept at 60 so they short-circuit.
-            // If EntryConfluence gates are ever improved, re-run this A/B first.
-            const int WarmupBars = 60;
+            // Replay warmup — value governed by class-level WarmupBars const.
+            // See its XML doc for the full A/B test history (tested 120 twice, reverted both times).
             for (int i = WarmupBars; i < historicalCandles.Count; i++)
             {
                 var candle = candlesArray[i];
@@ -481,11 +495,11 @@ public class BacktestEngineApp
     public async Task<PboResult> ComputePboAsync(
         List<Candle> historicalCandles,
         string symbol,
-        int numSegments = 16,
+        int numSegments = PboDefaultSegments,
         decimal startingCapital = 100_000m,
         PboPartitionMode partitionMode = PboPartitionMode.Contiguous)
     {
-        if (historicalCandles == null || historicalCandles.Count < numSegments * 60)
+        if (historicalCandles == null || historicalCandles.Count < numSegments * WarmupBars)
         {
             _logger.LogWarning("Insufficient data for PBO computation on {Symbol}", symbol);
             return new PboResult { PBO = 1.0 };
@@ -1035,18 +1049,9 @@ public class BacktestEngineApp
             if (!confluence.Pass)
                 return RejectEntry(confluence.RejectReason ?? "ConfluenceGate");
 
-            // Order-flow gate (candle-CVD proxy). DISABLED by default — empirical testing
-            // showed the candle-derived signed-volume approximation is too noisy on 4h
-            // and rejects good trades alongside bad. Real CVD needs tick data (HFT path,
-            // OFIExecutionAgent) to work. Set TMQ_ENABLE_CANDLE_CVD=true to force-enable
-            // for measurement/experimentation.
-            if (Environment.GetEnvironmentVariable("TMQ_ENABLE_CANDLE_CVD") == "true"
-                && (regime == MarketRegime.Trending || regime == MarketRegime.Volatile))
-            {
-                var flow = OrderFlowSignalService.Evaluate(window, decision.Side);
-                if (!flow.Pass)
-                    return RejectEntry(flow.RejectReason ?? "OrderFlowGate");
-            }
+            // Order-flow gate removed 2026-04-24: candle-CVD proxy was empirically proven noisy
+            // (rejects good trades alongside bad on 4h bars). Real CVD lives on the HFT tick path
+            // via OFIExecutionAgent — no value running a degraded version here.
         }
 
         // Funding-rate gate: blocks crowded-side entries on perpetual swaps. No-op unless
@@ -1059,15 +1064,51 @@ public class BacktestEngineApp
                 return RejectEntry(fund.RejectReason ?? "FundingGate");
         }
 
-        // Regime-expectancy gate: if this regime has accumulated enough OOS samples (≥30)
+        // Regime-expectancy gate: if this regime has accumulated enough OOS samples (≥50)
         // and the Wilson-lower-bound win rate is below breakeven for the target R:R, block.
         // This is a self-learning filter — once WFO has fed it OOS trades, losing regimes
         // are shut off automatically without touching any parameter.
+        // 2026-04-24: raised threshold 30→50 for statistical power (Wilson CI at 30 trades
+        // too wide to discriminate reliably between weak and dead regimes).
         if (_regimeExpectancy is not null)
         {
             var exp = _regimeExpectancy.GetExpectancy(regime.ToString());
-            if (exp.TradeCount >= 30 && exp.WinRateWilsonLower < 0.30)
+            if (exp.TradeCount >= 50 && exp.WinRateWilsonLower < 0.30)
                 return RejectEntry("RegimeExpectancyGate");
+        }
+
+        // ATR-scaled TP/SL: when the profile enables ATR exits, replace weak indicator-derived
+        // levels with ATR-proportional distances. This guarantees a minimum gross RR equal to
+        // TakeProfitAtrMultiple / StopLossAtrMultiple (default: 2.5 / 1.0 = 2.5:1).
+        var atrExitProfile = ResolveProfile();
+        if (atrExitProfile.UseAtrScaledExits && decision.Indicators?.ATR is > 0)
+        {
+            var atr = (decimal)decision.Indicators.ATR.Value;
+            var atrSl = atr * atrExitProfile.StopLossAtrMultiple;
+            var atrTp = atr * atrExitProfile.TakeProfitAtrMultiple;
+            if (atrSl > 0m && atrTp > 0m)
+            {
+                var newSl = decision.Side == TradeSide.Buy
+                    ? candle.Close - atrSl
+                    : candle.Close + atrSl;
+                var newTp = decision.Side == TradeSide.Buy
+                    ? candle.Close + atrTp
+                    : candle.Close - atrTp;
+                // Only override if ATR-scaled levels improve the RR vs what the indicators gave us.
+                var existingRisk = Math.Abs(candle.Close - decision.StopLoss);
+                var existingReward = Math.Abs(decision.TakeProfit - candle.Close);
+                var existingRr = existingRisk > 0 ? existingReward / existingRisk : 0m;
+                var atrRr = atrSl > 0 ? atrTp / atrSl : 0m;
+                if (atrRr > existingRr)
+                {
+                    decision = decision with
+                    {
+                        StopLoss = newSl,
+                        TakeProfit = newTp,
+                        Reasoning = $"{decision.Reasoning} | ATR-scaled exits: SL={atrExitProfile.StopLossAtrMultiple:F1}×ATR, TP={atrExitProfile.TakeProfitAtrMultiple:F1}×ATR"
+                    };
+                }
+            }
         }
 
         decision = NormalizeDecisionRiskReward(decision, candle.Close);
@@ -1103,7 +1144,7 @@ public class BacktestEngineApp
         // threshold it does not lock in an in-sample-fitted magic number.
         var confHistory = GetConfidenceHistory();
         double[]? sortedSnapshot = null;
-        if (confHistory.Count >= ConfidenceHistoryMinActivation)
+        if (confHistory.Count >= ResolveConfidenceHistoryMinActivation())
         {
             sortedSnapshot = confHistory.ToArray();
         }
@@ -1120,10 +1161,12 @@ public class BacktestEngineApp
             }
         }
 
-        // Phase A.3 — Ensemble vote gate. Kill winner-takes-all: require at least 2
-        // non-abstain Approve votes (or 1 approve with zero rejects) before entry.
-        // This is the regime-robustness lever — when one router dominates a window,
-        // it inflates train Sharpe. Requiring agreement smooths cross-window metrics.
+        // Phase A.3 — Ensemble vote gate. Require ≥2 approves OR 1 approve with zero rejects.
+        // 2026-04-24: tested relaxation to "only block on majority reject" (to unblock 727 rejects
+        // on BTC 1h 90d). Result was disastrous: trades jumped 42→65 but WR collapsed 57%→22%, PnL
+        // swung +235→-507. The all-abstain case the relaxation allowed through is genuinely low
+        // quality — routers abstain when no regime-specific pattern fires. The original gate is
+        // doing real quality work. Do not relax without per-router quality audit first.
         if (!CurrentHftMode && snapshot.Votes != null && snapshot.Votes.Count > 0)
         {
             int approves = snapshot.Votes.Count(v => v.Vote == VoteOutcome.Approve);
@@ -1831,9 +1874,10 @@ public class BacktestEngineApp
         }
 
         var rr = reward / risk;
-        // Floor only — never cap upside. Earlier code clamped TP to 1.5 RR, which silently
-        // truncated all router-targeted reward distances and pinned realized R:R near 1.0.
-        const decimal minTargetRr = 1.50m;
+        // Floor only — never cap upside. RR floor raised from 1.50 → 2.00 because with OKX
+        // round-trip costs (~15-20bps taker+spread+slip), a 1.50 gross RR nets ~1.30 after costs.
+        // At 50% WR that's still positive but marginal. 2.0 gross → ~1.70 net → robust edge.
+        const decimal minTargetRr = 2.00m;
         if (rr >= minTargetRr)
         {
             return decision;
@@ -1866,9 +1910,31 @@ public class BacktestEngineApp
         var losses = trades.Where(t => t.PnL <= 0).Select(t => t.PnL).ToList();
         var equityCurve = BuildEquityCurve(start, trades);
 
+        // ── Pillar 4: Portfolio-level bucketing ──
+        var regimeBuckets = BuildBuckets(trades, t => t.RegimeTag);
+        var exitPolicyBuckets = BuildBuckets(trades, t => t.ExitPolicyTag);
+        var quarterlyBuckets = BuildBuckets(trades, t =>
+        {
+            var q = (t.ExitTime.Month - 1) / 3 + 1;
+            return $"{t.ExitTime.Year}-Q{q}";
+        });
+
+        var totalFees = trades.Sum(t => t.TotalFeesPaid);
+        var totalFunding = trades.Sum(t => t.NetFunding);
+        var netPnL = state.Equity - start;
+        var grossPnL = netPnL + totalFees - totalFunding;
+        var costLeakage = grossPnL != 0m ? (double)(totalFees / Math.Abs(grossPnL)) * 100.0 : 0.0;
+
+        var topRejects = rejectReasons is null
+            ? new List<string>()
+            : rejectReasons.OrderByDescending(kv => kv.Value)
+                .Take(5)
+                .Select(kv => $"{kv.Key}({kv.Value})")
+                .ToList();
+
         return new BacktestResult 
         { 
-            Symbol = sym, TotalTrades = trades.Count, TotalPnL = state.Equity - start, 
+            Symbol = sym, TotalTrades = trades.Count, TotalPnL = netPnL, 
             FinalEquity = state.Equity, MaxDrawdownPercent = state.MaxDDPercent, Trades = trades,
             WinningTrades = trades.Count(t => t.PnL > 0),
             LosingTrades = trades.Count(t => t.PnL <= 0),
@@ -1887,8 +1953,46 @@ public class BacktestEngineApp
                 ? new Dictionary<string, int>()
                 : new Dictionary<string, int>(rejectReasons),
             InferenceModelAvailable = inferenceModelAvailable,
-            InferencePredictionValid = inferencePredictionValid
+            InferencePredictionValid = inferencePredictionValid,
+            RegimeBuckets = regimeBuckets,
+            ExitPolicyBuckets = exitPolicyBuckets,
+            QuarterlyBuckets = quarterlyBuckets,
+            TopRejectReasons = topRejects,
+            TotalFeesPaid = totalFees,
+            TotalNetFunding = totalFunding,
+            GrossPnL = grossPnL,
+            CostLeakagePercent = costLeakage
         };
+    }
+
+    private static Dictionary<string, BucketPerformance> BuildBuckets(
+        IReadOnlyList<BacktestTradeResult> trades,
+        Func<BacktestTradeResult, string> keySelector)
+    {
+        var result = new Dictionary<string, BucketPerformance>(StringComparer.OrdinalIgnoreCase);
+        foreach (var group in trades.GroupBy(keySelector))
+        {
+            var key = string.IsNullOrWhiteSpace(group.Key) ? "Unknown" : group.Key;
+            var groupTrades = group.ToList();
+            var winners = groupTrades.Where(t => t.PnL > 0).ToList();
+            var losers = groupTrades.Where(t => t.PnL <= 0).ToList();
+            var avgWin = winners.Count > 0 ? winners.Average(t => (double)t.PnL) : 0.0;
+            var avgLoss = losers.Count > 0 ? losers.Average(t => Math.Abs((double)t.PnL)) : 0.0;
+            var rr = avgLoss > 0 ? avgWin / avgLoss : 0.0;
+            var pf = losers.Count > 0 && losers.Sum(t => t.PnL) != 0
+                ? (double)(winners.Sum(t => t.PnL) / Math.Abs(losers.Sum(t => t.PnL)))
+                : (winners.Count > 0 ? 9.99 : 0.0);
+
+            result[key] = new BucketPerformance
+            {
+                TradeCount = groupTrades.Count,
+                Winners = winners.Count,
+                TotalPnL = groupTrades.Sum(t => t.PnL),
+                AverageRR = rr,
+                ProfitFactor = pf
+            };
+        }
+        return result;
     }
 
     private PaperPosition? RejectEntry(string reason)

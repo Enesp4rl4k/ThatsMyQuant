@@ -24,6 +24,8 @@ public static class DependencyInjection
         services.AddOptions<OrderBookExecutionOptions>().BindConfiguration("Execution:OrderBook");
         services.AddOptions<PaperLeverageOptions>().BindConfiguration("Paper:Leverage");
         services.AddOptions<PaperExecutionRealismOptions>().BindConfiguration("Paper:Realism");
+        services.AddOptions<PaperPortfolioLimitsOptions>().BindConfiguration("Paper:PortfolioLimits");
+        services.AddOptions<MarketUniverseOptions>().BindConfiguration("Markets");
         services.AddOptions<BacktestWalkForwardGateOptions>().BindConfiguration("Backtest:WalkForwardGate");
         services.AddOptions<BacktestTimeframeProfileOptions>().BindConfiguration("Backtest:Profiles");
         services.AddOptions<BacktestQualityGateOptions>().BindConfiguration("Backtest:QualityGate");
@@ -32,12 +34,18 @@ public static class DependencyInjection
         services.AddOptions<ProfitMaximizationOptions>().BindConfiguration("Backtest:ProfitMax");
         services.AddOptions<BacktestParityOptions>().BindConfiguration("Backtest:Parity");
         services.AddOptions<BacktestPerformanceOptions>().BindConfiguration("Backtest:Performance");
+        services.AddOptions<OrderExecutionOptions>().BindConfiguration(OrderExecutionOptions.SectionName);
+        services.AddOptions<SlippageAlertOptions>().BindConfiguration(SlippageAlertOptions.SectionName);
         services.TryAddSingleton<IAuditLogger, NullAuditLogger>();
         services.AddSingleton(new ServiceRuntimeState());
         services.AddSingleton(new OperationalTelemetry());
 
         // Application Layer Services - Singletons (Stateful/Heavy)
+        // Cross-strategy evaluation log — strategies push reject/enter/hold reasons
+        // here on every tick; web UI surfaces them via /api/strategy/evaluations.
+        services.AddSingleton<StrategyEvaluationLog>();
         services.AddSingleton<RiskAgent>();
+        services.AddSingleton<VolatilityTargetingService>();
         services.AddSingleton(sp => new FeatureDriftMonitor(
             featureCount: 5,
             logger: sp.GetService<ILogger<FeatureDriftMonitor>>()));
@@ -61,6 +69,10 @@ public static class DependencyInjection
         services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
         services.AddSingleton<NewsFeedSim>();
         services.AddSingleton<IStrategyPerformanceStore, JsonStrategyPerformanceStore>();
+        services.AddSingleton<PaperPortfolioPersistenceService>();
+        // Shared paper portfolio — all paper hosted services (directional + pairs + funding)
+        // mutate the same instance so cash, open positions and PnL stay unified.
+        services.AddSingleton<PaperPortfolio>();
         services.AddSingleton<IStrategyTuningStateStore, JsonStrategyTuningStateStore>();
         services.AddSingleton<StrategyTuningService>();
         services.AddSingleton<IExecutionCostSnapshotCache, NullExecutionCostSnapshotCache>();
@@ -73,6 +85,10 @@ public static class DependencyInjection
         services.AddSingleton<DeadMansSwitch>();
         services.AddSingleton<HeartbeatMonitor>();
         services.AddHostedService<HeartbeatWatchdogHostedService>();
+        services.AddHostedService<ReconciliationHostedService>();
+        services.AddHostedService<ThatsMyQuant.Application.Alerts.TelegramReadBotHostedService>();
+        services.AddSingleton<ThatsMyQuant.Application.Observability.IExchangeHealthProvider, ThatsMyQuant.Application.Observability.ExchangeHealthProvider>();
+        services.AddHostedService<ThatsMyQuant.Application.Observability.ExchangeHealthProbeHostedService>();
         services.AddSingleton<MultiTimeframeConfluenceService>();
         services.AddSingleton<PortfolioRebalancingScheduler>();
         services.AddHostedService(sp =>
@@ -121,7 +137,12 @@ public static class DependencyInjection
                 tf,
                 sp.GetService<IOptions<PaperLeverageOptions>>()?.Value,
                 sp.GetService<BacktestCostModel>(),
-                sp.GetService<IOptions<PaperExecutionRealismOptions>>()?.Value);
+                sp.GetService<IOptions<PaperExecutionRealismOptions>>()?.Value,
+                sp.GetService<IOptions<PaperPortfolioLimitsOptions>>()?.Value,
+                mediator: null,
+                persistence: sp.GetService<PaperPortfolioPersistenceService>(),
+                universeOptions: sp.GetService<IOptions<MarketUniverseOptions>>()?.Value,
+                portfolio: sp.GetRequiredService<PaperPortfolio>());
         });
         services.AddScoped<PositionSupervisorService>();
         services.AddScoped<LivePositionLifecycleService>();
@@ -165,6 +186,44 @@ public static class DependencyInjection
         });
         services.AddScoped<BacktestEngineApp>();
         services.AddScoped<BacktestOrchestrator>();
+        services.AddScoped<PairsBacktestRunner>();
+        services.AddScoped<FundingAlphaBacktestRunner>();
+        services.AddScoped<PortfolioBacktestRunner>();
+        // Pro Mode (Level 2.5) — all singletons so state persists across backtests/refreshes.
+        services.AddSingleton<ThatsMyQuant.Application.Strategy.ProMode.CircuitBreakerMonitor>();
+        services.AddSingleton<ThatsMyQuant.Application.Strategy.ProMode.CandidatePool>();
+        services.AddSingleton<ThatsMyQuant.Application.Strategy.ProMode.FundingOpportunityScanner>(sp =>
+        {
+            var logger = sp.GetRequiredService<ILogger<ThatsMyQuant.Application.Strategy.ProMode.FundingOpportunityScanner>>();
+            var provider = sp.GetRequiredService<ThatsMyQuant.Contracts.Interfaces.IFundingRateProvider>();
+            return new ThatsMyQuant.Application.Strategy.ProMode.FundingOpportunityScanner(logger, provider)
+            {
+                Watchlist = new[]
+                {
+                    "BTC-USDT","ETH-USDT","SOL-USDT","AVAX-USDT","LINK-USDT",
+                    "LTC-USDT","DOGE-USDT","XRP-USDT","ADA-USDT","AAVE-USDT",
+                    "ATOM-USDT","DOT-USDT","NEAR-USDT","APT-USDT","SUI-USDT",
+                    "ARB-USDT","OP-USDT","INJ-USDT","SHIB-USDT","FIL-USDT",
+                    "TRX-USDT","XLM-USDT","BCH-USDT","UNI-USDT","ETC-USDT"
+                }
+            };
+        });
+        services.AddSingleton<ThatsMyQuant.Application.Strategy.ProMode.ProModeOrchestrator>();
+        services.AddSingleton<ThatsMyQuant.Application.Strategy.ProMode.CorrelationBreakGuard>();
+        services.AddSingleton<ThatsMyQuant.Application.Strategy.ProMode.ConcentrationGuard>();
+        services.AddScoped<ThatsMyQuant.Application.Strategy.ProMode.SystemBehaviorSimulator>();
+        services.AddScoped<ThatsMyQuant.Application.Strategy.ProMode.StressScenarioSimulator>();
+        // Operator alerts — log-only by default (paper safe). For live, replace registration
+        // with TelegramOperatorAlertService and supply OperatorAlerts:Telegram:BotToken + ChatId.
+        services.AddSingleton<ThatsMyQuant.Application.Strategy.ProMode.IOperatorAlertService,
+            ThatsMyQuant.Application.Strategy.ProMode.LogOnlyOperatorAlertService>();
+        services.AddScoped<ThatsMyQuant.Application.Strategy.ProMode.AllocationPipeline>();
+        // MediatR handler — flattens portfolio + alerts on circuit breaker trip.
+        services.AddTransient<MediatR.INotificationHandler<ThatsMyQuant.Application.Strategy.ProMode.CircuitBreakerTrippedNotification>,
+            ThatsMyQuant.Application.Strategy.ProMode.CircuitBreakerFlattenHandler>();
+        services.AddScoped<PairsDiscoveryService>();
+        services.AddSingleton<PairsPortfolioCoordinator>();
+        services.AddSingleton<IPairPortfolioDiagnostics>(sp => sp.GetRequiredService<PairsPortfolioCoordinator>());
         services.AddScoped<WalkForwardEngine>();
         services.AddScoped<WalkForwardOptimizer>();
         services.AddSingleton<RegimeExpectancyService>();
@@ -175,16 +234,36 @@ public static class DependencyInjection
         services.AddScoped<IHftSignalGenerationService, HftSignalGenerationService>();
         services.AddScoped<OFIExecutionAgent>();
         
-        services.AddScoped<IStrategyRouter, HftStrategyRouter>();
-        services.AddScoped<IStrategyRouter, TrendStrategyRouter>();
-        services.AddScoped<IStrategyRouter, RangeStrategyRouter>();
-        services.AddScoped<IStrategyRouter, BreakoutStrategyRouter>();
+        // 2026-04-24: Singleton (not Scoped). Strategy routers are stateless — they route
+        // a TradeDecision based on regime + signal without per-request state. Scoped caused
+        // captive-dependency violation under Singleton QuantIndicatorService consumer.
+        services.AddSingleton<IStrategyRouter, HftStrategyRouter>();
+        services.AddSingleton<IStrategyRouter, TrendStrategyRouter>();
+        services.AddSingleton<IStrategyRouter, RangeStrategyRouter>();
+        services.AddSingleton<IStrategyRouter, BreakoutStrategyRouter>();
 
         // 5-Tier Agent Hierarchy Orchestrator
         services.AddScoped<IAgentCoordinator, AgentCoordinator>();
 
         // Analytics — signal-quality audit (Information Coefficient, signal-alone PnL).
         services.AddScoped<ThatsMyQuant.Application.Analytics.SignalQualityAuditService>();
+
+        // Pro-level analytics + lifecycle services (2026-04-24 Phase 3).
+        services.AddScoped<ThatsMyQuant.Application.Analytics.TransactionCostAnalysisService>();
+        services.AddScoped<ThatsMyQuant.Application.Analytics.MonteCarloBootstrapService>();
+        services.AddSingleton<ThatsMyQuant.Application.Analytics.ExecutionParityService>();
+        services.AddScoped<FormalPromotionGate>();
+        // Shadow execution audit — pre-promotion sanity check that re-walks backtest
+        // trades through the square-root impact model + spread + commission and reports
+        // whether the headline PnL survives realistic fills.
+        services.AddSingleton<IShadowExecutionAuditService, ShadowExecutionAuditService>();
+        services.AddSingleton<ModelRetrainOrchestrator>();
+        services.AddHostedService<ThatsMyQuant.Application.MachineLearning.ModelRetrainHostedService>();
+        // 2026-04-24: Singleton (not Scoped). Stateless — only ctor dep is ILogger.
+        // Was causing captive-dependency violation when consumed by Singleton RiskAgent
+        // (detected by ASP.NET Core Development-mode DI validation).
+        services.AddSingleton<ThatsMyQuant.Application.Risk.PortfolioRiskAnalytics>();
+        services.AddSingleton<ChampionChallengerService>();
 
         return services;
     }

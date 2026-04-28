@@ -257,6 +257,8 @@
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
+
+                    <DataGridTextColumn Header="PAPER REASON" Binding="{Binding PaperPromotionSummary}" Width="260"/>
                 </DataGrid.Columns>
             </DataGrid>
         </Border>

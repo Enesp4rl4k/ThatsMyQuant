@@ -1,0 +1,191 @@
+<UserControl x:Class="ThatsMyQuant.Dashboard.Views.PairsDiscoveryView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource AppBg}"
+             Foreground="{StaticResource TextMain}"
+             FontFamily="{StaticResource PrimaryFont}">
+    <Grid Margin="0,8,0,0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Config / Action bar -->
+        <Border Grid.Row="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,0,12">
+            <StackPanel>
+                <TextBlock Text="PAIRS DISCOVERY" FontSize="15" FontWeight="Black" Foreground="{StaticResource TextMain}"/>
+                <TextBlock Text="Scan a symbol basket for cointegrated pairs. N² pairs tested with Engle-Granger, Hurst and correlation gates. Results ranked by composite quality score (ADF strength + Hurst + half-life sweet spot + |β|)."
+                           Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,6,0,8" TextWrapping="Wrap"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                        <TextBlock Text="SYMBOL BASKET (comma or space separated)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding SymbolsCsv, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}"
+                                 Padding="8,6" FontFamily="{StaticResource MonoFont}" FontSize="11"
+                                 TextWrapping="Wrap" AcceptsReturn="True" MaxHeight="60" VerticalScrollBarVisibility="Auto"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                        <TextBlock Text="TF" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <ComboBox SelectedValue="{Binding Timeframe, Mode=TwoWay}" SelectedValuePath="Content" Width="70"
+                                  Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}">
+                            <ComboBoxItem Content="1h"/>
+                            <ComboBoxItem Content="4h"/>
+                            <ComboBoxItem Content="1d"/>
+                        </ComboBox>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2" Margin="0,0,8,0">
+                        <TextBlock Text="DAYS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding DaysBack, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="70"
+                                 Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}"
+                                 Padding="6,4" FontFamily="{StaticResource MonoFont}"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="3" Margin="0,0,12,0">
+                        <TextBlock Text="TOP N" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,4"/>
+                        <TextBox Text="{Binding TopN, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="60"
+                                 Background="{StaticResource AppBg}" Foreground="White" BorderBrush="{StaticResource BorderColor}"
+                                 Padding="6,4" FontFamily="{StaticResource MonoFont}"/>
+                    </StackPanel>
+                    <Button Grid.Column="4" Content="SCAN" Command="{Binding ScanCommand}"
+                            Background="{StaticResource Accent}" Foreground="White"
+                            FontSize="10" FontWeight="Black" BorderThickness="0" Padding="18,8"
+                            VerticalAlignment="Bottom"
+                            IsEnabled="{Binding IsScanning, Converter={StaticResource InverseBooleanConverter}}"/>
+                </Grid>
+                <TextBlock Text="{Binding StatusMessage}" Foreground="{Binding StatusColor}" FontSize="10" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                <ProgressBar Height="4" IsIndeterminate="{Binding IsScanning}" Margin="0,6,0,0"
+                             Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}"/>
+            </StackPanel>
+        </Border>
+
+        <!-- Stats row -->
+        <UniformGrid Grid.Row="1" Columns="2" Margin="0,0,0,12">
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,8,0">
+                <StackPanel>
+                    <TextBlock Text="SYMBOLS TESTED" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding SymbolsTested}" FontFamily="{StaticResource MonoFont}" FontSize="20" FontWeight="Black" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Border>
+            <Border Style="{StaticResource TerminalCardStyle}">
+                <StackPanel>
+                    <TextBlock Text="COINTEGRATED PAIRS ADMITTED" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding PairsAdmitted}" FontFamily="{StaticResource MonoFont}" FontSize="20" FontWeight="Black"
+                               Foreground="{StaticResource Accent}" Margin="0,4,0,0"/>
+                </StackPanel>
+            </Border>
+        </UniformGrid>
+
+        <!-- Results DataGrid -->
+        <Border Grid.Row="2" Style="{StaticResource TerminalCardStyle}">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+            <DataGrid ItemsSource="{Binding Candidates}" SelectedItem="{Binding SelectedPair, Mode=TwoWay}"
+                      AutoGenerateColumns="False" IsReadOnly="True" SelectionMode="Single"
+                      Background="Transparent" BorderThickness="0" HeadersVisibility="Column"
+                      GridLinesVisibility="None" RowBackground="Transparent" AlternatingRowBackground="#0A2A3B5E"
+                      ColumnHeaderHeight="28" RowHeight="32"
+                      Foreground="{StaticResource TextMain}">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="PAIR (Y / X)" Binding="{Binding PairLabel}" Width="220">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontWeight" Value="Bold"/>
+                                <Setter Property="VerticalAlignment" Value="Center"/>
+                                <Setter Property="Padding" Value="10,0,0,0"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="QUALITY" Binding="{Binding QualityScore, StringFormat={}{0:F1}}" Width="90">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                                <Setter Property="FontWeight" Value="Black"/>
+                                <Setter Property="Foreground" Value="{Binding QualityBrush}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="HALF-LIFE" Binding="{Binding HalfLife, StringFormat={}{0:F1}}" Width="100">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="HURST" Binding="{Binding Hurst, StringFormat={}{0:F3}}" Width="80">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="CORR" Binding="{Binding Correlation, StringFormat={}{0:F3}}" Width="80">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="ADF t" Binding="{Binding AdfTStat, StringFormat={}{0:F2}}" Width="80">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="β (hedge)" Binding="{Binding HedgeRatio, StringFormat={}{0:F4}}" Width="100">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextSoft}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+
+            <Border Grid.Row="1" Background="#0A1F2E" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,1,0,0" Padding="10">
+                <StackPanel>
+                    <TextBlock Text="{Binding SelectedPairTitle}" Foreground="{StaticResource TextMain}" FontSize="11" FontWeight="Bold" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding SelectedPairStats}" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="0,2,0,8" TextWrapping="Wrap"
+                               Visibility="{Binding HasSpreadChart, Converter={StaticResource BoolToVis}}"/>
+                    <Grid Visibility="{Binding HasSpreadChart, Converter={StaticResource BoolToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel Grid.Row="0">
+                            <TextBlock Text="SPREAD  (Y − β·X)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <Border Background="#050D18" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="3" Padding="2" Margin="0,0,0,8">
+                                <Canvas Width="{Binding SpreadCanvasWidth}" Height="{Binding SpreadCanvasHeight}" ClipToBounds="True">
+                                    <Polyline Points="{Binding SpreadPoints}" Stroke="{StaticResource Accent}" StrokeThickness="1.3"/>
+                                </Canvas>
+                            </Border>
+                        </StackPanel>
+                        <StackPanel Grid.Row="1">
+                            <TextBlock Text="Z-SCORE (30-bar rolling window) · red bands = ±2σ entry · blue midline = 0" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,4"/>
+                            <Border Background="#050D18" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="3" Padding="2">
+                                <Canvas Width="{Binding SpreadCanvasWidth}" Height="{Binding SpreadCanvasHeight}" ClipToBounds="True">
+                                    <Polyline Points="{Binding ZScoreZeroLine}" Stroke="#4E8EF0" StrokeThickness="1" StrokeDashArray="2,3" Opacity="0.6"/>
+                                    <Polyline Points="{Binding ZScoreUpperBand}" Stroke="#F05A5A" StrokeThickness="1" StrokeDashArray="3,3" Opacity="0.7"/>
+                                    <Polyline Points="{Binding ZScoreLowerBand}" Stroke="#F05A5A" StrokeThickness="1" StrokeDashArray="3,3" Opacity="0.7"/>
+                                    <Polyline Points="{Binding ZScorePoints}" Stroke="#F0883E" StrokeThickness="1.4"/>
+                                </Canvas>
+                            </Border>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

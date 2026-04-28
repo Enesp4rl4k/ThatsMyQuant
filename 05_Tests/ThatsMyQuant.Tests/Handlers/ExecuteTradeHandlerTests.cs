@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -731,6 +732,117 @@ public class ExecuteTradeHandlerTests
         var result = await _handler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
 
         result.Status.Should().Be(TradeStatus.Failed);
+        await _exchangeService.DidNotReceive().ExecuteOrderAsync(Arg.Any<Signal>());
+    }
+
+    [Fact]
+    public async Task Handle_ShouldBlock_WhenPromotionRequiredAndBacktestAcceptanceGateHasNotPassed()
+    {
+        var performanceStore = Substitute.For<IStrategyPerformanceStore>();
+        performanceStore.LoadAsync().Returns(Task.FromResult(new StrategyPerformanceState
+        {
+            BacktestBuckets =
+            {
+                new StrategyBucketPerformanceSnapshot
+                {
+                    Symbol = "BTC-USD",
+                    StrategyTag = "TrendConfluence",
+                    BacktestPass = false
+                }
+            }
+        }));
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TMQ_REQUIRE_PROMOTION"] = "true"
+            })
+            .Build();
+
+        var strictHandler = new ExecuteTradeHandler(
+            _logger,
+            _tradeRepository,
+            _circuitBreaker,
+            _positionSupervisor,
+            _adaptiveExecutionOrchestrator,
+            Options.Create(new OrderBookExecutionOptions()),
+            performanceStore: performanceStore,
+            configuration: configuration);
+
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            StrategyTag = "TrendConfluence",
+            Source = "Manual"
+        };
+
+        var result = await strictHandler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.Status.Should().Be(TradeStatus.Failed);
+        result.ExitReason.Should().Contain("backtest acceptance gate failed");
+        await _exchangeService.DidNotReceive().ExecuteOrderAsync(Arg.Any<Signal>());
+    }
+
+    [Fact]
+    public async Task Handle_ShouldBlock_WhenPromotionRequiredAndPaperGateHasNotPassed()
+    {
+        var performanceStore = Substitute.For<IStrategyPerformanceStore>();
+        performanceStore.LoadAsync().Returns(Task.FromResult(new StrategyPerformanceState
+        {
+            BacktestBuckets =
+            {
+                new StrategyBucketPerformanceSnapshot
+                {
+                    Symbol = "BTC-USD",
+                    StrategyTag = "TrendConfluence",
+                    BacktestPass = true
+                }
+            },
+            PaperBuckets =
+            {
+                new StrategyBucketPerformanceSnapshot
+                {
+                    Symbol = "BTC-USD",
+                    StrategyTag = "TrendConfluence",
+                    PaperPass = false
+                }
+            }
+        }));
+
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["TMQ_REQUIRE_PROMOTION"] = "true"
+            })
+            .Build();
+
+        var strictHandler = new ExecuteTradeHandler(
+            _logger,
+            _tradeRepository,
+            _circuitBreaker,
+            _positionSupervisor,
+            _adaptiveExecutionOrchestrator,
+            Options.Create(new OrderBookExecutionOptions()),
+            performanceStore: performanceStore,
+            configuration: configuration);
+
+        var signal = new Signal
+        {
+            Id = Guid.NewGuid(),
+            Symbol = "BTC-USD",
+            Side = TradeSide.Buy,
+            Price = 100m,
+            StrategyTag = "TrendConfluence",
+            Source = "Manual"
+        };
+
+        var result = await strictHandler.Handle(new ExecuteTradeCommand(signal), CancellationToken.None);
+
+        result.Status.Should().Be(TradeStatus.Failed);
+        result.ExitReason.Should().Contain("paper gate failed");
         await _exchangeService.DidNotReceive().ExecuteOrderAsync(Arg.Any<Signal>());
     }
 

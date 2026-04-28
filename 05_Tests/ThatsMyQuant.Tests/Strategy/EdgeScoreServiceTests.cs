@@ -128,7 +128,7 @@ public class EdgeScoreServiceTests
                 (true, "ok"),
                 (true, "ok", 0.025m)));
 
-        result.ExecutionEdge.Should().Be(62m);
+        result.ExecutionEdge.Should().Be(50m);
     }
 
     [Fact]

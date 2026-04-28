@@ -1,0 +1,33 @@
+# Local PostgreSQL for ThatsMyQuant paper/live trade. Start with:
+#   docker compose -f docker-compose.postgres.yml up -d
+# Stop with:
+#   docker compose -f docker-compose.postgres.yml down
+#
+# Data persists in the named volume `tmq-pgdata`. To wipe:
+#   docker compose -f docker-compose.postgres.yml down -v
+#
+# Matches the connection string in appsettings.Paper.json:
+#   Host=localhost;Port=5432;Database=thatsmyquant;Username=tmq;Password=REPLACE_ME
+# — remember to change the password before going live.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tmq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: thatsmyquant
+      POSTGRES_USER: tmq
+      POSTGRES_PASSWORD: REPLACE_ME
+    ports:
+      - "5432:5432"
+    volumes:
+      - tmq-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tmq -d thatsmyquant"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  tmq-pgdata:

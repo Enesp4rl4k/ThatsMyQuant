@@ -1,5 +1,5 @@
 {
-  "ExchangeMode": "OKX",
+  "ExchangeMode": "OKXSwap",
   "OKX": {
     "IsDemoMode": true
   }

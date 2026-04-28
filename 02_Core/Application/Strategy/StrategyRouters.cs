@@ -28,7 +28,7 @@ public sealed record StrategyRouterContext(
 
 public sealed class TrendStrategyRouter : IStrategyRouter
 {
-    public int EntryThreshold => 64;
+    public int EntryThreshold => 55;
     public string StrategyTag => "TrendConfluence";
 
     public bool CanHandle(string market, Signal signal, MarketRegimeDetector.RegimeResult regime)
@@ -77,7 +77,7 @@ public sealed class TrendStrategyRouter : IStrategyRouter
 
 public sealed class RangeStrategyRouter : IStrategyRouter
 {
-    public int EntryThreshold => 68;
+    public int EntryThreshold => 60;
     public string StrategyTag => "RangeReversion";
 
     public bool CanHandle(string market, Signal signal, MarketRegimeDetector.RegimeResult regime)
@@ -118,7 +118,7 @@ public sealed class RangeStrategyRouter : IStrategyRouter
 
 public sealed class BreakoutStrategyRouter : IStrategyRouter
 {
-    public int EntryThreshold => 72;
+    public int EntryThreshold => 65;
     public string StrategyTag => "BreakoutHunter";
 
     public bool CanHandle(string market, Signal signal, MarketRegimeDetector.RegimeResult regime)

@@ -10,6 +10,7 @@ public static class SqliteCompatibilityBootstrapper
 {
     private static readonly IReadOnlyDictionary<string, string> RequiredTradeColumns = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
+        // --- Pre-existing (earlier schema drifts) ---
         ["AverageExitPrice"] = "REAL NOT NULL DEFAULT 0",
         ["RequestedQuantity"] = "REAL NOT NULL DEFAULT 0",
         ["FilledQuantity"] = "REAL NOT NULL DEFAULT 0",
@@ -29,7 +30,65 @@ public static class SqliteCompatibilityBootstrapper
         ["ProfitLeakExitPolicyNetExpectancy"] = "REAL NOT NULL DEFAULT 0",
         ["ProfitLeakRegimeNetExpectancy"] = "REAL NOT NULL DEFAULT 0",
         ["ProfitLeakVenueNetExpectancy"] = "REAL NOT NULL DEFAULT 0",
-        ["ProfitLeakReducedSizeNetExpectancy"] = "REAL NOT NULL DEFAULT 0"
+        ["ProfitLeakReducedSizeNetExpectancy"] = "REAL NOT NULL DEFAULT 0",
+        // --- 2026-04-24 additions (full Trade model catch-up) ---
+        // Bucket / edge metadata
+        ["EdgeBand"] = "TEXT NOT NULL DEFAULT ''",
+        ["ExactBucketImpactLabel"] = "TEXT NOT NULL DEFAULT ''",
+        ["ExactBucketSummary"] = "TEXT NOT NULL DEFAULT ''",
+        ["ProfitLeakWorstBucketLabel"] = "TEXT NOT NULL DEFAULT ''",
+        ["ProfitLeakAuditSizeMultiplier"] = "REAL NOT NULL DEFAULT 0",
+        ["ProfitLeakReducedSizeNoise"] = "INTEGER NOT NULL DEFAULT 0",
+        ["ProfitLeakLoserClusterRate"] = "REAL NOT NULL DEFAULT 0",
+        ["ProfitLeakDominantLosingExitPolicy"] = "TEXT NOT NULL DEFAULT ''",
+        // Allocator / venue
+        ["FinalAllocatorBias"] = "REAL NOT NULL DEFAULT 0",
+        ["FinalAllocatorScope"] = "TEXT NOT NULL DEFAULT ''",
+        ["VenueExecutionBias"] = "REAL NOT NULL DEFAULT 0",
+        ["VenueExecutionScope"] = "TEXT NOT NULL DEFAULT ''",
+        ["VenueImpactLabel"] = "TEXT NOT NULL DEFAULT ''",
+        ["ConcordanceImpactLabel"] = "TEXT NOT NULL DEFAULT ''",
+        ["ConcordanceSummary"] = "TEXT NOT NULL DEFAULT ''",
+        // Feature drift
+        ["FeatureDriftDetected"] = "INTEGER NOT NULL DEFAULT 0",
+        ["FeatureDriftCritical"] = "INTEGER NOT NULL DEFAULT 0",
+        ["DriftedFeatureCount"] = "INTEGER NOT NULL DEFAULT 0",
+        ["FeatureDriftMaxZScore"] = "REAL NOT NULL DEFAULT 0",
+        ["FeatureDriftImpactLabel"] = "TEXT NOT NULL DEFAULT ''",
+        ["FeatureDriftSummary"] = "TEXT NOT NULL DEFAULT ''",
+        // Execution / leverage / lifecycle
+        ["ExecutionMode"] = "TEXT NOT NULL DEFAULT 'REAL'",
+        ["PromotionStage"] = "TEXT NOT NULL DEFAULT 'Backtest'",
+        ["Leverage"] = "REAL NOT NULL DEFAULT 1",
+        ["MarginMode"] = "INTEGER NOT NULL DEFAULT 0",
+        ["ClosedQuantity"] = "REAL NOT NULL DEFAULT 0",
+        // Risk / exit levels
+        ["StopLoss"] = "REAL NOT NULL DEFAULT 0",
+        ["TakeProfit"] = "REAL NOT NULL DEFAULT 0",
+        ["PartialTakeProfit"] = "REAL NOT NULL DEFAULT 0",
+        ["PartialExitFraction"] = "REAL NOT NULL DEFAULT 0",
+        ["BreakevenTriggerFraction"] = "REAL NOT NULL DEFAULT 0.5",
+        ["IsBreakevenArmed"] = "INTEGER NOT NULL DEFAULT 0",
+        ["HasTakenPartialProfit"] = "INTEGER NOT NULL DEFAULT 0",
+        ["TrailingStopPrice"] = "REAL NOT NULL DEFAULT 0",
+        ["OptimalPriceSinceEntry"] = "REAL NOT NULL DEFAULT 0",
+        ["WorstPriceSinceEntry"] = "REAL NOT NULL DEFAULT 0",
+        ["MaxFavorableExcursionPercent"] = "REAL NOT NULL DEFAULT 0",
+        ["MaxAdverseExcursionPercent"] = "REAL NOT NULL DEFAULT 0",
+        ["MarkPrice"] = "REAL NOT NULL DEFAULT 0",
+        ["BarsHeld"] = "INTEGER NOT NULL DEFAULT 0",
+        ["MaxHoldingBars"] = "INTEGER NOT NULL DEFAULT 0",
+        ["ExitReason"] = "TEXT NOT NULL DEFAULT ''",
+        ["EntrySlippagePercent"] = "REAL NOT NULL DEFAULT 0",
+        ["PositionSizePercent"] = "REAL NOT NULL DEFAULT 0",
+        ["TotalFeesPaid"] = "REAL NOT NULL DEFAULT 0",
+        ["NetFunding"] = "REAL NOT NULL DEFAULT 0",
+        // Paper/live drift tracking
+        ["SignalPrice"] = "REAL NOT NULL DEFAULT 0",
+        ["BacktestExpectedPnL"] = "REAL NOT NULL DEFAULT 0",
+        ["ExecutionSource"] = "TEXT NOT NULL DEFAULT 'BACKTEST'",
+        ["SubmittedTime"] = "TEXT NULL",
+        ["LastUpdatedTime"] = "TEXT NULL"
     };
 
     private static readonly IReadOnlyDictionary<string, string> RequiredSignalColumns = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -46,7 +105,8 @@ public static class SqliteCompatibilityBootstrapper
         ["Volume24h"] = "REAL NOT NULL DEFAULT 0",
         ["ReasonFlags"] = "INTEGER NOT NULL DEFAULT 0",
         ["ClaimedAtUtc"] = "TEXT NULL",
-        ["ClaimedBy"] = "TEXT NULL"
+        ["ClaimedBy"] = "TEXT NULL",
+        ["OrderType"] = "TEXT NOT NULL DEFAULT 'Limit'"
     };
 
     public static async Task EnsureCompatibleSchemaAsync(
@@ -86,20 +146,109 @@ public static class SqliteCompatibilityBootstrapper
         }
 
         var compatibility = await ReadCompatibilityAsync(connectionString, cancellationToken);
-        if (compatibility.IsCompatible)
+        if (!compatibility.IsCompatible)
         {
-            await dbContext.Database.EnsureCreatedAsync(cancellationToken);
-            return;
+            logger.LogWarning(
+                "Detected SQLite schema drift at {DatabasePath}. Applying additive compatibility upgrades. Missing trade columns: {MissingTradeColumns}. Missing signal columns: {MissingSignalColumns}.",
+                databasePath,
+                compatibility.MissingTradeColumns.Count == 0 ? "<none>" : string.Join(", ", compatibility.MissingTradeColumns),
+                compatibility.MissingSignalColumns.Count == 0 ? "<none>" : string.Join(", ", compatibility.MissingSignalColumns));
+
+            await ApplyMissingColumnsAsync(connectionString, compatibility, logger, cancellationToken);
         }
 
-        logger.LogWarning(
-            "Detected SQLite schema drift at {DatabasePath}. Applying additive compatibility upgrades. Missing trade columns: {MissingTradeColumns}. Missing signal columns: {MissingSignalColumns}.",
-            databasePath,
-            compatibility.MissingTradeColumns.Count == 0 ? "<none>" : string.Join(", ", compatibility.MissingTradeColumns),
-            compatibility.MissingSignalColumns.Count == 0 ? "<none>" : string.Join(", ", compatibility.MissingSignalColumns));
-
-        await ApplyMissingColumnsAsync(connectionString, compatibility, logger, cancellationToken);
         await dbContext.Database.EnsureCreatedAsync(cancellationToken);
+
+        // Cross-process tables: EF EnsureCreatedAsync does NOT add missing tables to
+        // existing databases — provision them explicitly here. Idempotent (CREATE IF NOT EXISTS).
+        await EnsureOperatorAlertEventsTableAsync(connectionString, logger, cancellationToken);
+        await EnsureServiceHeartbeatsTableAsync(connectionString, logger, cancellationToken);
+        await EnsureManualCloseRequestsTableAsync(connectionString, logger, cancellationToken);
+    }
+
+    /// <summary>
+    /// Cross-process queue for "close this open paper position" requests originating from the
+    /// web Cockpit. Listener.Api INSERTs Pending rows; QuantEngine.Worker polls every few
+    /// seconds, dispatches to PaperTradingService.CloseSinglePositionAsync, and updates Status.
+    /// Identical pattern to OperatorAlertEvents but reversed direction (UI → Worker).
+    /// </summary>
+    private static async Task EnsureManualCloseRequestsTableAsync(
+        string connectionString,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS "ManualCloseRequests" (
+                "Id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                "Symbol" TEXT NOT NULL,
+                "Side" TEXT NULL,
+                "Reason" TEXT NOT NULL DEFAULT '',
+                "Status" TEXT NOT NULL DEFAULT 'Pending',
+                "RequestedUtc" TEXT NOT NULL,
+                "CompletedUtc" TEXT NULL,
+                "Result" TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_ManualCloseRequests_Status"
+                ON "ManualCloseRequests" ("Status");
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        logger.LogDebug("ManualCloseRequests table ensured.");
+    }
+
+    private static async Task EnsureServiceHeartbeatsTableAsync(
+        string connectionString,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS "ServiceHeartbeats" (
+                "Id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                "ServiceName" TEXT NOT NULL,
+                "LastSeenUtc" TEXT NOT NULL,
+                "StartedUtc" TEXT NOT NULL,
+                "Version" TEXT NOT NULL DEFAULT '',
+                "MachineName" TEXT NOT NULL DEFAULT '',
+                "ProcessId" INTEGER NOT NULL DEFAULT 0,
+                "Status" TEXT NOT NULL DEFAULT 'running',
+                "MemoryBytes" INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_ServiceHeartbeats_ServiceName"
+                ON "ServiceHeartbeats" ("ServiceName");
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        logger.LogDebug("ServiceHeartbeats table ensured.");
+    }
+
+    private static async Task EnsureOperatorAlertEventsTableAsync(
+        string connectionString,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            CREATE TABLE IF NOT EXISTS "OperatorAlertEvents" (
+                "Id" INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                "UtcTime" TEXT NOT NULL,
+                "Severity" TEXT NOT NULL,
+                "Source" TEXT NOT NULL,
+                "Title" TEXT NOT NULL,
+                "Body" TEXT NOT NULL,
+                "ProcessName" TEXT NOT NULL DEFAULT '',
+                "CorrelationId" TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS "IX_OperatorAlertEvents_UtcTime"
+                ON "OperatorAlertEvents" ("UtcTime");
+            """;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+        logger.LogDebug("OperatorAlertEvents table ensured.");
     }
 
     private static async Task<SchemaCompatibility> ReadCompatibilityAsync(string connectionString, CancellationToken cancellationToken)

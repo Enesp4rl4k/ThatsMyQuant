@@ -45,7 +45,11 @@ public static class CorrelationService
         double sectorExposure = (sameSecPositions * 100.0) / totalPositions;
 
         bool isCorrelated = sameSecPositions > 1;
-        bool exceedsLimit = sectorExposure > maxSectorExposurePercent;
+        // exceedsLimit only meaningful when there is at least one EXISTING same-sector position.
+        // The previous formulation was buggy: it counted the prospective new position toward
+        // sameSecPositions (initialised to 1), so a portfolio with zero open positions reported
+        // 100% sector concentration and blocked the very first entry.
+        bool exceedsLimit = isCorrelated && sectorExposure > maxSectorExposurePercent;
 
         // Structured recommendation building
         string rec = GetRecommendation(newSector, sectorExposure, isCorrelated, exceedsLimit);

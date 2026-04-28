@@ -37,7 +37,11 @@ public class Signal : INotification
     public string RegimeTag { get; set; } = "Unknown";
 
     /// <summary>The market this signal belongs to. Used for market hours and routing decisions.</summary>
-    public MarketType MarketType { get; set; } = MarketType.BIST;
+    public MarketType MarketType { get; set; } = MarketType.Crypto;
+
+    /// <summary>Execution order type — Limit (post-only maker, default) or Market
+    /// (IOC taker, used for urgent fills like stop-loss or pairs-leg compensation).</summary>
+    public OrderType OrderType { get; set; } = OrderType.Limit;
 
     /// <summary>Target exchange for execution routing: "Binance", "OKX", "Mock". Defaults to "Binance".</summary>
     public string Exchange { get; set; } = "Binance";

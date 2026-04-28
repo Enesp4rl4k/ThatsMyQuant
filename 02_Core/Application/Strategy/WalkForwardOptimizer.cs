@@ -74,7 +74,7 @@ public sealed class WalkForwardOptimizer
             int windowSize = candles.Count / numWindows;
             int trainSize = (int)(windowSize * trainRatio);
             int testSize = windowSize - trainSize;
-            if (trainSize < 80 || testSize < 30)
+            if (trainSize < WalkForwardConstants.MinTrainBars || testSize < WalkForwardConstants.MinTestBars)
             {
                 _logger.LogWarning("WFO: window too small (train={T}, test={S})", trainSize, testSize);
                 return new WfoResult { Symbol = symbol };
@@ -91,7 +91,7 @@ public sealed class WalkForwardOptimizer
                 int s = w * windowSize;
                 int te = s + trainSize;
                 int oe = Math.Min(te + testSize, candles.Count);
-                if (te > candles.Count || oe - te < 30) break;
+                if (te > candles.Count || oe - te < WalkForwardConstants.MinTestBars) break;
 
                 var train = candles.GetRange(s, trainSize);
                 var test = candles.GetRange(te, oe - te);

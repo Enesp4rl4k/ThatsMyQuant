@@ -71,6 +71,30 @@ public sealed class OkxFundingRateProvider : IFundingRateProvider
         return found < 0 ? 0m : s.Rates[found];
     }
 
+    /// <inheritdoc />
+    public IReadOnlyList<(DateTime Timestamp, decimal Rate)> GetHistory(string symbol, DateTime fromUtc, DateTime toUtc)
+    {
+        var instId = Normalize(symbol);
+        if (!_series.TryGetValue(instId, out var s))
+        {
+            try { EnsureLoadedAsync(instId, CancellationToken.None, fromUtc).GetAwaiter().GetResult(); }
+            catch { return Array.Empty<(DateTime, decimal)>(); }
+            if (!_series.TryGetValue(instId, out s)) return Array.Empty<(DateTime, decimal)>();
+        }
+        if (s.Timestamps.Length == 0) return Array.Empty<(DateTime, decimal)>();
+
+        var fromMs = new DateTimeOffset(fromUtc, TimeSpan.Zero).ToUnixTimeMilliseconds();
+        var toMs = new DateTimeOffset(toUtc, TimeSpan.Zero).ToUnixTimeMilliseconds();
+        var list = new List<(DateTime, decimal)>();
+        for (int i = 0; i < s.Timestamps.Length; i++)
+        {
+            var ts = s.Timestamps[i];
+            if (ts < fromMs || ts > toMs) continue;
+            list.Add((DateTimeOffset.FromUnixTimeMilliseconds(ts).UtcDateTime, s.Rates[i]));
+        }
+        return list;
+    }
+
     /// <summary>Warm the cache for a set of symbols covering a date range before running backtests.</summary>
     public async Task PrefetchAsync(IEnumerable<string> symbols, DateTime fromUtc, CancellationToken ct = default)
     {
@@ -113,21 +137,26 @@ public sealed class OkxFundingRateProvider : IFundingRateProvider
             catch (Exception ex) { _logger.LogDebug(ex, "Funding cache read failed for {InstId}; refetching", instId); }
         }
 
-        // 2) Fetch from OKX. Paginate from newest → oldest via `before` param.
+        // 2) Fetch from OKX. Paginate from newest → oldest via `after` param.
+        // OKX semantics: `after` = records EARLIER than timestamp (i.e. older), `before` = NEWER.
+        // Bug fix 2026-04-24: prior code used `before` which returns newer data → loop never
+        // progressed backward and API returned empty. Use `after` for backward pagination.
         var all = new List<(long Ts, decimal Rate)>();
-        long? before = null;
+        long? afterTs = null;
         long oldestMs = fromUtc.HasValue
             ? new DateTimeOffset(fromUtc.Value, TimeSpan.Zero).ToUnixTimeMilliseconds()
             : new DateTimeOffset(DateTime.UtcNow.AddDays(-400), TimeSpan.Zero).ToUnixTimeMilliseconds();
 
         var client = _httpFactory.CreateClient("OkxPublic");
         const int pageLimit = 100;
+        long? previousMinTs = null;
+        int stalePages = 0;
         for (int page = 0; page < 120; page++)  // hard cap to prevent infinite loop
         {
             if (ct.IsCancellationRequested) break;
 
             var uri = $"/api/v5/public/funding-rate-history?instId={Uri.EscapeDataString(instId)}&limit={pageLimit}";
-            if (before.HasValue) uri += $"&before={before.Value}";
+            if (afterTs.HasValue) uri += $"&after={afterTs.Value}";
 
             try
             {
@@ -143,6 +172,7 @@ public sealed class OkxFundingRateProvider : IFundingRateProvider
                 if (rows.GetArrayLength() == 0) break;
 
                 long? minTsThisPage = null;
+                int rowsAdded = 0;
                 foreach (var row in rows.EnumerateArray())
                 {
                     if (!row.TryGetProperty("fundingTime", out var tsEl) ||
@@ -151,15 +181,39 @@ public sealed class OkxFundingRateProvider : IFundingRateProvider
                     if (!decimal.TryParse(rateEl.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var rate)) continue;
 
                     all.Add((ts, rate));
+                    rowsAdded++;
                     minTsThisPage = minTsThisPage.HasValue ? Math.Min(minTsThisPage.Value, ts) : ts;
                 }
 
-                if (minTsThisPage is null || minTsThisPage.Value <= oldestMs) break;
-                before = minTsThisPage.Value;
+                if (minTsThisPage is null) break;
+
+                // Stale-page guard: if OKX returns rows but the minimum timestamp doesn't
+                // advance backward, the pagination cursor is stuck. Tolerate one stuck page
+                // (can happen on boundary duplicates) then abort to avoid a spin loop even
+                // under the 120-page cap.
+                if (previousMinTs.HasValue && minTsThisPage.Value >= previousMinTs.Value)
+                {
+                    stalePages++;
+                    if (stalePages >= 2)
+                    {
+                        _logger.LogWarning(
+                            "Funding pagination stall for {InstId}: cursor stuck at {Ts} ({Rows} rows, {Page} pages fetched).",
+                            instId, minTsThisPage.Value, rowsAdded, page + 1);
+                        break;
+                    }
+                }
+                else
+                {
+                    stalePages = 0;
+                }
+
+                if (minTsThisPage.Value <= oldestMs) break;
+                previousMinTs = minTsThisPage;
+                afterTs = minTsThisPage.Value;
             }
             catch (Exception ex)
             {
-                _logger.LogDebug(ex, "Funding page fetch failed for {InstId} at before={Before}", instId, before);
+                _logger.LogDebug(ex, "Funding page fetch failed for {InstId} at after={After}", instId, afterTs);
                 break;
             }
 

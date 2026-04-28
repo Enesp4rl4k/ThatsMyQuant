@@ -117,11 +117,11 @@ public class ArbitrageAgent : INotificationHandler<Signal>
     }
 
     private async Task ExecuteArbitrageDualLegAsync(
-        string baseSymbol, 
-        string exchange, 
-        string otherExchange, 
-        double price, 
-        double otherPrice, 
+        string baseSymbol,
+        string exchange,
+        string otherExchange,
+        double price,
+        double otherPrice,
         double spreadPercent,
         CancellationToken ct)
     {
@@ -182,9 +182,16 @@ public class ArbitrageAgent : INotificationHandler<Signal>
             Metadata = new Dictionary<string, string> { { "ExecutionMode", "HFT" }, { "OpposingExchange", exchange } }
         };
 
-        // Fire & Forget dual execution into the OMS pipeline simultaneously. 
-        // Real-world implementation requires a two-phase commit or immediate fallback if leg 1 fails.
-        _ = _mediator.Send(new ThatsMyQuant.Contracts.Commands.ExecuteTradeCommand(leg1), ct);
-        _ = _mediator.Send(new ThatsMyQuant.Contracts.Commands.ExecuteTradeCommand(leg2), ct);
+        // Sequential execution: leg1 must succeed before leg2 to avoid an unhedged position.
+        // A proper two-phase commit or rollback is the ideal solution for production.
+        try
+        {
+            await _mediator.Send(new ThatsMyQuant.Contracts.Commands.ExecuteTradeCommand(leg1), ct);
+            await _mediator.Send(new ThatsMyQuant.Contracts.Commands.ExecuteTradeCommand(leg2), ct);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[ARB] Dual-leg execution failed for {Symbol} — potential unhedged position, manual review required.", baseSymbol);
+        }
     }
 }

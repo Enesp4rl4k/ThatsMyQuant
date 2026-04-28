@@ -17,6 +17,7 @@ public sealed class BacktestQualityGateOptions
     public decimal MinExpectancyPerTrade { get; set; } = 0.01m;
     public int MinWalkForwardWindows { get; set; } = 3;
     public double MinOosPositiveRatio { get; set; } = 0.55;
+    public int MinPortfolioReadySymbols { get; set; } = 4;
 
     public decimal ShortMinPnl { get; set; } = 0m;
     public double ShortMinSharpe { get; set; } = 1.10;

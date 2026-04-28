@@ -22,9 +22,20 @@ public partial class ExchangeSettingsViewModel : ObservableObject
 
     [ObservableProperty] private string _binanceApiKey = string.Empty;
     [ObservableProperty] private string _binanceApiSecret = string.Empty;
+
+    // Live OKX credentials (real account). Active when IsDemoMode = false.
     [ObservableProperty] private string _okxApiKey = string.Empty;
     [ObservableProperty] private string _okxSecretKey = string.Empty;
     [ObservableProperty] private string _okxPassphrase = string.Empty;
+
+    // Demo/Simulated OKX credentials. Active when IsDemoMode = true. Stored
+    // alongside live credentials so flipping the toggle swaps the active set
+    // without re-entering keys. OKX requires BOTH sets to be issued from their
+    // respective environment (demo keys only work with x-simulated-trading header).
+    [ObservableProperty] private string _okxDemoApiKey = string.Empty;
+    [ObservableProperty] private string _okxDemoSecretKey = string.Empty;
+    [ObservableProperty] private string _okxDemoPassphrase = string.Empty;
+
     [ObservableProperty] private bool _isDemoMode = true;
     [ObservableProperty] private string _saveStatus = "READY";
     [ObservableProperty] private bool _isSaving = false;
@@ -300,17 +311,53 @@ public partial class ExchangeSettingsViewModel : ObservableObject
             return Convert.ToBase64String(encrypted);
         }
 
+        // Preserve existing encrypted values when the UI field is empty — prevents
+        // a "Save" click with an un-populated PasswordBox from wiping previously
+        // stored credentials. Any field with non-empty new value overwrites.
+        string? PreservingProtect(string newValue, string jsonField)
+        {
+            if (!string.IsNullOrWhiteSpace(newValue)) return Protect(newValue);
+            var existing = TryReadExistingField(jsonField);
+            return existing;
+        }
+
         var creds = new
         {
-            BinanceApiKey = Protect(BinanceApiKey),
-            BinanceApiSecret = Protect(BinanceApiSecret),
-            ApiKey = Protect(OkxApiKey),
-            SecretKey = Protect(OkxSecretKey),
-            Passphrase = Protect(OkxPassphrase)
+            BinanceApiKey = PreservingProtect(BinanceApiKey, "BinanceApiKey"),
+            BinanceApiSecret = PreservingProtect(BinanceApiSecret, "BinanceApiSecret"),
+            // Live OKX
+            ApiKey = PreservingProtect(OkxApiKey, "ApiKey"),
+            SecretKey = PreservingProtect(OkxSecretKey, "SecretKey"),
+            Passphrase = PreservingProtect(OkxPassphrase, "Passphrase"),
+            // Demo OKX (issued separately from OKX Demo Trading environment)
+            DemoApiKey = PreservingProtect(OkxDemoApiKey, "DemoApiKey"),
+            DemoSecretKey = PreservingProtect(OkxDemoSecretKey, "DemoSecretKey"),
+            DemoPassphrase = PreservingProtect(OkxDemoPassphrase, "DemoPassphrase")
         };
 
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(CredentialsPath, JsonSerializer.Serialize(creds, options));
+    }
+
+    /// <summary>
+    /// Reads the previously-persisted Base64-encrypted value for a single field
+    /// from the credentials file, used as a fallback when the current UI field is
+    /// empty so a partial save can't destroy existing secrets.
+    /// </summary>
+    private string? TryReadExistingField(string fieldName)
+    {
+        try
+        {
+            if (!File.Exists(CredentialsPath)) return null;
+            using var doc = JsonDocument.Parse(File.ReadAllText(CredentialsPath));
+            return doc.RootElement.TryGetProperty(fieldName, out var prop) && prop.ValueKind == JsonValueKind.String
+                ? prop.GetString()
+                : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -340,6 +387,10 @@ public partial class ExchangeSettingsViewModel : ObservableObject
             if (root.TryGetProperty("ApiKey", out var apiKey)) OkxApiKey = Unprotect(apiKey.GetString() ?? "");
             if (root.TryGetProperty("SecretKey", out var secretKey)) OkxSecretKey = Unprotect(secretKey.GetString() ?? "");
             if (root.TryGetProperty("Passphrase", out var passphrase)) OkxPassphrase = Unprotect(passphrase.GetString() ?? "");
+            // Demo set — may be absent on legacy credential files.
+            if (root.TryGetProperty("DemoApiKey", out var demoApiKey)) OkxDemoApiKey = Unprotect(demoApiKey.GetString() ?? "");
+            if (root.TryGetProperty("DemoSecretKey", out var demoSecretKey)) OkxDemoSecretKey = Unprotect(demoSecretKey.GetString() ?? "");
+            if (root.TryGetProperty("DemoPassphrase", out var demoPassphrase)) OkxDemoPassphrase = Unprotect(demoPassphrase.GetString() ?? "");
         }
         catch
         {

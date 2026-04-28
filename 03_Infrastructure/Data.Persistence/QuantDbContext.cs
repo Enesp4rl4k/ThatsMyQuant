@@ -15,6 +15,9 @@ public class QuantDbContext : DbContext
     public DbSet<WebhookRequestLog> WebhookRequestLogs => Set<WebhookRequestLog>();
     public DbSet<OperatorUser> OperatorUsers => Set<OperatorUser>();
     public DbSet<AuditEntry> AuditLog => Set<AuditEntry>();
+    public DbSet<AlertHistoryEntry> AlertHistory => Set<AlertHistoryEntry>();
+    public DbSet<OperatorAlertEvent> OperatorAlertEvents => Set<OperatorAlertEvent>();
+    public DbSet<ServiceHeartbeat> ServiceHeartbeats => Set<ServiceHeartbeat>();
 
     public QuantDbContext(DbContextOptions<QuantDbContext> options) : base(options) { }
 
@@ -58,6 +61,13 @@ public class QuantDbContext : DbContext
             entity.Property(s => s.Volume24h).HasPrecision(18, 2);
             entity.Property(s => s.ExecutionAction).HasConversion<string>().HasMaxLength(20);
             entity.Property(s => s.PriceActionSignal).HasConversion<string>().HasMaxLength(20);
+            // New OrderType column (added 2026-04-24 for Market vs Limit routing).
+            // Stored as string (enum name) with a default so existing rows on older
+            // DB files continue to function — default matches legacy always-limit behaviour.
+            entity.Property(s => s.OrderType)
+                .HasConversion<string>()
+                .HasMaxLength(16)
+                .HasDefaultValue(ThatsMyQuant.Contracts.Enums.OrderType.Limit);
 
             entity.HasIndex(s => s.Symbol);
             entity.HasIndex(s => s.Timestamp);
@@ -114,6 +124,9 @@ public class QuantDbContext : DbContext
             entity.HasIndex(t => t.SignalId).IsUnique();
             entity.HasIndex(t => t.Symbol);
             entity.HasIndex(t => new { t.StrategyTag, t.RegimeTag });
+            // Attribution / analytics-path composite indexes (see memory: P&L tile, Quant Lab folds).
+            entity.HasIndex(t => new { t.StrategyTag, t.ExitTime });
+            entity.HasIndex(t => new { t.Status, t.ExitTime });
         });
 
         // Account Configuration
@@ -181,6 +194,46 @@ public class QuantDbContext : DbContext
             entity.Property(a => a.Payload).HasColumnType("TEXT");
             entity.HasIndex(a => a.CorrelationId);
             entity.HasIndex(a => a.TimestampUtc);
+        });
+
+        modelBuilder.Entity<OperatorAlertEvent>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Severity).HasMaxLength(16);
+            entity.Property(e => e.Source).HasMaxLength(40);
+            entity.Property(e => e.Title).HasMaxLength(200);
+            entity.Property(e => e.Body).HasColumnType("TEXT");
+            entity.Property(e => e.ProcessName).HasMaxLength(40);
+            entity.Property(e => e.CorrelationId).HasMaxLength(120);
+            entity.HasIndex(e => e.Id);
+            entity.HasIndex(e => e.UtcTime);
+        });
+
+        modelBuilder.Entity<ServiceHeartbeat>(entity =>
+        {
+            entity.HasKey(s => s.Id);
+            entity.Property(s => s.ServiceName).IsRequired().HasMaxLength(64);
+            entity.Property(s => s.Version).HasMaxLength(40);
+            entity.Property(s => s.MachineName).HasMaxLength(64);
+            entity.Property(s => s.Status).HasMaxLength(24);
+            entity.HasIndex(s => s.ServiceName).IsUnique();
+        });
+
+        modelBuilder.Entity<AlertHistoryEntry>(entity =>
+        {
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Symbol).HasMaxLength(20);
+            entity.Property(a => a.Title).HasMaxLength(200);
+            entity.Property(a => a.Body).HasColumnType("TEXT");
+            entity.Property(a => a.Metadata).HasColumnType("TEXT");
+            entity.Property(a => a.FailureReason).HasMaxLength(500);
+            entity.Property(a => a.CorrelationId).HasMaxLength(120);
+            entity.Property(a => a.Kind).HasConversion<string>().HasMaxLength(20);
+            entity.Property(a => a.Channel).HasConversion<string>().HasMaxLength(20);
+            entity.Property(a => a.Status).HasConversion<string>().HasMaxLength(20);
+            entity.HasIndex(a => a.TimestampUtc);
+            entity.HasIndex(a => a.Symbol);
+            entity.HasIndex(a => new { a.Kind, a.Status });
         });
     }
 }

@@ -17,6 +17,7 @@ builder.Services.AddThatsMyQuantInfrastructure(builder.Configuration);
 builder.Services.AddTransient<ISignalValidator, MarketHoursValidator>();
 builder.Services.AddTransient<ISignalValidator, MinVolumeValidator>();
 builder.Services.AddTransient<ISignalValidator, PriceSanityValidator>();
+builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
 var host = builder.Build();
@@ -46,12 +47,36 @@ switch (command)
         await RunHftBacktestAsync(host.Services, args);
         break;
 
+    case "pairsbacktest":
+        await RunPairsBacktestAsync(host.Services, args);
+        break;
+
+    case "fundingbacktest":
+        await RunFundingBacktestAsync(host.Services, args);
+        break;
+
+    case "portfoliobacktest":
+        await RunPortfolioBacktestAsync(host.Services, args);
+        break;
+
+    case "behaviorsim":
+        await RunBehaviorSimulationAsync(host.Services, args);
+        break;
+
     case "paper":
         await RunPaperAsync(host.Services, args);
         break;
 
     case "signalaudit":
         await RunSignalAuditAsync(host.Services, args);
+        break;
+
+    case "edgesweep":
+        await RunEdgeSweepAsync(host.Services, args);
+        break;
+
+    case "pairsablation":
+        await RunPairsAblationAsync(host.Services, args);
         break;
 
     case "help":
@@ -291,6 +316,458 @@ static async Task RunHftBacktestAsync(IServiceProvider services, string[] args)
     Console.WriteLine($"Avg Loss:    {s.AverageLoss:N2}");
     Console.WriteLine($"Avg R:R:     {s.AverageRR:F2}");
     Console.WriteLine($"Pass:        {(s.BacktestPass ? "YES" : "NO")}");
+    Console.WriteLine($"\nCompleted in {sw.Elapsed.TotalSeconds:F1}s");
+}
+
+static async Task RunPairsBacktestAsync(IServiceProvider services, string[] args)
+{
+    using var scope = services.CreateScope();
+    var orchestrator = scope.ServiceProvider.GetRequiredService<BacktestOrchestrator>();
+
+    var symbolA = GetArg(args, "--symbol-a", "BTC-USDT");
+    var symbolB = GetArg(args, "--symbol-b", "ETH-USDT");
+    var timeframe = GetArg(args, "--timeframe", "1h");
+    var capital = decimal.Parse(GetArg(args, "--capital", "10000"), System.Globalization.CultureInfo.InvariantCulture);
+    var daysBack = int.Parse(GetArg(args, "--days", "365"));
+
+    var end = DateTime.UtcNow;
+    var start = end.AddDays(-daysBack);
+
+    Console.WriteLine("=== ThatsMyQuant Pairs Backtest CLI ===");
+    Console.WriteLine($"Symbols:    {symbolA} / {symbolB}");
+    Console.WriteLine($"Timeframe:  {timeframe}");
+    Console.WriteLine($"Period:     {start:yyyy-MM-dd} -> {end:yyyy-MM-dd} ({daysBack} days)");
+    Console.WriteLine($"Capital:    {capital:N0}");
+    Console.WriteLine();
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var s = await orchestrator.RunPairsSessionAsync(symbolA, symbolB, timeframe, start, end, capital);
+    sw.Stop();
+
+    Console.WriteLine();
+    Console.WriteLine("=== Pairs Backtest Results ===");
+    if (s.Status != BacktestSessionStatus.Completed)
+    {
+        Console.WriteLine($"Status:     {s.Status} — {s.SkipReason}");
+        return;
+    }
+    Console.WriteLine($"Trades:     {s.TotalTrades}");
+    Console.WriteLine($"PnL:        {s.TotalPnL:N2}  ({(capital > 0 ? s.TotalPnL / capital : 0):P2})");
+    Console.WriteLine($"Sharpe:     {s.SharpeRatio:F3}");
+    Console.WriteLine($"Sortino:    {s.SortinoRatio:F3}");
+    Console.WriteLine($"Max DD:     {s.MaxDrawdownPercent:F2}%");
+    Console.WriteLine($"Win Rate:   {s.WinRate:F1}%  ({s.WinningTrades}W / {s.LosingTrades}L)");
+    Console.WriteLine($"Avg Win:    {s.AverageWin:N2}");
+    Console.WriteLine($"Avg Loss:   {s.AverageLoss:N2}");
+    Console.WriteLine($"Profit Fct: {s.ProfitFactor:F2}");
+    Console.WriteLine($"Pass:       {(s.BacktestPass ? "YES" : "NO")}");
+    Console.WriteLine($"\nCompleted in {sw.Elapsed.TotalSeconds:F1}s");
+}
+
+static async Task RunFundingBacktestAsync(IServiceProvider services, string[] args)
+{
+    using var scope = services.CreateScope();
+    var runner = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Application.Strategy.FundingAlphaBacktestRunner>();
+    var histService = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Contracts.Interfaces.IHistoricalMarketDataService>();
+
+    var symbol = GetArg(args, "--symbol", "BTC-USDT");
+    var timeframe = GetArg(args, "--timeframe", "1h");
+    var capital = decimal.Parse(GetArg(args, "--capital", "100000"), System.Globalization.CultureInfo.InvariantCulture);
+    var daysBack = int.Parse(GetArg(args, "--days", "365"));
+    // Optional config overrides.
+    var entryBps = decimal.Parse(GetArg(args, "--entry-bps", "3"), System.Globalization.CultureInfo.InvariantCulture);
+    var tpPct = decimal.Parse(GetArg(args, "--tp-pct", "2"), System.Globalization.CultureInfo.InvariantCulture);
+    var slPct = decimal.Parse(GetArg(args, "--sl-pct", "1.5"), System.Globalization.CultureInfo.InvariantCulture);
+    var maxHold = int.Parse(GetArg(args, "--max-hold", "16"));
+
+    var end = DateTime.UtcNow;
+    var start = end.AddDays(-daysBack);
+
+    Console.WriteLine("=== Funding Alpha Backtest CLI ===");
+    Console.WriteLine($"Symbol:       {symbol}");
+    Console.WriteLine($"Timeframe:    {timeframe}");
+    Console.WriteLine($"Period:       {start:yyyy-MM-dd} -> {end:yyyy-MM-dd} ({daysBack} days)");
+    Console.WriteLine($"Capital:      {capital:N0}");
+    Console.WriteLine($"Entry (bps):  ±{entryBps}  | TP: {tpPct}%  | SL: {slPct}%  | MaxHold: {maxHold}h");
+    Console.WriteLine();
+
+    var candles = await histService.GetHistoricalCandlesAsync(symbol, timeframe, start, end);
+    if (candles.Count < 60)
+    {
+        Console.WriteLine($"Insufficient candles: {candles.Count}");
+        return;
+    }
+
+    var useFlip = bool.Parse(GetArg(args, "--use-flip", "false"));
+
+    var config = new ThatsMyQuant.Application.Strategy.FundingAlphaConfig(
+        EntryThreshold: entryBps / 10000m,     // bps per 8h → fraction
+        ExitThreshold: 0.00005m,
+        TakeProfitPct: tpPct / 100m,
+        StopLossPct: slPct / 100m,
+        MaxHoldingBars: maxHold,
+        UseFlipCatalyst: useFlip);
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var result = await runner.RunAsync(symbol, candles, config, capital);
+    sw.Stop();
+
+    Console.WriteLine();
+    Console.WriteLine("=== Funding Alpha Results ===");
+    Console.WriteLine($"Trades:       {result.TotalTrades}  ({result.WinningTrades}W / {result.LosingTrades}L)");
+    Console.WriteLine($"Win Rate:     {result.WinRate:P1}");
+    Console.WriteLine($"Sharpe:       {result.SharpeRatio:F3}");
+    Console.WriteLine($"PnL:          {result.TotalPnl:N2}  ({(capital > 0 ? result.TotalPnl / capital : 0):P2})");
+    Console.WriteLine($"Max DD:       {result.MaxDrawdownPct:P2}");
+    Console.WriteLine($"Profit Fct:   {result.ProfitFactor:F2}");
+    Console.WriteLine($"Funding Obs:  {result.FundingObservations}  (avg={result.AvgFunding:F5}  maxAbs={result.MaxAbsFunding:F5})");
+    Console.WriteLine($"Entry Signals:{result.EntrySignals}");
+    Console.WriteLine();
+
+    if (result.Trades.Count > 0)
+    {
+        var byReason = result.Trades.GroupBy(t => t.ExitReason)
+            .Select(g => new { Reason = g.Key, Count = g.Count(), Pnl = g.Sum(t => t.NetPnl) })
+            .OrderByDescending(x => x.Count);
+        Console.WriteLine("Exit-reason breakdown:");
+        foreach (var r in byReason)
+            Console.WriteLine($"  {r.Reason,-18}: {r.Count,3} trades | PnL: {r.Pnl,10:N2}");
+    }
+
+    Console.WriteLine($"\nCompleted in {sw.Elapsed.TotalSeconds:F1}s");
+}
+
+static async Task RunBehaviorSimulationAsync(IServiceProvider services, string[] args)
+{
+    using var scope = services.CreateScope();
+    var portfolioRunner = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Application.Strategy.PortfolioBacktestRunner>();
+    var simulator = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Application.Strategy.ProMode.SystemBehaviorSimulator>();
+
+    var capital = decimal.Parse(GetArg(args, "--capital", "100000"), System.Globalization.CultureInfo.InvariantCulture);
+    var daysBack = int.Parse(GetArg(args, "--days", "365"));
+    var riskProfile = GetArg(args, "--risk-profile", "Moderate");
+    var profitOpts = scope.ServiceProvider.GetService<IOptions<ThatsMyQuant.Contracts.Options.ProfitMaximizationOptions>>()?.Value
+        ?? new ThatsMyQuant.Contracts.Options.ProfitMaximizationOptions();
+    var profile = profitOpts.Resolve(riskProfile);
+    var leverage = Math.Clamp(profile.Leverage, 1m, 15m);
+
+    var end = DateTime.UtcNow;
+    var start = end.AddDays(-daysBack);
+
+    Console.WriteLine("=== System Behaviour Simulation (Phase D) ===");
+    Console.WriteLine($"Capital:       {capital:N0}");
+    Console.WriteLine($"Risk Profile:  {riskProfile} → leverage {leverage:F1}x");
+    Console.WriteLine($"Period:        {start:yyyy-MM-dd} → {end:yyyy-MM-dd} ({daysBack}d)");
+    Console.WriteLine();
+    Console.WriteLine("Step 1: Running baseline portfolio backtest to capture per-strategy daily PnL...");
+    var fundingCfg = new ThatsMyQuant.Application.Strategy.FundingAlphaConfig(
+        EntryThreshold: 0.0001m, TakeProfitPct: 0.02m, StopLossPct: 0.015m, MaxHoldingBars: 16);
+    var positions = new[]
+    {
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition("TRX-XLM-Pair-4h", ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage, "TRX-USDT", "XLM-USDT", "4h", 0.30m, Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition("SOL-AVAX-Pair-4h", ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage, "SOL-USDT", "AVAX-USDT", "4h", 0.20m, Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition("SOL-LINK-Pair-4h", ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage, "SOL-USDT", "LINK-USDT", "4h", 0.15m, Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition("LTC-Funding", ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha, "LTC-USDT", null, "1h", 0.15m, FundingConfig: fundingCfg, Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition("DOGE-Funding", ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha, "DOGE-USDT", null, "1h", 0.10m, FundingConfig: fundingCfg, Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition("AAVE-Funding", ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha, "AAVE-USDT", null, "1h", 0.10m, FundingConfig: fundingCfg, Leverage: leverage),
+    };
+
+    var portfolioResult = await portfolioRunner.RunAsync(positions, start, end, capital);
+
+    Console.WriteLine($"  Baseline portfolio: PnL={portfolioResult.TotalPnl:N2} ({portfolioResult.TotalPnlPct:P2}) Sharpe={portfolioResult.PortfolioSharpe:F2} MaxDD={portfolioResult.MaxDrawdown:P2}");
+    Console.WriteLine();
+    Console.WriteLine("Step 2: Replaying with Pro Mode orchestration overlay (regime allocator + correlation guard + circuit breaker)...");
+
+    // Convert portfolio equity curve differences to per-strategy daily PnL points.
+    // NOTE: This simulator uses bucket allocation overlay on top of the backtest results.
+    var strategyPnl = new Dictionary<string, IReadOnlyList<ThatsMyQuant.Application.Strategy.ProMode.DailyPnlPoint>>(
+        StringComparer.OrdinalIgnoreCase);
+    for (int i = 0; i < portfolioResult.StrategyNames.Length; i++)
+    {
+        var name = portfolioResult.StrategyNames[i];
+        var pts = new List<ThatsMyQuant.Application.Strategy.ProMode.DailyPnlPoint>();
+        for (int d = 0; d < portfolioResult.Dates.Length; d++)
+        {
+            // Equity-curve deltas are aggregate, but we need per-strategy. Use result trades
+            // filtered — simpler: use aggregate daily diff distributed by position weight as proxy.
+            // The runner doesn't expose per-strategy per-day directly, so we approximate by
+            // scaling the equity delta by each strategy's relative contribution (its PnL / total).
+        }
+        // Proxy: distribute daily equity delta by strategy relative weight within the day.
+        // For a first-cut sim we'll simply use equity-curve differences flat-split across strategies.
+        strategyPnl[name] = pts;
+    }
+
+    // Simpler approach: use equity curve as a whole and simulate Pro Mode overlay on the aggregate.
+    // Feed single "Portfolio" strategy series to simulator.
+    var aggregate = new List<ThatsMyQuant.Application.Strategy.ProMode.DailyPnlPoint>();
+    for (int i = 0; i < portfolioResult.Dates.Length; i++)
+    {
+        decimal prevEq = i == 0 ? capital : portfolioResult.EquityCurve[i - 1];
+        decimal diff = portfolioResult.EquityCurve[i] - prevEq;
+        aggregate.Add(new ThatsMyQuant.Application.Strategy.ProMode.DailyPnlPoint(portfolioResult.Dates[i], diff));
+    }
+
+    // Separate pair bucket vs funding bucket to enable correlation guard semantics.
+    // We only have aggregate — so we approximate by splitting the daily return into two buckets
+    // using the session's static 65/35 ratio (pairs/funding). Still meaningful for overlay behaviour.
+    var pairSlice = aggregate.Select(p => new ThatsMyQuant.Application.Strategy.ProMode.DailyPnlPoint(p.DateUtc, p.PnL * 0.65m)).ToList();
+    var fundingSlice = aggregate.Select(p => new ThatsMyQuant.Application.Strategy.ProMode.DailyPnlPoint(p.DateUtc, p.PnL * 0.35m)).ToList();
+
+    var inputSeries = new Dictionary<string, IReadOnlyList<ThatsMyQuant.Application.Strategy.ProMode.DailyPnlPoint>>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Pairs-Aggregate-Pair"] = pairSlice,
+        ["Funding-Aggregate-Funding"] = fundingSlice
+    };
+
+    var simResult = await simulator.SimulateAsync(
+        inputSeries,
+        regimeReferenceSymbol: "BTC-USDT",
+        regimeTimeframe: "1h",
+        startUtc: start, endUtc: end,
+        totalCapital: capital);
+
+    Console.WriteLine();
+    Console.WriteLine("=== Phase D Behaviour Results ===");
+    Console.WriteLine($"  BASELINE Sharpe / PnL / DD:   {portfolioResult.PortfolioSharpe:F2} / {portfolioResult.TotalPnl:N0} / {portfolioResult.MaxDrawdown:P2}");
+    Console.WriteLine($"  PHASE D  Sharpe / PnL / DD:   {simResult.AnnualizedSharpe:F2} / {simResult.TotalPnl:N0} / {simResult.MaxDrawdown:P2}");
+    Console.WriteLine($"  Δ Sharpe:  {simResult.AnnualizedSharpe - portfolioResult.PortfolioSharpe:+0.00;-0.00;0.00}");
+    Console.WriteLine($"  Δ PnL:     {simResult.TotalPnl - portfolioResult.TotalPnl:+0.00;-0.00;0.00}");
+    Console.WriteLine($"  Δ MaxDD:   {simResult.MaxDrawdown - portfolioResult.MaxDrawdown:+0.00%;-0.00%;0.00%}");
+    Console.WriteLine($"  Circuit trips during sim: {simResult.CircuitTripCount}");
+    Console.WriteLine($"  Trading days simulated:   {simResult.TradingDays}");
+    Console.WriteLine();
+    Console.WriteLine("  Regime distribution:");
+    foreach (var kv in simResult.RegimeDistribution.OrderByDescending(k => k.Value))
+        Console.WriteLine($"    {kv.Key,-10}: {kv.Value,4} days  ({(double)kv.Value / simResult.TradingDays:P0})");
+    Console.WriteLine();
+    Console.WriteLine("  Allocation by regime (last day of each):");
+    foreach (var kv in simResult.RegimeDistribution.Keys)
+    {
+        var lastForRegime = simResult.DecisionLog.LastOrDefault(d => d.Regime == kv);
+        if (lastForRegime is null) continue;
+        var a = lastForRegime.Allocation;
+        Console.WriteLine($"    {kv,-10}: pairs {a.PairsWeight:P0} · funding {a.FundingWeight:P0} · trend {a.TrendFollowWeight:P0} · CASH {a.CashWeight:P0}");
+    }
+    Console.WriteLine();
+}
+
+static async Task RunPortfolioBacktestAsync(IServiceProvider services, string[] args)
+{
+    using var scope = services.CreateScope();
+    var runner = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Application.Strategy.PortfolioBacktestRunner>();
+
+    var capital = decimal.Parse(GetArg(args, "--capital", "100000"), System.Globalization.CultureInfo.InvariantCulture);
+    var daysBack = int.Parse(GetArg(args, "--days", "90"));
+    var riskProfile = GetArg(args, "--risk-profile", "Moderate");
+    // Resolve risk profile from IOptions for leverage + DD budget.
+    var profitOpts = scope.ServiceProvider.GetService<IOptions<ThatsMyQuant.Contracts.Options.ProfitMaximizationOptions>>()?.Value
+        ?? new ThatsMyQuant.Contracts.Options.ProfitMaximizationOptions();
+    var profile = profitOpts.Resolve(riskProfile);
+    var leverage = Math.Clamp(profile.Leverage, 1m, 15m);  // hard cap regardless of config
+    // Optional override for direct leverage testing (advanced users).
+    var leverageOverride = GetArg(args, "--leverage", "");
+    if (!string.IsNullOrWhiteSpace(leverageOverride) &&
+        decimal.TryParse(leverageOverride, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out var levOv))
+    {
+        leverage = Math.Clamp(levOv, 1m, 15m);
+    }
+
+    var end = DateTime.UtcNow;
+    var start = end.AddDays(-daysBack);
+
+    // Toggle: --revised-pairs swaps SOL-LINK out for BCH-LTC (CLI ablation 2026-04-27 found
+    // SOL-LINK has Sharpe -0.28 / -$642 in 365d backtest, dragging portfolio Sharpe from
+    // ~0.85 to 0.39; BCH-LTC has positive Sharpe 0.65 in same period).
+    bool useRevisedPairs = bool.Parse(GetArg(args, "--revised-pairs", "false"));
+    // Toggle: --paper-config replicates the new appsettings.Paper.json pair list +
+    // funding allocation exactly so backtest reflects what paper will run with after restart.
+    bool usePaperConfig = bool.Parse(GetArg(args, "--paper-config", "false"));
+    // Drop all funding legs (testing pairs-only thesis after 2026-04-27 ablation showed
+    // funding contributes net -$32 / 395 trades at Aggressive 7x leverage).
+    bool pairsOnly = bool.Parse(GetArg(args, "--pairs-only", "false"));
+    // Tilt weights toward alpha-producing pairs (ADA-XRP, BCH-LTC) at expense of marginal ones.
+    bool tiltAlpha = bool.Parse(GetArg(args, "--tilt-alpha", "false"));
+    // Lower the pair entry threshold to multiply trade count. Default 2.0σ → 1.5σ
+    // typically multiplies trades 2-3x; PnL scales but Sharpe may drop.
+    double zEntryOverride = double.Parse(GetArg(args, "--zentry", "0"), System.Globalization.CultureInfo.InvariantCulture);
+
+    // Kelly-weighted portfolio of 5 validated winners identified 2026-04-24.
+    var fundingCfg1bp = new ThatsMyQuant.Application.Strategy.FundingAlphaConfig(
+        EntryThreshold: 0.0001m, TakeProfitPct: 0.02m, StopLossPct: 0.015m, MaxHoldingBars: 16);
+    // Portfolio rebalanced 2026-04-24 after portfolio backtest evidence:
+    // LINK removed — funding scan showed Sharpe +4.95 IS but Sharpe -2.43 in combined backtest
+    // (classic in-sample tuning trap, 138 trades at full horizon vs 34 trades in cherry-picked scan).
+    // Remaining 4 positions all delivered positive in 365d portfolio run.
+    // 2026-04-25: TRX/XLM weight reduced 0.30 → 0.20 to break single-pair PnL dominance
+    // (was driving 94% of Aggressive-mode PnL). Pair allocation now equal across the three
+    // 4h cointegrated pairs; ConcentrationGuard (25%/40%/60% caps) enforces this at runtime.
+    // Paper config v4 (2026-04-28 — empirical loser pruning):
+    //   v3 ablation showed 3 legs were portfolio drags:
+    //     • SOL-AVAX: Sharpe -0.11, PnL -176 (12 trades) — dropped
+    //     • FIL-AR:   Sharpe -0.29, PnL -457 (7 trades)  — dropped
+    //     • SHIB-Funding: Sharpe -1.02, PnL -45.71 (126 trades) — dropped
+    //   v4 keeps only legs with positive standalone Sharpe in 365d backtest:
+    //     Pairs (52%): ADA-XRP 22, BCH-LTC 22, TRX-XLM 8
+    //     Funding (27%): LTC 12, DOGE 10, AAVE 5
+    //     Total: 79% — under-allocated; cash buffer absorbs drawdowns.
+    //     Operator can rescale via --weighting invvol if desired.
+    var positions = usePaperConfig
+        ? new[]
+        {
+            new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "ADA-XRP-Pair-4h", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage,
+                SymbolA: "ADA-USDT", SymbolB: "XRP-USDT", Timeframe: "4h", CapitalWeight: 0.22m, Leverage: leverage),
+            new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "BCH-LTC-Pair-4h", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage,
+                SymbolA: "BCH-USDT", SymbolB: "LTC-USDT", Timeframe: "4h", CapitalWeight: 0.22m, Leverage: leverage),
+            new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "TRX-XLM-Pair-4h", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage,
+                SymbolA: "TRX-USDT", SymbolB: "XLM-USDT", Timeframe: "4h", CapitalWeight: 0.08m, Leverage: leverage),
+            new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "LTC-Funding", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha,
+                SymbolA: "LTC-USDT", SymbolB: null, Timeframe: "1h", CapitalWeight: 0.12m,
+                FundingConfig: fundingCfg1bp, Leverage: leverage),
+            new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "DOGE-Funding", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha,
+                SymbolA: "DOGE-USDT", SymbolB: null, Timeframe: "1h", CapitalWeight: 0.10m,
+                FundingConfig: fundingCfg1bp, Leverage: leverage),
+            new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "AAVE-Funding", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha,
+                SymbolA: "AAVE-USDT", SymbolB: null, Timeframe: "1h", CapitalWeight: 0.05m,
+                FundingConfig: fundingCfg1bp, Leverage: leverage),
+        }
+        : new[]
+    {
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+            Name: "TRX-XLM-Pair-4h", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage,
+            SymbolA: "TRX-USDT", SymbolB: "XLM-USDT", Timeframe: "4h", CapitalWeight: 0.20m,
+            Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+            Name: "SOL-AVAX-Pair-4h", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage,
+            SymbolA: "SOL-USDT", SymbolB: "AVAX-USDT", Timeframe: "4h", CapitalWeight: 0.20m,
+            Leverage: leverage),
+        useRevisedPairs
+            ? new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "BCH-LTC-Pair-4h", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage,
+                SymbolA: "BCH-USDT", SymbolB: "LTC-USDT", Timeframe: "4h", CapitalWeight: 0.20m,
+                Leverage: leverage)
+            : new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+                Name: "SOL-LINK-Pair-4h", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage,
+                SymbolA: "SOL-USDT", SymbolB: "LINK-USDT", Timeframe: "4h", CapitalWeight: 0.20m,
+                Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+            Name: "LTC-Funding", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha,
+            SymbolA: "LTC-USDT", SymbolB: null, Timeframe: "1h", CapitalWeight: 0.15m,
+            FundingConfig: fundingCfg1bp, Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+            Name: "DOGE-Funding", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha,
+            SymbolA: "DOGE-USDT", SymbolB: null, Timeframe: "1h", CapitalWeight: 0.13m,
+            FundingConfig: fundingCfg1bp, Leverage: leverage),
+        new ThatsMyQuant.Application.Strategy.PortfolioPosition(
+            Name: "AAVE-Funding", Type: ThatsMyQuant.Application.Strategy.PortfolioPositionType.FundingAlpha,
+            SymbolA: "AAVE-USDT", SymbolB: null, Timeframe: "1h", CapitalWeight: 0.12m,
+            FundingConfig: fundingCfg1bp, Leverage: leverage),
+    };
+
+    Console.WriteLine("=== Portfolio Backtest CLI ===");
+    Console.WriteLine($"Positions:    {positions.Length}");
+    Console.WriteLine($"Capital:      {capital:N0}");
+    Console.WriteLine($"Risk Profile: {riskProfile}  → Leverage {leverage:F1}x · DD budget {profile.MaxDrawdownBudget:P1} · throttle at {profile.DrawdownThrottleFraction:P0} of budget");
+    Console.WriteLine($"Period:       {start:yyyy-MM-dd} -> {end:yyyy-MM-dd} ({daysBack} days)");
+    Console.WriteLine();
+    foreach (var p in positions)
+        Console.WriteLine($"  - {p.Name,-22} {p.Type,-18} weight={p.CapitalWeight:P0}  {p.SymbolA}/{p.SymbolB ?? "-"} @ {p.Timeframe}");
+    Console.WriteLine();
+
+    // Weighting mode: fixed (default) | invvol | hrp
+    var weightingArg = GetArg(args, "--weighting", "fixed").ToLowerInvariant();
+    var weightingMode = weightingArg switch
+    {
+        "invvol" or "inverse-vol" or "inversevolatility" => ThatsMyQuant.Application.Strategy.PortfolioWeightingMode.InverseVolatility,
+        "hrp" or "hierarchicalriskparity" => ThatsMyQuant.Application.Strategy.PortfolioWeightingMode.HierarchicalRiskParity,
+        "bl" or "blacklitterman" => ThatsMyQuant.Application.Strategy.PortfolioWeightingMode.BlackLitterman,
+        _ => ThatsMyQuant.Application.Strategy.PortfolioWeightingMode.Fixed,
+    };
+    Console.WriteLine($"Weighting:    {weightingMode}");
+    Console.WriteLine();
+
+    if (pairsOnly)
+    {
+        positions = positions.Where(p => p.Type == ThatsMyQuant.Application.Strategy.PortfolioPositionType.PairsArbitrage).ToArray();
+        Console.WriteLine($"PairsOnly mode: dropped funding legs, trading {positions.Length} pair strategies.");
+    }
+    if (zEntryOverride > 0)
+    {
+        var optAccessor = scope.ServiceProvider.GetRequiredService<IOptions<ThatsMyQuant.Contracts.Options.PairsTradingOptions>>();
+        optAccessor.Value.EntryZScoreThreshold = zEntryOverride;
+        Console.WriteLine($"ZScoreEntry override: {zEntryOverride}");
+    }
+    bool blockStopHunt = bool.Parse(GetArg(args, "--block-stop-hunt", "false"));
+    bool useGarch = bool.Parse(GetArg(args, "--use-garch", "false"));
+    if (blockStopHunt || useGarch)
+    {
+        var optAccessor = scope.ServiceProvider.GetRequiredService<IOptions<ThatsMyQuant.Contracts.Options.PairsTradingOptions>>();
+        if (blockStopHunt) optAccessor.Value.BlockEntryOnStopHunt = true;
+        if (useGarch) optAccessor.Value.UseGarchForwardVolSizing = true;
+        Console.WriteLine($"Wired modules: BlockStopHunt={blockStopHunt}, GarchForwardVol={useGarch}");
+    }
+    if (tiltAlpha)
+    {
+        // Reweight alpha-producers (ADA-XRP, BCH-LTC) up and marginals down.
+        positions = positions.Select(p => p.Name switch
+        {
+            "ADA-XRP-Pair-4h" => p with { CapitalWeight = 0.30m },
+            "BCH-LTC-Pair-4h" => p with { CapitalWeight = 0.30m },
+            "FIL-AR-Pair-4h"  => p with { CapitalWeight = 0.20m },
+            "TRX-XLM-Pair-4h" => p with { CapitalWeight = 0.10m },
+            "SOL-AVAX-Pair-4h" => p with { CapitalWeight = 0.05m },
+            _ => p
+        }).ToArray();
+        Console.WriteLine($"Tilt-alpha applied: ADA-XRP/BCH-LTC=30%, FIL-AR=20%, TRX-XLM=10%, SOL-AVAX=5%.");
+    }
+
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+    var result = await runner.RunAsync(positions, start, end, capital, weightingMode);
+    sw.Stop();
+
+    Console.WriteLine();
+    Console.WriteLine("=== Per-Strategy Results ===");
+    Console.WriteLine($"{"Name",-22} {"Trades",7} {"WR",8} {"Sharpe",8} {"PnL",12} {"PF",6}");
+    foreach (var s in result.StrategyResults)
+        Console.WriteLine($"{s.Name,-22} {s.Trades,7} {s.WinRate,8:P1} {s.SharpeRatio,8:F2} {s.NetPnl,12:N2} {s.ProfitFactor,6:F2}");
+
+    Console.WriteLine();
+    Console.WriteLine("=== Portfolio Aggregate ===");
+    Console.WriteLine($"Total Capital:  {result.TotalCapital:N2}");
+    Console.WriteLine($"Final Equity:   {result.FinalEquity:N2}");
+    Console.WriteLine($"Total PnL:      {result.TotalPnl:N2}  ({result.TotalPnlPct:P2})");
+    Console.WriteLine($"Portfolio Shp:  {result.PortfolioSharpe:F3}");
+    Console.WriteLine($"Max Drawdown:   {result.MaxDrawdown:P2}");
+    Console.WriteLine($"Trading Days:   {result.TradingDays}");
+
+    Console.WriteLine();
+    Console.WriteLine("=== Correlation Matrix ===");
+    Console.Write($"{"",-22}");
+    foreach (var n in result.StrategyNames) Console.Write($"{n.Substring(0, Math.Min(10, n.Length)),11}");
+    Console.WriteLine();
+    for (int i = 0; i < result.StrategyNames.Length; i++)
+    {
+        Console.Write($"{result.StrategyNames[i],-22}");
+        for (int j = 0; j < result.StrategyNames.Length; j++)
+            Console.Write($"{result.CorrelationMatrix[i, j],11:F3}");
+        Console.WriteLine();
+    }
+
+    double offDiagAvg = 0; int count = 0;
+    for (int i = 0; i < result.StrategyNames.Length; i++)
+    for (int j = 0; j < result.StrategyNames.Length; j++)
+        if (i != j) { offDiagAvg += result.CorrelationMatrix[i, j]; count++; }
+    if (count > 0) offDiagAvg /= count;
+    Console.WriteLine();
+    Console.WriteLine($"Average off-diagonal correlation: {offDiagAvg:F3}");
+    Console.WriteLine($"  ≤0.30 = true diversification; 0.30–0.60 = moderate; ≥0.60 = crowded");
     Console.WriteLine($"\nCompleted in {sw.Elapsed.TotalSeconds:F1}s");
 }
 
@@ -694,6 +1171,172 @@ static string GetArg(string[] args, string flag, string defaultValue)
     return defaultValue;
 }
 
+static async Task RunPairsAblationAsync(IServiceProvider services, string[] args)
+{
+    using var scope = services.CreateScope();
+    var histService = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Contracts.Interfaces.IHistoricalMarketDataService>();
+    var loggerFactory = scope.ServiceProvider.GetRequiredService<ILoggerFactory>();
+
+    var symbolA = GetArg(args, "--symbol-a", "BCH-USDT");
+    var symbolB = GetArg(args, "--symbol-b", "LTC-USDT");
+    var timeframe = GetArg(args, "--timeframe", "4h");
+    var capital = decimal.Parse(GetArg(args, "--capital", "10000"), System.Globalization.CultureInfo.InvariantCulture);
+    var daysBack = int.Parse(GetArg(args, "--days", "365"));
+    var bootstrapReps = int.Parse(GetArg(args, "--bootstrap", "1000"));
+
+    var end = DateTime.UtcNow;
+    var start = end.AddDays(-daysBack);
+
+    Console.WriteLine("=== Pairs Gate Ablation + Validation Toolkit ===");
+    Console.WriteLine($"Symbols:    {symbolA} / {symbolB}");
+    Console.WriteLine($"Timeframe:  {timeframe}");
+    Console.WriteLine($"Period:     {start:yyyy-MM-dd} -> {end:yyyy-MM-dd} ({daysBack} days)");
+    Console.WriteLine($"Capital:    {capital:N0}");
+    Console.WriteLine();
+
+    var candlesA = await histService.GetHistoricalCandlesAsync(symbolA, timeframe, start, end);
+    var candlesB = await histService.GetHistoricalCandlesAsync(symbolB, timeframe, start, end);
+    Console.WriteLine($"Loaded candles: A={candlesA.Count}, B={candlesB.Count}");
+
+    if (candlesA.Count < 100 || candlesB.Count < 100)
+    {
+        Console.WriteLine("Insufficient data, aborting.");
+        return;
+    }
+
+    // [F1/F2/F3 unified-plan ablation] Five configurations measured side-by-side:
+    //  • "Baseline":  every Sprint-2/3 + F1/F2/F3 gate OFF — pre-fixes reference.
+    //  • "Production": all foundation fixes ON (current PairsTradingOptions defaults).
+    //  • "Prod -F1":  Production minus regime gate — isolates F1's contribution.
+    //  • "Prod -F2":  Production minus OU-optimal stopping — isolates F2.
+    //  • "Prod -F3":  Production minus confluence floors — isolates F3.
+    ThatsMyQuant.Contracts.Options.PairsTradingOptions BuildOptions(
+        bool requireRangingRegime, bool useOuOptimalStopping, bool applyConfluenceFloors,
+        bool spreadVelocityOn) => new()
+    {
+        SymbolA = symbolA,
+        SymbolB = symbolB,
+        UseKalmanHedgeRatio = true,
+        KalmanProcessVariance = 1e-4,
+        KalmanInitialVariance = 1.0,
+        CointegrationLookbackBars = 180,
+        ZScoreWindow = 30,
+        MinCorrelation = 0.30,
+        MinAbsCorrelation = 0.30,
+        MaxHedgeRatio = 15.00m,
+        MinHedgeRatio = 0.10m,
+        MaxHurstExponent = 0.55,
+        RequireRangingRegime = requireRangingRegime,
+        ApplyConfluenceFloors = applyConfluenceFloors,
+        UseOuOptimalStopping = useOuOptimalStopping,
+        SpreadVelocityRejectThreshold = spreadVelocityOn ? 0.35 : 999.0,
+    };
+
+    ThatsMyQuant.Contracts.Models.BacktestResult RunCfg(
+        bool req, bool ou, bool conf, bool vel, string label)
+    {
+        var opts = Microsoft.Extensions.Options.Options.Create(BuildOptions(req, ou, conf, vel));
+        var run = new ThatsMyQuant.Application.Strategy.PairsBacktestRunner(
+            loggerFactory.CreateLogger<ThatsMyQuant.Application.Strategy.PairsBacktestRunner>(), opts);
+        var r = run.Run(candlesA, candlesB, capital);
+        Console.WriteLine($"  [{label,-12}] trades={r.TotalTrades,4}  Sharpe={r.SharpeRatio,6:F3}  PnL={r.TotalPnL,10:N2}");
+        return r;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("Running ablation matrix...");
+    var resultBaseline = RunCfg(req: false, ou: false, conf: false, vel: false, "Baseline");
+    var resultOn       = RunCfg(req: true,  ou: true,  conf: true,  vel: true,  "Production");
+    var resultMinusF1  = RunCfg(req: false, ou: true,  conf: true,  vel: true,  "Prod -F1");
+    var resultMinusF2  = RunCfg(req: true,  ou: false, conf: true,  vel: true,  "Prod -F2");
+    var resultMinusF3  = RunCfg(req: true,  ou: true,  conf: false, vel: true,  "Prod -F3");
+    var resultOff = resultBaseline; // back-compat alias for the existing report block
+
+    // Helper to extract per-trade pnl as fractions of capital for stats.
+    static double[] ToReturns(System.Collections.Generic.IReadOnlyList<ThatsMyQuant.Contracts.Models.BacktestTradeResult> trades, decimal capital)
+    {
+        var arr = new double[trades.Count];
+        for (int i = 0; i < trades.Count; i++) arr[i] = capital > 0 ? (double)(trades[i].PnL / capital) : 0;
+        return arr;
+    }
+    var retsOn = ToReturns(resultOn.Trades, capital);
+    var retsOff = ToReturns(resultOff.Trades, capital);
+
+    // -------- Validation toolkit --------
+    static (double psr, double dsr, double sharpeLow, double sharpeHigh) ComputeStats(double[] rets, int reps)
+    {
+        if (rets.Length < 4) return (0, 0, 0, 0);
+        double psr = ThatsMyQuant.Application.Strategy.DeflatedSharpeRatio.ProbabilisticSharpe(rets);
+        // Two trials = ON vs OFF — small selection-bias correction.
+        var dsrResult = ThatsMyQuant.Application.Strategy.DeflatedSharpeRatio.Compute(
+            rets, numTrials: 2, varianceOfTrialSharpes: 0.5);
+        var ci = ThatsMyQuant.Application.Strategy.BlockBootstrapSharpe.Compute(
+            rets, numBootstrap: reps, seed: 7);
+        return (psr, dsrResult.DeflatedSharpe, ci.LowerBound, ci.UpperBound);
+    }
+
+    var (psrOn, dsrOn, ciLowOn, ciHighOn) = ComputeStats(retsOn, bootstrapReps);
+    var (psrOff, dsrOff, ciLowOff, ciHighOff) = ComputeStats(retsOff, bootstrapReps);
+
+    // -------- Side-by-side report --------
+    Console.WriteLine();
+    Console.WriteLine("=== Ablation Results (Production Defaults vs Pre-Sprint Baseline) ===");
+    Console.WriteLine($"{"Metric",-20} {"Production",-15} {"All Off",-15} {"Delta",-15}");
+    Console.WriteLine(new string('-', 65));
+    void Row(string label, string on, string off, string delta) =>
+        Console.WriteLine($"{label,-20} {on,-15} {off,-15} {delta,-15}");
+    Row("Trades", resultOn.TotalTrades.ToString(), resultOff.TotalTrades.ToString(),
+        (resultOn.TotalTrades - resultOff.TotalTrades).ToString("+#;-#;0"));
+    Row("PnL", resultOn.TotalPnL.ToString("N2"), resultOff.TotalPnL.ToString("N2"),
+        (resultOn.TotalPnL - resultOff.TotalPnL).ToString("+N2;-N2;0"));
+    Row("Sharpe", resultOn.SharpeRatio.ToString("F3"), resultOff.SharpeRatio.ToString("F3"),
+        (resultOn.SharpeRatio - resultOff.SharpeRatio).ToString("+F3;-F3;0"));
+    Row("Sortino", resultOn.SortinoRatio.ToString("F3"), resultOff.SortinoRatio.ToString("F3"),
+        (resultOn.SortinoRatio - resultOff.SortinoRatio).ToString("+F3;-F3;0"));
+    Row("Win Rate %", resultOn.WinRate.ToString("F1"), resultOff.WinRate.ToString("F1"),
+        (resultOn.WinRate - resultOff.WinRate).ToString("+F1;-F1;0"));
+    Row("Profit Factor", resultOn.ProfitFactor.ToString("F2"), resultOff.ProfitFactor.ToString("F2"),
+        (resultOn.ProfitFactor - resultOff.ProfitFactor).ToString("+F2;-F2;0"));
+    Row("Max DD %", resultOn.MaxDrawdownPercent.ToString("F2"), resultOff.MaxDrawdownPercent.ToString("F2"),
+        (resultOn.MaxDrawdownPercent - resultOff.MaxDrawdownPercent).ToString("+F2;-F2;0"));
+
+    Console.WriteLine();
+    Console.WriteLine("=== Per-Fix Marginal Contribution (Production vs Production-minus-Fix) ===");
+    void FixRow(string label, ThatsMyQuant.Contracts.Models.BacktestResult minus)
+    {
+        double dSharpe = resultOn.SharpeRatio - minus.SharpeRatio;
+        int dTrades = resultOn.TotalTrades - minus.TotalTrades;
+        decimal dPnl = resultOn.TotalPnL - minus.TotalPnL;
+        Console.WriteLine($"  {label,-12} Sharpe Δ={dSharpe,+7:F3}  Trades Δ={dTrades,+5}  PnL Δ={dPnl,+12:N2}");
+    }
+    FixRow("F1 (regime)",   resultMinusF1);
+    FixRow("F2 (OU exit)",  resultMinusF2);
+    FixRow("F3 (confluence)", resultMinusF3);
+
+    Console.WriteLine();
+    Console.WriteLine("=== Validation Toolkit (Bailey-Lopez de Prado) ===");
+    Row("PSR", psrOn.ToString("P1"), psrOff.ToString("P1"), "");
+    Row("DSR (2 trials)", dsrOn.ToString("P1"), dsrOff.ToString("P1"), "");
+    Row("Sharpe 95% CI Low", ciLowOn.ToString("F3"), ciLowOff.ToString("F3"), "");
+    Row("Sharpe 95% CI High", ciHighOn.ToString("F3"), ciHighOff.ToString("F3"), "");
+
+    Console.WriteLine();
+    Console.WriteLine("=== Paper Restart Gate ===");
+    bool sharpePass = resultOn.SharpeRatio >= 0.5;
+    bool psrPass = psrOn >= 0.95;
+    bool dsrPass = dsrOn >= 0.95;
+    bool ciPass = ciLowOn >= 0.0;
+    bool noRegression = resultOn.SharpeRatio >= 0.9 * resultOff.SharpeRatio;
+    Console.WriteLine($"  Sharpe ≥ 0.5 (positive edge):     {(sharpePass ? "PASS" : "FAIL")}  ({resultOn.SharpeRatio:F3})");
+    Console.WriteLine($"  PSR ≥ 0.95 (vs zero):             {(psrPass ? "PASS" : "FAIL")}  ({psrOn:P1})");
+    Console.WriteLine($"  DSR ≥ 0.95 (selection-corrected): {(dsrPass ? "PASS" : "FAIL")}  ({dsrOn:P1})");
+    Console.WriteLine($"  Bootstrap CI lower ≥ 0:           {(ciPass ? "PASS" : "FAIL")}  ({ciLowOn:F3})");
+    Console.WriteLine($"  No regression vs gates-OFF:       {(noRegression ? "PASS" : "FAIL")}  (ON {resultOn.SharpeRatio:F3} vs OFF {resultOff.SharpeRatio:F3})");
+    bool allPass = sharpePass && psrPass && dsrPass && ciPass && noRegression;
+    Console.WriteLine();
+    Console.WriteLine($"  OVERALL: {(allPass ? "✅ READY for paper restart" : "❌ NOT READY — investigate failures above")}");
+}
+
 static void PrintUsage()
 {
     Console.WriteLine("ThatsMyQuant CLI - Backtest & Walk-Forward Engine");
@@ -739,6 +1382,202 @@ static void PrintUsage()
     Console.WriteLine("  dotnet run -- walkforward --symbol BTC-USDT --windows 8 --days 365");
     Console.WriteLine("  dotnet run -- paper --symbols BTC-USDT,ETH-USDT --iterations 20 --interval 60");
     Console.WriteLine("  dotnet run -- hftbacktest --symbol BTC-USDT --timeframe 5m --days 7 --ticks-csv data/ticks.csv --orderbooks-csv data/books.csv");
+}
+
+/// <summary>
+/// Edge Breadth Sweep — runs FundingAlphaBacktestRunner across N symbols and
+/// PairsBacktestRunner across NC2 pair combinations, applying an IS/OOS split so
+/// candidates that survive must pass BOTH windows. Outputs a ranked candidate list
+/// to disk for operator review (NEVER auto-promotes into Strategy:* config).
+///
+/// Usage:
+///   dotnet run -- edgesweep --days 365 --oos-days 90
+///                            --symbols BTC-USDT,ETH-USDT,SOL-USDT,...   (default: 30 OKX large-caps)
+///                            --funding-only        (skip pairs)
+///                            --pairs-only          (skip funding)
+///                            --min-pf 1.20 --min-oos-pf 1.10 --min-oos-sharpe 0.5 --min-oos-wr 0.45
+/// Output:  %LOCALAPPDATA%\ThatsMyQuant\edge_sweep_candidates.json
+/// </summary>
+static async Task RunEdgeSweepAsync(IServiceProvider services, string[] args)
+{
+    var daysBack = int.Parse(GetArg(args, "--days", "365"));
+    var oosDays = int.Parse(GetArg(args, "--oos-days", "90"));
+    var capital = decimal.Parse(GetArg(args, "--capital", "100000"), System.Globalization.CultureInfo.InvariantCulture);
+    var fundingTimeframe = GetArg(args, "--funding-timeframe", "1h");
+    var pairsTimeframe = GetArg(args, "--pairs-timeframe", "4h");
+    var minPf = decimal.Parse(GetArg(args, "--min-pf", "1.20"), System.Globalization.CultureInfo.InvariantCulture);
+    var minOosPf = decimal.Parse(GetArg(args, "--min-oos-pf", "1.10"), System.Globalization.CultureInfo.InvariantCulture);
+    var minOosSharpe = double.Parse(GetArg(args, "--min-oos-sharpe", "0.5"), System.Globalization.CultureInfo.InvariantCulture);
+    var minOosWr = decimal.Parse(GetArg(args, "--min-oos-wr", "0.45"), System.Globalization.CultureInfo.InvariantCulture);
+    var fundingOnly = args.Contains("--funding-only");
+    var pairsOnly = args.Contains("--pairs-only");
+
+    var symbolsCsv = GetArg(args, "--symbols",
+        "BTC-USDT,ETH-USDT,SOL-USDT,AVAX-USDT,LINK-USDT,LTC-USDT,DOGE-USDT,XRP-USDT,ADA-USDT,AAVE-USDT," +
+        "ATOM-USDT,DOT-USDT,NEAR-USDT,APT-USDT,SUI-USDT,ARB-USDT,OP-USDT,INJ-USDT,FIL-USDT,TRX-USDT," +
+        "XLM-USDT,BCH-USDT,UNI-USDT,ETC-USDT,MATIC-USDT,ALGO-USDT,FTM-USDT,SAND-USDT,GALA-USDT,EGLD-USDT");
+    var symbols = symbolsCsv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    var endUtc = DateTime.UtcNow;
+    var oosStart = endUtc.AddDays(-oosDays);
+    var isStart = endUtc.AddDays(-daysBack);
+    var perCapital = capital / Math.Max(symbols.Length, 1);
+
+    Console.WriteLine("=== Edge Breadth Sweep ===");
+    Console.WriteLine($"Universe:       {symbols.Length} symbols");
+    Console.WriteLine($"IS window:      {isStart:yyyy-MM-dd} → {oosStart:yyyy-MM-dd} ({daysBack - oosDays}d)");
+    Console.WriteLine($"OOS window:     {oosStart:yyyy-MM-dd} → {endUtc:yyyy-MM-dd} ({oosDays}d)");
+    Console.WriteLine($"Funding TF:     {fundingTimeframe}   Pairs TF: {pairsTimeframe}");
+    Console.WriteLine($"Per-symbol cap: {perCapital:N0}");
+    Console.WriteLine($"Gates:          IS PF≥{minPf}  AND  OOS PF≥{minOosPf} AND OOS Sharpe≥{minOosSharpe:F2} AND OOS WR≥{minOosWr:P0}");
+    Console.WriteLine();
+
+    using var scope = services.CreateScope();
+    var fundingRunner = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Application.Strategy.FundingAlphaBacktestRunner>();
+    var orchestrator = scope.ServiceProvider.GetRequiredService<BacktestOrchestrator>();
+    var histService = scope.ServiceProvider.GetRequiredService<ThatsMyQuant.Contracts.Interfaces.IHistoricalMarketDataService>();
+
+    var fundingCandidates = new List<object>();
+    var pairCandidates = new List<object>();
+    var sw = System.Diagnostics.Stopwatch.StartNew();
+
+    // ------- FUNDING SWEEP -------
+    if (!pairsOnly)
+    {
+        Console.WriteLine("--- Funding sweep ---");
+        var fcfg = new ThatsMyQuant.Application.Strategy.FundingAlphaConfig(
+            EntryThreshold: 0.0001m, ExitThreshold: 0.00005m,
+            TakeProfitPct: 0.02m, StopLossPct: 0.015m, MaxHoldingBars: 16);
+
+        int idx = 0;
+        foreach (var sym in symbols)
+        {
+            idx++;
+            try
+            {
+                var isCandles = await histService.GetHistoricalCandlesAsync(sym, fundingTimeframe, isStart, oosStart);
+                var oosCandles = await histService.GetHistoricalCandlesAsync(sym, fundingTimeframe, oosStart, endUtc);
+                if (isCandles.Count < 100 || oosCandles.Count < 60)
+                {
+                    Console.WriteLine($"  [{idx,2}/{symbols.Length}] {sym,-12} skipped (insufficient candles IS={isCandles.Count} OOS={oosCandles.Count})");
+                    continue;
+                }
+                var isResult = await fundingRunner.RunAsync(sym, isCandles, fcfg, perCapital);
+                var oosResult = await fundingRunner.RunAsync(sym, oosCandles, fcfg, perCapital);
+
+                var passes = (decimal)isResult.ProfitFactor >= minPf
+                    && (decimal)oosResult.ProfitFactor >= minOosPf
+                    && oosResult.SharpeRatio >= minOosSharpe
+                    && (decimal)oosResult.WinRate >= minOosWr;
+
+                var marker = passes ? "✓ PASS" : "  fail";
+                Console.WriteLine(
+                    $"  [{idx,2}/{symbols.Length}] {sym,-12} IS PF={isResult.ProfitFactor,5:F2} ({isResult.TotalTrades,3}t) | OOS PF={oosResult.ProfitFactor,5:F2} Sharpe={oosResult.SharpeRatio,5:F2} WR={oosResult.WinRate,5:P0} ({oosResult.TotalTrades,3}t) {marker}");
+
+                if (passes)
+                {
+                    fundingCandidates.Add(new
+                    {
+                        symbol = sym,
+                        isWindow = new { trades = isResult.TotalTrades, pf = Math.Round(isResult.ProfitFactor, 2), sharpe = Math.Round(isResult.SharpeRatio, 2), wr = Math.Round(isResult.WinRate, 3) },
+                        oosWindow = new { trades = oosResult.TotalTrades, pf = Math.Round(oosResult.ProfitFactor, 2), sharpe = Math.Round(oosResult.SharpeRatio, 2), wr = Math.Round(oosResult.WinRate, 3) },
+                        recommendedWeight = Math.Round(Math.Min(0.20, oosResult.SharpeRatio * 0.05), 3)
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  [{idx,2}/{symbols.Length}] {sym,-12} ERROR: {ex.Message}");
+            }
+        }
+        Console.WriteLine($"Funding sweep done: {fundingCandidates.Count} candidates passed gates.");
+        Console.WriteLine();
+    }
+
+    // ------- PAIRS SWEEP (NC2 combinations) -------
+    if (!fundingOnly)
+    {
+        Console.WriteLine("--- Pairs sweep ---");
+        var pairCount = symbols.Length * (symbols.Length - 1) / 2;
+        Console.WriteLine($"Testing {pairCount} pair combinations on {pairsTimeframe}...");
+        int tested = 0, admitted = 0;
+        var pairCapital = capital * 0.10m;  // small notional so PF/Sharpe are comparable
+
+        for (int i = 0; i < symbols.Length; i++)
+        {
+            for (int j = i + 1; j < symbols.Length; j++)
+            {
+                tested++;
+                var a = symbols[i]; var b = symbols[j];
+                try
+                {
+                    // Use full window for pairs (cointegration needs ≥250 bars on 4h)
+                    var fullS = await orchestrator.RunPairsSessionAsync(a, b, pairsTimeframe, isStart, endUtc, pairCapital);
+                    if (fullS.Status != BacktestSessionStatus.Completed || fullS.TotalTrades < 6) continue;
+
+                    // Re-run on OOS only
+                    var oosS = await orchestrator.RunPairsSessionAsync(a, b, pairsTimeframe, oosStart, endUtc, pairCapital);
+                    if (oosS.Status != BacktestSessionStatus.Completed) continue;
+
+                    var passes = (decimal)fullS.ProfitFactor >= minPf
+                        && (decimal)oosS.ProfitFactor >= minOosPf
+                        && oosS.SharpeRatio >= minOosSharpe;
+
+                    if (passes)
+                    {
+                        admitted++;
+                        Console.WriteLine($"  {a}/{b,-22} ✓ full PF={fullS.ProfitFactor:F2}  OOS PF={oosS.ProfitFactor:F2} Sharpe={oosS.SharpeRatio:F2} ({oosS.TotalTrades}t)");
+                        pairCandidates.Add(new
+                        {
+                            pair = $"{a}:{b}",
+                            full = new { trades = fullS.TotalTrades, pf = Math.Round(fullS.ProfitFactor, 2), sharpe = Math.Round(fullS.SharpeRatio, 2), winRate = Math.Round(fullS.WinRate, 1) },
+                            oos = new { trades = oosS.TotalTrades, pf = Math.Round(oosS.ProfitFactor, 2), sharpe = Math.Round(oosS.SharpeRatio, 2), winRate = Math.Round(oosS.WinRate, 1) },
+                            recommendedWeight = Math.Round(Math.Min(0.15, oosS.SharpeRatio * 0.05), 3)
+                        });
+                    }
+
+                    if (tested % 25 == 0)
+                        Console.WriteLine($"  ... progress {tested}/{pairCount} ({admitted} admitted so far)");
+                }
+                catch (Exception ex)
+                {
+                    if (tested % 50 == 0) Console.WriteLine($"  [{tested}/{pairCount}] {a}/{b} skipped: {ex.Message}");
+                }
+            }
+        }
+        Console.WriteLine($"Pairs sweep done: {admitted} candidates / {tested} tested.");
+        Console.WriteLine();
+    }
+
+    sw.Stop();
+
+    // Persist results.
+    var report = new
+    {
+        generatedUtc = DateTime.UtcNow,
+        elapsedSec = Math.Round(sw.Elapsed.TotalSeconds, 1),
+        windows = new { isFromUtc = isStart, oosFromUtc = oosStart, endUtc },
+        gates = new { minPf, minOosPf, minOosSharpe, minOosWr },
+        fundingCandidates,
+        pairCandidates
+    };
+    var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant");
+    Directory.CreateDirectory(dir);
+    var outPath = Path.Combine(dir, "edge_sweep_candidates.json");
+    var json = System.Text.Json.JsonSerializer.Serialize(report, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+    var tmp = outPath + ".tmp";
+    await File.WriteAllTextAsync(tmp, json);
+    File.Move(tmp, outPath, overwrite: true);
+
+    Console.WriteLine("=== Edge Sweep Summary ===");
+    Console.WriteLine($"Funding candidates: {fundingCandidates.Count}");
+    Console.WriteLine($"Pairs candidates:   {pairCandidates.Count}");
+    Console.WriteLine($"Elapsed:            {sw.Elapsed.TotalSeconds:F1}s");
+    Console.WriteLine($"Report:             {outPath}");
+    Console.WriteLine();
+    Console.WriteLine("NEXT STEP: review candidates JSON, pick winners, manually edit:");
+    Console.WriteLine("  - Funding:AllocationCsv  (in appsettings.Paper.json)");
+    Console.WriteLine("  - Strategy:PairsTrading:AllowedPairsCsv");
 }
 
 public sealed record StrictReadinessCell(
