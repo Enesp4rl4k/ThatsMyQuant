@@ -82,6 +82,22 @@ public class Trade
     /// <summary>Net perpetual funding cash-flow: positive = received, negative = paid.</summary>
     public decimal NetFunding { get; set; }
 
+    // ── Pillar 5: Paper-vs-Backtest Drift Tracking ──
+
+    /// <summary>Signal price at the moment the trade was triggered (before execution).</summary>
+    public decimal SignalPrice { get; set; }
+
+    /// <summary>Drift between signal price and actual fill price in basis points.</summary>
+    public decimal SignalToFillDriftBps => EntryPrice > 0m && SignalPrice > 0m
+        ? Math.Abs(EntryPrice - SignalPrice) / SignalPrice * 10_000m
+        : 0m;
+
+    /// <summary>Expected PnL from the backtest engine for this signal setup.</summary>
+    public decimal BacktestExpectedPnL { get; set; }
+
+    /// <summary>Execution source: BACKTEST, PAPER, or LIVE.</summary>
+    public string ExecutionSource { get; set; } = "BACKTEST";
+
     public DateTime EntryTime { get; set; }
     public DateTime? SubmittedTime { get; set; }
     public DateTime? LastUpdatedTime { get; set; }

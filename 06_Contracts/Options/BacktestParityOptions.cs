@@ -9,7 +9,12 @@ namespace ThatsMyQuant.Contracts.Options;
 public sealed class BacktestParityOptions
 {
     public bool RequireParityCoverage { get; set; } = false;
-    public bool RequireMlModelAvailability { get; set; } = true;
+    /// <summary>
+    /// When true, the quality gate requires the ML model file to exist and load.
+    /// Default: false — ML inference is advisory. The system gracefully degrades
+    /// without a trained model. Set to true only once a validated ONNX model ships.
+    /// </summary>
+    public bool RequireMlModelAvailability { get; set; } = false;
     public bool RequireInferencePredictionValidity { get; set; } = false;
 
     public DecisionCoverageFlags RequiredCoverageFlags { get; set; } =

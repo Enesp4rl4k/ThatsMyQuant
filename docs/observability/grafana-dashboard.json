@@ -1,0 +1,106 @@
+{
+  "title": "ThatsMyQuant · Paper-Trade Live Ops",
+  "uid": "tmq-live-ops",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-6h", "to": "now" },
+  "tags": ["thatsmyquant", "trading", "paper"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Available USDT",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "targets": [ { "expr": "tmq_portfolio_available_usdt", "legendFormat": "{{service}}" } ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 } }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Drawdown %",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "targets": [ { "expr": "tmq_portfolio_drawdown_percent" } ],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 5 } ] } } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Open Positions",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "targets": [ { "expr": "tmq_portfolio_open_positions_count" } ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Gross Notional (approx)",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "targets": [ { "expr": "tmq_portfolio_gross_notional_approx" } ],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 0 } }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Circuit Breaker",
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "targets": [ { "expr": "tmq_circuit_breaker_halted" } ],
+      "fieldConfig": { "defaults": { "mappings": [ { "type": "value", "options": { "0": { "text": "CLEAR", "color": "green" }, "1": { "text": "HALTED", "color": "red" } } } ] } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Execution Latency (ms)",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 7 },
+      "targets": [
+        { "expr": "tmq_execution_latency_average_ms", "legendFormat": "avg {{service}}" },
+        { "expr": "tmq_execution_latency_last_ms", "legendFormat": "last {{service}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Slippage (abs %)",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 7 },
+      "targets": [
+        { "expr": "tmq_entry_slippage_abs_percent_average", "legendFormat": "avg" },
+        { "expr": "tmq_entry_slippage_abs_percent_last", "legendFormat": "last" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 3 } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Trade Flow (counters, rate over 5m)",
+      "gridPos": { "x": 0, "y": 11, "w": 12, "h": 7 },
+      "targets": [
+        { "expr": "rate(tmq_trades_succeeded_total[5m])", "legendFormat": "executed" },
+        { "expr": "rate(tmq_trades_failed_total[5m])", "legendFormat": "failed" },
+        { "expr": "rate(tmq_signals_rejected_total[5m])", "legendFormat": "rejected" },
+        { "expr": "rate(tmq_signals_deadletter_total[5m])", "legendFormat": "deadletter" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Venue HTTP Errors (rate/5m)",
+      "gridPos": { "x": 12, "y": 11, "w": 12, "h": 7 },
+      "targets": [ { "expr": "rate(tmq_venue_http_errors_total[5m])", "legendFormat": "venue-errors" } ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Circuit Breaker Events",
+      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 6 },
+      "targets": [
+        { "expr": "tmq_circuit_breaker_drawdown_percent", "legendFormat": "DD %" },
+        { "expr": "tmq_circuit_breaker_consecutive_errors", "legendFormat": "consec errors" },
+        { "expr": "rate(tmq_circuit_breaker_orders_blocked_total[5m])", "legendFormat": "orders blocked/5m" },
+        { "expr": "rate(tmq_circuit_breaker_rate_limit_hits_total[5m])", "legendFormat": "rate-limit hits/5m" }
+      ]
+    }
+  ],
+  "templating": { "list": [] },
+  "annotations": { "list": [] }
+}

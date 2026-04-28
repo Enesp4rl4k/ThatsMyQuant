@@ -19,15 +19,27 @@ using ThatsMyQuant.Infrastructure.Ai;
 using Microsoft.SemanticKernel;
 using Microsoft.SemanticKernel.ChatCompletion;
 using ThatsMyQuant.Infrastructure.Services.Validators;
+using Listener.Api.Auth;
+using Listener.Api.Endpoints;
 using Listener.Api.Hubs;
 using Listener.Api.Services;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+using System.Text;
 using Serilog;
 using ThatsMyQuant.Application.Observability;
 
 PerformanceBootstrapper.OptimizeForHft();
 
 var builder = WebApplication.CreateBuilder(args);
+// Runtime overrides — operators tune a small whitelist via PATCH /api/settings/runtime.
+// Reload-on-change so IOptionsMonitor<T> consumers pick up changes without restart.
+builder.Configuration.AddJsonFile(
+    Path.Combine(builder.Environment.ContentRootPath, "appsettings.runtime.json"),
+    optional: true,
+    reloadOnChange: true);
 builder.Configuration.ApplySharedExchangeConfiguration();
+builder.Configuration.ApplySharedTelegramConfiguration();
 var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
 var isOkxMode =
     selectedExchangeMode.Equals("OKX", StringComparison.OrdinalIgnoreCase) ||
@@ -45,9 +57,20 @@ var binanceBaseUrl = selectedExchangeMode switch
     _ => "https://api.binance.com"
 };
 
+var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "logs");
+Directory.CreateDirectory(logDir);
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
+    .Enrich.WithProperty("Service", "Listener.Api")
     .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({CorrelationId}) {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File(
+        new Serilog.Formatting.Compact.CompactJsonFormatter(),
+        Path.Combine(logDir, "listener-.clef"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        fileSizeLimitBytes: 50L * 1024 * 1024,
+        rollOnFileSizeLimit: true,
+        shared: true)
     .CreateLogger();
 builder.Host.UseSerilog();
 
@@ -76,7 +99,16 @@ builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
 
 // --- MediatR ---
-builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly));
+// Register MediatR handlers from BOTH the Contracts assembly (for command/notification types)
+// and the Application assembly (where ProcessSignalHandler / SwarmNegotiationRequest /
+// CircuitBreakerFlattenHandler etc. live). Without the second registration, any endpoint
+// that does mediator.Send(new ProcessSignalCommand(...)) — webhook receivers, manual order
+// entry, signal ingestion worker — gets "No service for IRequestHandler<>" at runtime.
+builder.Services.AddMediatR(cfg =>
+{
+    cfg.RegisterServicesFromAssembly(typeof(ProcessSignalCommand).Assembly);
+    cfg.RegisterServicesFromAssembly(typeof(ThatsMyQuant.Application.Handlers.ProcessSignalHandler).Assembly);
+});
 
 // --- HttpClient ---
 builder.Services.AddHttpClient();
@@ -137,6 +169,9 @@ Log.Information(
     credentialSource,
     executionSyncEnabled);
 
+// Listener.Api only receives webhooks and forwards them via MediatR —
+// it never places orders itself, so exchange credentials are optional here.
+// The safety policy still blocks LIVE mode without the explicit acknowledgement flag.
 StartupSafetyPolicy.EnforceOrThrow(
     "Listener.Api",
     selectedExchangeMode,
@@ -145,7 +180,8 @@ StartupSafetyPolicy.EnforceOrThrow(
     isOkxDemo,
     allowLiveTrading,
     hasOkxCredentials,
-    hasBinanceCredentials);
+    hasBinanceCredentials,
+    requiresTradingCredentials: false);
 
 if (isOkxMode && hasOkxCredentials)
 {
@@ -200,6 +236,17 @@ builder.Services.AddSingleton<IVenueTradeFeeProvider>(sp =>
     var ex = sp.GetRequiredService<IExchangeService>();
     return ex as IVenueTradeFeeProvider ?? new NullVenueTradeFeeProvider();
 });
+
+// IExchangePositionReader bridges /api/paper/exchange-positions to OKX's
+// /api/v5/account/positions (which IExchangeService.GetAccountStatusAsync doesn't surface).
+// Worker registers the same way; this mirrors it so Listener.Api can show real OKX swap positions.
+builder.Services.AddSingleton<IExchangePositionReader>(sp =>
+{
+    var ex = sp.GetRequiredService<IExchangeService>();
+    if (ex is IExchangePositionReader reader) return reader;
+    Log.Warning("Listener.Api: IExchangeService does not implement IExchangePositionReader — exchange-positions endpoint will return empty.");
+    return new Listener.Api.NullExchangePositionReader();
+});
 builder.Services.Replace(ServiceDescriptor.Singleton<IExecutionCostSnapshotCache, ExecutionCostSnapshotCache>());
 
 builder.Services.AddSingleton<ITickLogger, JsonlTickLogger>();
@@ -238,6 +285,23 @@ builder.Services.AddHostedService<WebhookCleanupService>();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<MarketDataBroadcastService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MarketDataBroadcastService>());
+// Real-time L2 order book via OKX public WS (books5 channel).
+// Registered only in OKX mode — falls back to synthetic REST polling otherwise.
+if (isOkxMode)
+{
+    builder.Services.AddSingleton<OkxOrderBookSubscriber>();
+    builder.Services.AddHostedService(sp => sp.GetRequiredService<OkxOrderBookSubscriber>());
+}
+builder.Services.AddHostedService<PortfolioBroadcastWorker>();
+builder.Services.AddSingleton<WritableSettingsStore>();
+builder.Services.AddHostedService<OperatorAlertBridgeWorker>();
+builder.Services.AddSingleton<ThatsMyQuant.Contracts.Interfaces.IOperatorAlertPublisher, MediatorOperatorAlertPublisher>();
+builder.Services.AddHostedService<OperatorAlertDbReaderWorker>();
+builder.Services.AddHostedService<ThatsMyQuant.Infrastructure.Services.ServiceHeartbeatHostedService>();
+builder.Services.AddTransient<MediatR.INotificationHandler<ThatsMyQuant.Contracts.Notifications.PositionOpenedNotification>, RealtimeBroadcaster>();
+builder.Services.AddTransient<MediatR.INotificationHandler<ThatsMyQuant.Contracts.Notifications.PositionClosedNotification>, RealtimeBroadcaster>();
+builder.Services.AddTransient<MediatR.INotificationHandler<ThatsMyQuant.Application.Strategy.ProMode.CircuitBreakerTrippedNotification>, RealtimeBroadcaster>();
+builder.Services.AddTransient<MediatR.INotificationHandler<ThatsMyQuant.Contracts.Notifications.OperatorAlertNotification>, RealtimeBroadcaster>();
 
 builder.Services.AddCors(options =>
 {
@@ -250,6 +314,56 @@ builder.Services.AddCors(options =>
     });
 });
 
+// Phase 14 — JWT auth (off by default; opt-in via Auth:Enabled = true).
+// When disabled, [Authorize] is treated as anonymous so existing X-Api-Key flow keeps working.
+builder.Services.Configure<AuthOptions>(builder.Configuration.GetSection(AuthOptions.SectionName));
+var authOptions = builder.Configuration.GetSection(AuthOptions.SectionName).Get<AuthOptions>() ?? new AuthOptions();
+if (string.IsNullOrWhiteSpace(authOptions.JwtSecret))
+{
+    // Generate a per-install secret and persist it back to appsettings.runtime.json so subsequent
+    // restarts keep the same key (otherwise everyone's tokens would invalidate on every boot).
+    authOptions.JwtSecret = JwtTokenService.GenerateSecret();
+    var runtimeJsonPath = Path.Combine(builder.Environment.ContentRootPath, "appsettings.runtime.json");
+    try
+    {
+        var existing = File.Exists(runtimeJsonPath)
+            ? System.Text.Json.JsonDocument.Parse(File.ReadAllText(runtimeJsonPath)).RootElement
+            : default;
+        var dict = existing.ValueKind == System.Text.Json.JsonValueKind.Object
+            ? System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(existing.GetRawText())
+                ?? new Dictionary<string, object>()
+            : new Dictionary<string, object>();
+        dict["Auth"] = new { authOptions.Enabled, authOptions.JwtSecret, authOptions.Issuer, authOptions.Audience, authOptions.TokenLifetimeHours };
+        File.WriteAllText(runtimeJsonPath,
+            System.Text.Json.JsonSerializer.Serialize(dict, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+        builder.Configuration.AddJsonFile(runtimeJsonPath, optional: true, reloadOnChange: true);
+    }
+    catch
+    {
+        // Fall through — secret stays in-memory, tokens invalidate on restart but the app still works.
+    }
+}
+builder.Services.AddSingleton<JwtTokenService>();
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.RequireHttpsMetadata = false;
+        options.SaveToken = true;
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateIssuerSigningKey = true,
+            ValidateLifetime = true,
+            ValidIssuer = authOptions.Issuer,
+            ValidAudience = authOptions.Audience,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(authOptions.JwtSecret)),
+            ClockSkew = TimeSpan.FromMinutes(2),
+        };
+    });
+builder.Services.AddAuthorization();
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())
@@ -257,6 +371,7 @@ if (!app.Environment.IsDevelopment())
     app.UseHttpsRedirection();
 }
 app.UseRateLimiter();
+app.UseCors("AllowReact");
 app.UseMiddleware<CorrelationIdMiddleware>();
 
 // Database Migration
@@ -286,11 +401,29 @@ using (var scope = app.Services.CreateScope())
 
 app.Services.GetRequiredService<ServiceRuntimeState>().MarkReady();
 
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseMiddleware<HmacValidationMiddleware>();
 app.UseMiddleware<ApiKeyValidationMiddleware>();
-app.UseCors("AllowReact");
 
 app.MapObservabilityEndpoints(app.Services);
+app.MapDashboardEndpoints();
+app.MapProModeEndpoints();
+app.MapFundingEndpoints();
+app.MapPairsEndpoints();
+app.MapStrategyEndpoints();
+app.MapPaperStateEndpoints();
+app.MapLiveSignalEndpoints();
+app.MapQuantLabEndpoints();
+app.MapAlphaPortfolioEndpoints();
+app.MapSettingsEndpoints();
+app.MapAiEndpoints();
+app.MapPromotionEndpoints();
+app.MapAuditEndpoints();
+app.MapSystemHealthEndpoints();
+app.MapAuthEndpoints();
+app.MapMarketsEndpoints();
+app.MapDashboardIntelEndpoints();
 
 app.MapPost("/webhook", async (Signal signal, HttpContext context, IMediator mediator) =>
 {

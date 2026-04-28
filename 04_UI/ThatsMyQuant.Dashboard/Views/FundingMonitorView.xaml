@@ -1,0 +1,105 @@
+<UserControl x:Class="ThatsMyQuant.Dashboard.Views.FundingMonitorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{StaticResource AppBg}"
+             Foreground="{StaticResource TextMain}"
+             FontFamily="{StaticResource PrimaryFont}">
+    <Grid Margin="0,8,0,0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,0,12">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="FUNDING RATE MONITOR" FontSize="15" FontWeight="Black" Foreground="{StaticResource TextMain}"/>
+                    <TextBlock Text="Live perpetual funding rates across 20 symbols from OKX. Color-coded against validated entry thresholds: ±1bp watch, ±3bp strong signal (fade the crowd)."
+                               Foreground="{StaticResource TextMuted}" FontSize="10" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="{Binding StatusMessage}" Foreground="{Binding StatusColor}" FontSize="10" FontWeight="Bold" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Foreground="{StaticResource TextMuted}" FontSize="9" Margin="0,4,0,0">
+                        <Run Text="Last refresh: "/>
+                        <Run Text="{Binding LastRefreshUtc, StringFormat={}{0:yyyy-MM-dd HH:mm:ss} UTC}"/>
+                    </TextBlock>
+                </StackPanel>
+                <StackPanel Grid.Column="1" VerticalAlignment="Top" Orientation="Horizontal">
+                    <CheckBox Content="AUTO (60s)" IsChecked="{Binding AutoRefreshEnabled, Mode=TwoWay}"
+                              Foreground="{StaticResource TextMain}" VerticalAlignment="Center"
+                              FontSize="10" FontWeight="Bold" Margin="0,0,12,0"/>
+                    <Button Content="REFRESH" Command="{Binding RefreshCommand}"
+                            Background="{StaticResource Accent}" Foreground="White"
+                            FontSize="10" FontWeight="Black" BorderThickness="0" Padding="14,8"
+                            IsEnabled="{Binding IsRefreshing, Converter={StaticResource InverseBooleanConverter}}"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Style="{StaticResource TerminalCardStyle}">
+            <DataGrid ItemsSource="{Binding Rows}" AutoGenerateColumns="False" IsReadOnly="True"
+                      Background="Transparent" BorderThickness="0" HeadersVisibility="Column"
+                      GridLinesVisibility="None" RowBackground="Transparent" AlternatingRowBackground="#0A2A3B5E"
+                      ColumnHeaderHeight="28" RowHeight="34"
+                      Foreground="{StaticResource TextMain}">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="SYMBOL" Binding="{Binding Symbol}" Width="140">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontWeight" Value="Bold"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextMain}"/>
+                                <Setter Property="VerticalAlignment" Value="Center"/>
+                                <Setter Property="Padding" Value="10,0,0,0"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="CURRENT RATE" Binding="{Binding CurrentRate, StringFormat={}{0:F6}}" Width="140">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="BPS / 8H" Binding="{Binding RateBps, StringFormat={}{0:+0.00;-0.00;0.00}}" Width="110">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                                <Setter Property="FontWeight" Value="Bold"/>
+                                <Setter Property="Foreground" Value="{Binding SignalColor}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTemplateColumn Header="10D HISTORY" Width="140">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <Border Background="#0A1F2E" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="2" Margin="4,2">
+                                    <Canvas Width="{Binding SparklineWidth}" Height="{Binding SparklineHeight}" ClipToBounds="True">
+                                        <Polyline Points="{Binding SparklinePoints}" Stroke="{Binding SignalColor}" StrokeThickness="1.3"/>
+                                    </Canvas>
+                                </Border>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="SIGNAL" Binding="{Binding Signal}" Width="*">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontWeight" Value="Bold"/>
+                                <Setter Property="Foreground" Value="{Binding SignalColor}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Header="LAST UPDATE (UTC)" Binding="{Binding LastUpdatedUtc, StringFormat={}{0:HH:mm:ss}}" Width="140">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="FontFamily" Value="{StaticResource MonoFont}"/>
+                                <Setter Property="Foreground" Value="{StaticResource TextMuted}"/>
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+    </Grid>
+</UserControl>

@@ -23,6 +23,7 @@ using ThatsMyQuant.Execution.Worker;
 var builder = Host.CreateApplicationBuilder(args);
 builder.Configuration.AddJsonFile("exchange_settings.json", optional: true, reloadOnChange: true);
 builder.Configuration.ApplySharedExchangeConfiguration();
+builder.Configuration.ApplySharedTelegramConfiguration();
 var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
 var isBinanceMode =
     selectedExchangeMode.Equals("Binance", StringComparison.OrdinalIgnoreCase) ||
@@ -56,9 +57,20 @@ builder.Services.AddHttpClient("OkxPublic", c =>
 
 var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
 
+var logDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "logs");
+Directory.CreateDirectory(logDir);
 Log.Logger = new LoggerConfiguration()
     .Enrich.FromLogContext()
+    .Enrich.WithProperty("Service", "Execution.Worker")
     .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] ({CorrelationId}) {Message:lj}{NewLine}{Exception}")
+    .WriteTo.File(
+        new Serilog.Formatting.Compact.CompactJsonFormatter(),
+        Path.Combine(logDir, "execution-.clef"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        fileSizeLimitBytes: 50L * 1024 * 1024,
+        rollOnFileSizeLimit: true,
+        shared: true)
     .CreateLogger();
 builder.Logging.ClearProviders();
 builder.Services.AddSerilog();
@@ -150,6 +162,11 @@ Log.Information(
     credentialSource,
     executionSyncEnabled);
 
+// In paper mode the Execution.Worker tick pipeline runs against the paper simulator;
+// real venue credentials are optional. Live/real modes keep the strict requirement.
+var tmqMode = (builder.Configuration["TMQ_MODE"] ?? "live").Trim().ToLowerInvariant();
+var execRequiresCreds = !string.Equals(tmqMode, "paper", StringComparison.OrdinalIgnoreCase);
+
 StartupSafetyPolicy.EnforceOrThrow(
     "Execution.Worker",
     selectedExchangeMode,
@@ -158,7 +175,8 @@ StartupSafetyPolicy.EnforceOrThrow(
     isOkxDemo,
     allowLiveTrading,
     hasOkxCredentials,
-    hasBinanceCredentials);
+    hasBinanceCredentials,
+    requiresTradingCredentials: execRequiresCreds);
 
 if (isOkxMode && hasOkxCredentials)
 {
@@ -223,6 +241,7 @@ builder.Services.Replace(ServiceDescriptor.Singleton<IExecutionCostSnapshotCache
 
 builder.Services.AddHostedService<WorkerManagementApiHostedService>();
 builder.Services.AddHostedService<ExchangeExecutionSyncHostedService>();
+builder.Services.AddHostedService<ServiceHeartbeatHostedService>();
 builder.Services.AddHostedService<ExecutionWorker>();
 
 var host = builder.Build();

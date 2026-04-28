@@ -64,6 +64,15 @@ public sealed class StrategyPerformanceState
     public List<StrategyBucketPerformanceSnapshot> LiveBuckets { get; set; } = new();
     public List<StrategyBucketPerformanceSnapshot> PaperBuckets { get; set; } = new();
     public List<ExitPolicyPerformanceSnapshot> ExitPolicyBuckets { get; set; } = new();
+    public bool PortfolioValidationReady { get; set; }
+    public int PortfolioReadySymbols { get; set; }
+    public int PortfolioRequiredSymbols { get; set; }
+    public decimal PortfolioPooledPnL { get; set; }
+    public double PortfolioAverageSharpe { get; set; }
+    public double PortfolioAverageProfitFactor { get; set; }
+    public decimal PortfolioAverageExpectancyPerTrade { get; set; }
+    public string PortfolioValidationSummary { get; set; } = string.Empty;
+    public DateTime PortfolioValidationRecordedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime RecordedAtUtc { get; set; } = DateTime.UtcNow;
 
     public StrategyPerformanceState Clone()
@@ -74,6 +83,15 @@ public sealed class StrategyPerformanceState
             LiveBuckets = LiveBuckets.Select(b => b.Clone()).ToList(),
             PaperBuckets = PaperBuckets.Select(b => b.Clone()).ToList(),
             ExitPolicyBuckets = ExitPolicyBuckets.Select(b => b.Clone()).ToList(),
+            PortfolioValidationReady = PortfolioValidationReady,
+            PortfolioReadySymbols = PortfolioReadySymbols,
+            PortfolioRequiredSymbols = PortfolioRequiredSymbols,
+            PortfolioPooledPnL = PortfolioPooledPnL,
+            PortfolioAverageSharpe = PortfolioAverageSharpe,
+            PortfolioAverageProfitFactor = PortfolioAverageProfitFactor,
+            PortfolioAverageExpectancyPerTrade = PortfolioAverageExpectancyPerTrade,
+            PortfolioValidationSummary = PortfolioValidationSummary,
+            PortfolioValidationRecordedAtUtc = PortfolioValidationRecordedAtUtc,
             RecordedAtUtc = RecordedAtUtc
         };
     }
@@ -142,6 +160,7 @@ public sealed class StrategyBucketPerformanceSnapshot
     public bool ScaledLiveEligible { get; set; }
     public bool PromotionReady { get; set; }
     public string PromotionStage { get; set; } = "Backtest";
+    public string PaperPromotionSummary { get; set; } = string.Empty;
     public DateTime RecordedAtUtc { get; set; } = DateTime.UtcNow;
 
     public StrategyBucketPerformanceSnapshot Clone()

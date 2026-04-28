@@ -87,6 +87,12 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         var ema50Results = quotes.GetEma(50).ToList();
         var bbResults = quotes.GetBollingerBands(20, 2).ToList();
         var atrResults = quotes.GetAtr(14).ToList();
+        // 2026-04-24 alpha expansion: ADX/DI for trend-strength, ROC for momentum,
+        // StochRSI for mean-reversion pivots. Fills the feature gap left by zeroed
+        // MACD/AlphaTrend/PMax (all IC-failed).
+        var adxResults = quotes.GetAdx(14).ToList();
+        var rocResults = quotes.GetRoc(10).ToList();
+        var stochRsiResults = quotes.GetStochRsi(14, 14, 3, 3).ToList();
 
         var latestRsi = rsiResults.LastOrDefault();
         var latestMacd = macdResults.LastOrDefault();
@@ -94,6 +100,9 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         var latestEma50 = ema50Results.LastOrDefault();
         var latestBb = bbResults.LastOrDefault();
         var latestAtr = atrResults.LastOrDefault();
+        var latestAdx = adxResults.LastOrDefault();
+        var latestRoc = rocResults.LastOrDefault();
+        var latestStochRsi = stochRsiResults.LastOrDefault();
 
         // Volume ratio
         var volumeValues = candles.Select(c => (double)c.Volume).ToList();
@@ -132,12 +141,19 @@ public class QuantIndicatorService : ITechnicalAnalysisService
             BollingerMiddle = latestBb?.Sma,
             BollingerLower = latestBb?.LowerBand,
             ATR = latestAtr?.Atr,
+            ADX = latestAdx?.Adx,
+            DIPlus = latestAdx?.Pdi,
+            DIMinus = latestAdx?.Mdi,
+            ROC = latestRoc?.Roc,
+            StochRsiK = latestStochRsi?.StochRsi,
+            StochRsiD = latestStochRsi?.Signal,
             VolumeRatio = volumeRatio,
             AlphaTrend = latestAlphaTrend,
             PMax = latestPMax,
             SupportResistanceLevels = srLevels,
             NearestSupport = nearestSupport,
             NearestResistance = nearestResistance,
+            BarOpen = candles.Last().Open,
             CurrentPrice = candles.Last().Close,
             DetectedPattern = detectedPattern,
             ComputedAt = DateTime.UtcNow
@@ -168,7 +184,7 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         var market = ResolveMarket(signal.Symbol);
         var sessionGate = EvaluateSessionGate(market, candles.Last().Timestamp, regime.Regime);
 
-        // --- Confluence Strategy (expanded: 7 indicators, max 140 points) ---
+        // --- Confluence Strategy ---
         var (buyScore, sellScore, reasons) = EvaluateConfluence(indicators, regime);
 
         var bestSide = buyScore >= sellScore ? TradeSide.Buy : TradeSide.Sell;
@@ -176,7 +192,9 @@ public class QuantIndicatorService : ITechnicalAnalysisService
 
         // Keep alpha scoring independent from session timing so valid setups are not
         // double-penalized by both confidence and position sizing.
-        int normalizedScore = Math.Min(100, (int)(bestScore * 100.0 / 105.0));
+        // 2026-04-24: denominator tightened from 105 -> 85 after zeroing weak-alpha
+        // contributors so validated BB/SR/EMA setups are not under-scored.
+        int normalizedScore = Math.Min(100, (int)(bestScore * 100.0 / 85.0));
 
         _logger.LogInformation("Confluence: BuyScore={Buy}/140, SellScore={Sell}/140, Normalized={Norm}/100 ({Side})",
             buyScore, sellScore, normalizedScore, bestSide);
@@ -196,6 +214,14 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         if (!tradeabilityGate.Passed)
         {
             var gateReason = $"Tradeability gate failed: {tradeabilityGate.Reason}";
+            _logger.LogWarning("Trade REJECTED: {Reason}", gateReason);
+            return TradeDecision.Reject(gateReason, indicators);
+        }
+
+        var alphaQualityGate = EvaluateAlphaQualityGate(indicators, regime.Regime, bestSide);
+        if (!alphaQualityGate.Passed)
+        {
+            var gateReason = $"Alpha quality gate failed: {alphaQualityGate.Reason}";
             _logger.LogWarning("Trade REJECTED: {Reason}", gateReason);
             return TradeDecision.Reject(gateReason, indicators);
         }
@@ -307,6 +333,86 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         };
     }
 
+    private static (bool Passed, string Reason) EvaluateAlphaQualityGate(
+        IndicatorSnapshot ind,
+        MarketRegime regime,
+        TradeSide side)
+    {
+        return regime switch
+        {
+            MarketRegime.Ranging => EvaluateRangeAlphaQuality(ind, side),
+            MarketRegime.Trending => EvaluateTrendAlphaQuality(ind, side),
+            MarketRegime.Volatile => EvaluateVolatileAlphaQuality(ind, side),
+            _ => (true, "Fallback alpha quality gate passed.")
+        };
+    }
+
+    private static (bool Passed, string Reason) EvaluateRangeAlphaQuality(IndicatorSnapshot ind, TradeSide side)
+    {
+        bool nearSupport = ind.NearestSupport is not null &&
+                           Math.Abs(ind.CurrentPrice - ind.NearestSupport.Price) / ind.CurrentPrice <= 0.012m &&
+                           ind.NearestSupport.TestCount >= 2;
+        bool nearResistance = ind.NearestResistance is not null &&
+                              Math.Abs(ind.NearestResistance.Price - ind.CurrentPrice) / ind.CurrentPrice <= 0.012m &&
+                              ind.NearestResistance.TestCount >= 2;
+        bool bbLong = ind.BollingerLower.HasValue && ind.BollingerUpper.HasValue &&
+                      (double)ind.CurrentPrice <= ind.BollingerLower.Value + ((ind.BollingerUpper.Value - ind.BollingerLower.Value) * 0.1);
+        bool bbShort = ind.BollingerLower.HasValue && ind.BollingerUpper.HasValue &&
+                       (double)ind.CurrentPrice >= ind.BollingerUpper.Value - ((ind.BollingerUpper.Value - ind.BollingerLower.Value) * 0.1);
+        double rsi = ind.RSI ?? 50;
+
+        if (side == TradeSide.Buy)
+        {
+            if ((nearSupport || bbLong) && rsi <= 48) return (true, "Range alpha setup confirmed.");
+            return (false, "Range long needs BB/SR support plus soft RSI.");
+        }
+
+        if ((nearResistance || bbShort) && rsi >= 52) return (true, "Range alpha setup confirmed.");
+        return (false, "Range short needs BB/SR resistance plus stretched RSI.");
+    }
+
+    private static (bool Passed, string Reason) EvaluateTrendAlphaQuality(IndicatorSnapshot ind, TradeSide side)
+    {
+        if (!ind.EMA20.HasValue || !ind.EMA50.HasValue) return (false, "Trend alpha requires EMA alignment.");
+
+        double rsi = ind.RSI ?? 50;
+        bool volumeOk = (ind.VolumeRatio ?? 0) >= 0.9;
+        // RSI ceiling raised from 62→73: aligns with EvaluateRsi which now scores RSI 55-73
+        // as bullish continuation. Previously the quality gate blocked setups that RSI scoring
+        // correctly identified as trend-continuation longs (RSI 62-72 in an uptrend is healthy).
+        bool longTrend = ind.EMA20 > ind.EMA50 && ind.CurrentPrice >= (decimal)ind.EMA20 && rsi is >= 40 and <= 73;
+        bool shortTrend = ind.EMA20 < ind.EMA50 && ind.CurrentPrice <= (decimal)ind.EMA20 && rsi is >= 27 and <= 60;
+
+        if (side == TradeSide.Buy)
+            return longTrend && volumeOk
+                ? (true, "Trend alpha setup confirmed.")
+                : (false, "Trend long needs EMA alignment, pullback RSI and non-dead volume.");
+
+        return shortTrend && volumeOk
+            ? (true, "Trend alpha setup confirmed.")
+            : (false, "Trend short needs EMA alignment, pullback RSI and non-dead volume.");
+    }
+
+    private static (bool Passed, string Reason) EvaluateVolatileAlphaQuality(IndicatorSnapshot ind, TradeSide side)
+    {
+        if (!ind.EMA20.HasValue || !ind.EMA50.HasValue) return (false, "Volatility alpha requires EMA alignment.");
+
+        bool volumeOk = (ind.VolumeRatio ?? 0) >= 1.5;
+        bool bbLong = ind.BollingerUpper.HasValue && (double)ind.CurrentPrice >= ind.BollingerUpper.Value * 0.995;
+        bool bbShort = ind.BollingerLower.HasValue && (double)ind.CurrentPrice <= ind.BollingerLower.Value * 1.005;
+        bool longTrend = ind.EMA20 >= ind.EMA50;
+        bool shortTrend = ind.EMA20 <= ind.EMA50;
+
+        if (side == TradeSide.Buy)
+            return volumeOk && bbLong && longTrend
+                ? (true, "Volatility alpha setup confirmed.")
+                : (false, "Volatility long needs expansion volume, upper-band pressure and EMA support.");
+
+        return volumeOk && bbShort && shortTrend
+            ? (true, "Volatility alpha setup confirmed.")
+            : (false, "Volatility short needs expansion volume, lower-band pressure and EMA support.");
+    }
+
     private static (bool Passed, string Reason) EvaluateTrendingGate(
         IndicatorSnapshot ind,
         TradeSide side,
@@ -336,13 +442,17 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         decimal atr)
     {
         var rsi = ind.RSI ?? 50;
-        var buyOk = supportRoom <= atr * 1.4m && rsi <= 45;
-        var sellOk = resistanceRoom <= atr * 1.4m && rsi >= 55;
+        bool bbLong = ind.BollingerLower.HasValue && ind.BollingerUpper.HasValue &&
+                      (double)ind.CurrentPrice <= ind.BollingerLower.Value + ((ind.BollingerUpper.Value - ind.BollingerLower.Value) * 0.15);
+        bool bbShort = ind.BollingerLower.HasValue && ind.BollingerUpper.HasValue &&
+                       (double)ind.CurrentPrice >= ind.BollingerUpper.Value - ((ind.BollingerUpper.Value - ind.BollingerLower.Value) * 0.15);
+        var buyOk = (supportRoom <= atr * 1.8m || bbLong) && rsi <= 50;
+        var sellOk = (resistanceRoom <= atr * 1.8m || bbShort) && rsi >= 50;
 
         if (side == TradeSide.Buy && !buyOk)
-            return (false, "Range regime buy needs proximity to support and softer RSI.");
+            return (false, "Range regime buy needs BB/SR support and soft RSI.");
         if (side == TradeSide.Sell && !sellOk)
-            return (false, "Range regime sell needs proximity to resistance and stretched RSI.");
+            return (false, "Range regime sell needs BB/SR resistance and stretched RSI.");
 
         return (true, "Range regime mean-reversion gate passed.");
     }
@@ -451,7 +561,8 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         => profile.SpreadPercent + (profile.SlippagePercent * 2m) + (profile.CommissionPercentPerSide * 2m);
 
     /// <summary>
-    /// Multi-indicator confluence scoring (7 indicators, max 140 raw points, normalized to 0-100).
+    /// Multi-indicator confluence scoring with weak-alpha blocks zeroed and
+    /// higher weight on validated mean-reversion structure.
     /// </summary>
     private static (int buyScore, int sellScore, List<string> reasons) EvaluateConfluence(
         IndicatorSnapshot ind,
@@ -467,6 +578,9 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         EvaluateVolume(ind, ref buyScore, ref sellScore, reasons);
         EvaluateAlphaTrend(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
         EvaluatePMax(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
+        EvaluateAdx(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
+        EvaluateRoc(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
+        EvaluateStochRsi(ind, regime.Regime, ref buyScore, ref sellScore, reasons);
         EvaluateSupportResistance(ind, ref buyScore, ref sellScore, reasons);
         EvaluatePattern(ind, ref buyScore, ref sellScore, reasons);
         ApplyRegimeConfluenceAdjustments(ind, regime, ref buyScore, ref sellScore, reasons);
@@ -478,45 +592,73 @@ public class QuantIndicatorService : ITechnicalAnalysisService
     {
         if (!ind.RSI.HasValue) return;
 
-        if (ind.RSI < 30)
+        double rsi = ind.RSI.Value;
+
+        if (regime == MarketRegime.Trending)
         {
-            buyScore += regime == MarketRegime.Trending ? 15 : 30; // Stronger in ranging
-            reasons.Add($"RSI={ind.RSI:F1} (oversold ✅BUY)");
+            // In trending markets RSI measures momentum, NOT mean-reversion extremes.
+            // RSI 50-73 is healthy trend continuation — must NOT score as sell.
+            // Prior bug: RSI 50-70 added sellScore+25 here, causing bestSide to flip to
+            // SELL in uptrends → EMA alignment gate rejected → NoTradeSignal (4300 rejects).
+            if (rsi < 30)
+            {
+                // Deep oversold in trend — possible breakdown, small upward reflex possible.
+                buyScore += 8;
+                reasons.Add($"RSI={rsi:F1} (deep oversold in trend ✅BUY +8)");
+            }
+            else if (rsi <= 55)
+            {
+                // Pullback into ideal re-entry zone: trend momentum intact.
+                buyScore += 22;
+                reasons.Add($"RSI={rsi:F1} (trend pullback zone ✅BUY +22)");
+            }
+            else if (rsi <= 73)
+            {
+                // Continuation momentum — trend strongly on (RSI sustained above midpoint).
+                buyScore += 12;
+                reasons.Add($"RSI={rsi:F1} (trend continuation ✅BUY +12)");
+            }
+            else
+            {
+                // Extended above 73: potential exhaustion, minor sell pressure.
+                sellScore += 8;
+                reasons.Add($"RSI={rsi:F1} (trend overextended ✅SELL +8)");
+            }
         }
-        else if (ind.RSI <= 50)
+        else
         {
-            buyScore += regime == MarketRegime.Trending ? 25 : 15; // Mean recovery indicates trend resumption
-            reasons.Add($"RSI={ind.RSI:F1} (recovering ✅BUY)");
-        }
-        else if (ind.RSI > 70)
-        {
-            sellScore += regime == MarketRegime.Trending ? 15 : 30;
-            reasons.Add($"RSI={ind.RSI:F1} (overbought ✅SELL)");
-        }
-        else if (ind.RSI >= 50)
-        {
-            sellScore += regime == MarketRegime.Trending ? 25 : 15;
-            reasons.Add($"RSI={ind.RSI:F1} (neutral-high)");
+            // Ranging / Volatile: classic mean-reversion RSI logic.
+            if (rsi < 30)
+            {
+                buyScore += regime == MarketRegime.Volatile ? 20 : 30;
+                reasons.Add($"RSI={rsi:F1} (oversold ✅BUY)");
+            }
+            else if (rsi <= 50)
+            {
+                buyScore += 15;
+                reasons.Add($"RSI={rsi:F1} (recovering ✅BUY)");
+            }
+            else if (rsi > 70)
+            {
+                sellScore += regime == MarketRegime.Volatile ? 20 : 30;
+                reasons.Add($"RSI={rsi:F1} (overbought ✅SELL)");
+            }
+            else
+            {
+                sellScore += 15;
+                reasons.Add($"RSI={rsi:F1} (neutral-high ✅SELL)");
+            }
         }
     }
 
     private static void EvaluateMacd(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
+        // 2026-04-24: IC audit shows histogram-direction scoring is anti-predictive (IC=-0.20).
+        // MACD lags price — by the time histogram goes positive the move has already peaked.
+        // Weight zeroed; value logged as telemetry only. Revisit when gradient/crossover-only
+        // formulation (histogram slope, not direction) is validated with IC > 0.05.
         if (!ind.MACDHistogram.HasValue) return;
-
-        bool isTrending = regime == MarketRegime.Trending;
-        int points = isTrending ? 25 : 10; // MACD momentum is less reliable in ranging
-
-        if (ind.MACDHistogram > 0 && ind.MACD > ind.MACDSignal)
-        {
-            buyScore += points;
-            reasons.Add($"MACD histogram+ ({ind.MACDHistogram:F4} ✅BUY)");
-        }
-        else if (ind.MACDHistogram < 0 && ind.MACD < ind.MACDSignal)
-        {
-            sellScore += points;
-            reasons.Add($"MACD histogram- ({ind.MACDHistogram:F4} ✅SELL)");
-        }
+        reasons.Add($"MACD={ind.MACDHistogram:F4} (telemetry; weight=0)");
     }
 
     private static void EvaluateEma(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
@@ -570,7 +712,13 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         double lowerThreshold = ind.BollingerLower.Value + bbWidth * 0.1;
         double upperThreshold = ind.BollingerUpper.Value - bbWidth * 0.1;
 
-        int points = regime == MarketRegime.Ranging ? 25 : 10; // BB trades are stronger in Ranging regime
+        int points = regime switch
+        {
+            MarketRegime.Ranging => 30,
+            MarketRegime.Trending => 20,
+            MarketRegime.Volatile => 15,
+            _ => 15
+        };
 
         if (price <= lowerThreshold)
         {
@@ -590,15 +738,25 @@ public class QuantIndicatorService : ITechnicalAnalysisService
 
         if (ind.VolumeRatio >= 1.5)
         {
-            if (buyScore >= sellScore)
+            // 2026-04-24: Replaced circular score-comparison (whichever side is winning gets
+            // the volume boost) with bar-direction volume: high volume on a bullish close is
+            // upside conviction; on a bearish close is downside conviction. Removes the
+            // amplification-of-lagging-MACD feedback loop.
+            bool isUp = ind.BarOpen > 0 && ind.CurrentPrice > ind.BarOpen;
+            bool isDown = ind.BarOpen > 0 && ind.CurrentPrice < ind.BarOpen;
+            if (isUp)
             {
                 buyScore += 20;
-                reasons.Add($"Volume {ind.VolumeRatio:F1}x ✅BUY confirmed");
+                reasons.Add($"Volume {ind.VolumeRatio:F1}x bullish bar ✅BUY");
+            }
+            else if (isDown)
+            {
+                sellScore += 20;
+                reasons.Add($"Volume {ind.VolumeRatio:F1}x bearish bar ✅SELL");
             }
             else
             {
-                sellScore += 20;
-                reasons.Add($"Volume {ind.VolumeRatio:F1}x ✅SELL confirmed");
+                reasons.Add($"Volume {ind.VolumeRatio:F1}x doji bar (neutral)");
             }
         }
         else
@@ -607,9 +765,12 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         }
     }
 
+    #pragma warning disable CS0162
     private static void EvaluateAlphaTrend(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (ind.AlphaTrend == null) return;
+        reasons.Add("AlphaTrend telemetry only (weight=0)");
+        return;
 
         bool isTrending = regime == MarketRegime.Trending;
 
@@ -652,6 +813,8 @@ public class QuantIndicatorService : ITechnicalAnalysisService
     private static void EvaluatePMax(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (ind.PMax == null) return;
+        reasons.Add("PMax telemetry only (weight=0)");
+        return;
 
         int points = regime == MarketRegime.Trending ? 20 : 10;
 
@@ -672,18 +835,18 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         if (ind.NearestSupport != null)
         {
             decimal distToSupport = Math.Abs(ind.CurrentPrice - ind.NearestSupport.Price) / ind.CurrentPrice;
-            if (distToSupport <= 0.008m && ind.NearestSupport.TestCount >= 2) // Within 0.8% and tested >= 2
+            if (distToSupport <= 0.012m && ind.NearestSupport.TestCount >= 2) // Within 1.2% and tested >= 2
             {
-                buyScore += 20; // P1-C: Strong alpha
+                buyScore += 25;
                 reasons.Add($"Near S/R support {ind.NearestSupport.Price:F2} (tested {ind.NearestSupport.TestCount}x ✅BUY)");
             }
         }
         if (ind.NearestResistance != null)
         {
             decimal distToResistance = Math.Abs(ind.NearestResistance.Price - ind.CurrentPrice) / ind.CurrentPrice;
-            if (distToResistance <= 0.008m && ind.NearestResistance.TestCount >= 2) // Within 0.8% and tested >= 2
+            if (distToResistance <= 0.012m && ind.NearestResistance.TestCount >= 2) // Within 1.2% and tested >= 2
             {
-                sellScore += 20; // P1-C: Strong alpha
+                sellScore += 25;
                 reasons.Add($"Near S/R resistance {ind.NearestResistance.Price:F2} (tested {ind.NearestResistance.TestCount}x ✅SELL)");
             }
         }
@@ -692,6 +855,8 @@ public class QuantIndicatorService : ITechnicalAnalysisService
     private static void EvaluatePattern(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
     {
         if (ind.DetectedPattern == "None") return;
+        reasons.Add($"Pattern {ind.DetectedPattern} (telemetry; weight=0)");
+        return;
 
         if (ind.DetectedPattern.Contains("Bullish", StringComparison.OrdinalIgnoreCase))
         {
@@ -706,6 +871,126 @@ public class QuantIndicatorService : ITechnicalAnalysisService
         else
         {
             reasons.Add($"Pattern: {ind.DetectedPattern} (Neutral)");
+        }
+    }
+    #pragma warning restore CS0162
+
+    /// <summary>
+    /// ADX(14) + DI+/DI- trend-strength scorer. Only contributes in trending/volatile regimes
+    /// where directional movement is real; in ranging markets ADX is near zero and directional
+    /// reads are noise. Complements EMA alignment (price-level) with momentum-level signal.
+    /// </summary>
+    private static void EvaluateAdx(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.ADX is null || ind.DIPlus is null || ind.DIMinus is null) return;
+
+        double adx = ind.ADX.Value;
+        double diPlus = ind.DIPlus.Value;
+        double diMinus = ind.DIMinus.Value;
+
+        // Ranging regime: ADX typically < 20 and direction flip-flops. Log only.
+        if (regime == MarketRegime.Ranging)
+        {
+            reasons.Add($"ADX={adx:F1} (Range regime, directional read suppressed)");
+            return;
+        }
+
+        int points;
+        if (adx >= 30) points = 18;       // Strong trend
+        else if (adx >= 22) points = 10;  // Moderate trend
+        else { reasons.Add($"ADX={adx:F1} (weak trend, skip)"); return; }
+
+        if (diPlus > diMinus)
+        {
+            buyScore += points;
+            reasons.Add($"ADX={adx:F1} DI+={diPlus:F1}>DI-={diMinus:F1} (trend up ✅BUY +{points})");
+        }
+        else if (diMinus > diPlus)
+        {
+            sellScore += points;
+            reasons.Add($"ADX={adx:F1} DI-={diMinus:F1}>DI+={diPlus:F1} (trend down ✅SELL +{points})");
+        }
+    }
+
+    /// <summary>
+    /// Rate-of-Change(10) momentum scorer. Non-lagging alternative to MACD histogram.
+    /// Threshold tuned per regime: volatile markets need higher thresholds to filter noise.
+    /// </summary>
+    private static void EvaluateRoc(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.ROC is null) return;
+
+        double roc = ind.ROC.Value;
+        double strong = regime == MarketRegime.Volatile ? 2.0 : 1.0;
+        double weak   = regime == MarketRegime.Volatile ? 1.0 : 0.3;
+
+        if (roc >= strong)
+        {
+            buyScore += 12;
+            reasons.Add($"ROC={roc:F2}% (strong bullish momentum ✅BUY +12)");
+        }
+        else if (roc >= weak)
+        {
+            buyScore += 6;
+            reasons.Add($"ROC={roc:F2}% (bullish momentum ✅BUY +6)");
+        }
+        else if (roc <= -strong)
+        {
+            sellScore += 12;
+            reasons.Add($"ROC={roc:F2}% (strong bearish momentum ✅SELL +12)");
+        }
+        else if (roc <= -weak)
+        {
+            sellScore += 6;
+            reasons.Add($"ROC={roc:F2}% (bearish momentum ✅SELL +6)");
+        }
+        else
+        {
+            reasons.Add($"ROC={roc:F2}% (neutral)");
+        }
+    }
+
+    /// <summary>
+    /// StochRSI(14,14,3,3) mean-reversion pivots. Weighted higher in Ranging (oscillator edge)
+    /// and lower in Trending (would fight the trend). K/D crossover adds a pivot-direction bonus.
+    /// </summary>
+    private static void EvaluateStochRsi(IndicatorSnapshot ind, MarketRegime regime, ref int buyScore, ref int sellScore, List<string> reasons)
+    {
+        if (ind.StochRsiK is null) return;
+
+        double k = ind.StochRsiK.Value;
+        double? d = ind.StochRsiD;
+
+        int extremePoints = regime switch
+        {
+            MarketRegime.Ranging => 18,
+            MarketRegime.Trending => 6,
+            _ => 10
+        };
+
+        if (k <= 20)
+        {
+            buyScore += extremePoints;
+            reasons.Add($"StochRSI K={k:F1} (oversold ✅BUY +{extremePoints})");
+        }
+        else if (k >= 80)
+        {
+            sellScore += extremePoints;
+            reasons.Add($"StochRSI K={k:F1} (overbought ✅SELL +{extremePoints})");
+        }
+
+        if (d.HasValue)
+        {
+            if (k > d.Value && k < 50)
+            {
+                buyScore += 4;
+                reasons.Add($"StochRSI K>D bullish crossover (+4)");
+            }
+            else if (k < d.Value && k > 50)
+            {
+                sellScore += 4;
+                reasons.Add($"StochRSI K<D bearish crossover (+4)");
+            }
         }
     }
 
@@ -732,15 +1017,17 @@ public class QuantIndicatorService : ITechnicalAnalysisService
 
     private static void ApplyTrendingBonus(IndicatorSnapshot ind, ref int buyScore, ref int sellScore, List<string> reasons)
     {
-        if (ind.EMA20 > ind.EMA50 && ind.MACDHistogram > 0)
+        // 2026-04-24: Removed MACD from the condition (IC=-0.20 anti-predictive).
+        // EMA alignment alone is sufficient as the trend confirmation gate.
+        if (ind.EMA20 > ind.EMA50)
         {
-            buyScore += 10;
-            reasons.Add("Trend regime bonus: trend + momentum aligned");
+            buyScore += 8;
+            reasons.Add("Trend regime bonus: EMA uptrend aligned (+8)");
         }
-        if (ind.EMA20 < ind.EMA50 && ind.MACDHistogram < 0)
+        else if (ind.EMA20 < ind.EMA50)
         {
-            sellScore += 10;
-            reasons.Add("Trend regime bonus: downside trend aligned");
+            sellScore += 8;
+            reasons.Add("Trend regime bonus: EMA downtrend aligned (+8)");
         }
     }
 

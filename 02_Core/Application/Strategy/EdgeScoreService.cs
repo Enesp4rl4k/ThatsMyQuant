@@ -10,12 +10,24 @@ public sealed class EdgeScoreService
     private readonly MarketExecutionProfileService _executionProfiles;
     private readonly RegimeExpectancyService? _regimeExpectancy;
 
+    // Raw component weights for the "final" (pre-execution-emphasis) score. Sum = 1.00.
+    // Kept for backwards-compat reporting in EdgeScoreBreakdown.FinalEdgeScore.
     private const decimal WeightSignal = 0.30m;
     private const decimal WeightHistorical = 0.30m;
     private const decimal WeightExecution = 0.25m;
     private const decimal WeightRisk = 0.15m;
-    private const decimal CoreWeight = 0.70m;
-    private const decimal ExecutionBlendWeight = 0.30m;
+
+    // The adjusted score applies a second-pass emphasis on execution (liquidity + cost),
+    // which in live trading dominates marginal-edge outcomes. Algebraically:
+    //     adjusted = final * 0.70 + execution * 0.30
+    //              = signal*0.21 + historical*0.21 + execution*(0.25*0.70+0.30) + risk*0.105
+    //              = signal*0.21 + historical*0.21 + execution*0.475 + risk*0.105    (Σ=1.00)
+    // Below are the effective weights — documented explicitly so future tuning doesn't
+    // fight the double-blend and is instead changed in one place.
+    private const decimal AdjWeightSignal = 0.21m;
+    private const decimal AdjWeightHistorical = 0.21m;
+    private const decimal AdjWeightExecution = 0.475m;
+    private const decimal AdjWeightRisk = 0.105m;
 
     public EdgeScoreService(MarketExecutionProfileService? executionProfiles = null, RegimeExpectancyService? regimeExpectancy = null)
     {
@@ -37,7 +49,7 @@ public sealed class EdgeScoreService
     {
         var profile = _executionProfiles.ResolveForSymbol(signal.Symbol, signal.Metadata);
         var reasons = new List<string>();
-        var signalEdge = ComputeSignalEdge(decision);
+        var signalEdge = ComputeSignalEdge(decision, _regimeExpectancy);
         var regressionGate = ApplyLinearRegressionOverlay(decision, ref signalEdge, reasons);
 
         var metrics = new ScoreMetrics(
@@ -50,7 +62,11 @@ public sealed class EdgeScoreService
         var finalScore = (metrics.Signal * WeightSignal) + (metrics.Historical * WeightHistorical) +
                          (metrics.Execution * WeightExecution) + (metrics.Risk * WeightRisk);
 
-        var adjustedScore = (finalScore * CoreWeight) + (metrics.Execution * ExecutionBlendWeight);
+        // Execution-emphasis blend — pre-computed effective weights (sum = 1.00).
+        var adjustedScore = (metrics.Signal * AdjWeightSignal) +
+                            (metrics.Historical * AdjWeightHistorical) +
+                            (metrics.Execution * AdjWeightExecution) +
+                            (metrics.Risk * AdjWeightRisk);
 
         reasons.AddRange(new[]
         {
@@ -81,11 +97,14 @@ public sealed class EdgeScoreService
 
         if (m.Risk < 50m) return CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Hard gate: High Risk");
 
+        // 2026-04-24 alpha-widening pass: lowered bands to let marginal-but-positive edge through.
+        // Previously 85/70/62 was starving backtest of signals; audit showed many rejects at 58-62
+        // had positive historical expectancy. Probe band still size-capped so tail risk stays bounded.
         return adj switch
         {
-            >= 85m => CreateBreakdown(m, new BreakdownResult(final, adj, 1.00m, "full", true), reasons),
-            >= 70m => CreateBreakdown(m, new BreakdownResult(final, adj, 0.65m, "reduced", true), reasons, "Band: reduced size"),
-            >= 62m => ResolveProbeBand(m, final, adj, reasons, options),
+            >= 82m => CreateBreakdown(m, new BreakdownResult(final, adj, 1.00m, "full", true), reasons),
+            >= 66m => CreateBreakdown(m, new BreakdownResult(final, adj, 0.65m, "reduced", true), reasons, "Band: reduced size"),
+            >= 58m => ResolveProbeBand(m, final, adj, reasons, options),
             _ => CreateBreakdown(m, new BreakdownResult(final, adj, 0m, "reject", false), reasons, "Band: reject")
         };
     }
@@ -110,11 +129,33 @@ public sealed class EdgeScoreService
     private readonly record struct BreakdownResult(decimal Final, decimal Adjusted, decimal Multiplier, string Band, bool Approved);
     private readonly record struct RegressionGateResult(string? BlockReason);
 
-    private static decimal ComputeSignalEdge(TradeDecision decision)
+    private static decimal ComputeSignalEdge(TradeDecision decision, RegimeExpectancyService? regimeSvc)
     {
-        decimal edge = decision.Confidence;
-        edge += decision.RegimeTag?.ToLower() switch { "trending" => 4m, "volatile" => -3m, _ => 0m };
-        return Math.Clamp(edge, 0m, 100m);
+        decimal confidenceEdge = decision.Confidence;
+        confidenceEdge += decision.RegimeTag?.ToLower() switch { "trending" => 4m, "volatile" => -3m, _ => 0m };
+        confidenceEdge = Math.Clamp(confidenceEdge, 0m, 100m);
+
+        // Blend with realized OOS alpha when regime data exists.
+        // This prevents a losing strategy at 80% confidence from scoring 84 on signal edge.
+        if (regimeSvc is not null && !string.IsNullOrWhiteSpace(decision.RegimeTag))
+        {
+            var re = regimeSvc.GetExpectancy(decision.RegimeTag);
+            if (re.TradeCount >= 10)
+            {
+                // OOS alpha score: Wilson lower bound win rate × 100, adjusted by expectancy sign.
+                var oosWrScore = (decimal)Math.Clamp(re.WinRateWilsonLower * 100, 0, 100);
+                var oosExpSign = re.ExpectancyPerTrade > 0m ? 1.0m : re.ExpectancyPerTrade == 0m ? 0.85m : 0.6m;
+                var oosAlpha = oosWrScore * oosExpSign;
+
+                // Weight: 65% confidence, 35% realized OOS alpha (more data → more trust in OOS).
+                var oosWeight = re.IsTrustworthy ? 0.35m : 0.20m;
+                return Math.Clamp(
+                    (confidenceEdge * (1m - oosWeight)) + (oosAlpha * oosWeight),
+                    0m, 100m);
+            }
+        }
+
+        return confidenceEdge;
     }
 
     private static decimal ComputeHistoricalEdge(ExpectancyGuardResult exp, SymbolGuardResult sym, PromotionGuardResult prom, string? regimeTag, RegimeExpectancyService? regimeSvc)
@@ -159,7 +200,7 @@ public sealed class EdgeScoreService
         List<string> reasons)
     {
         // Unknown 24h volume should not read as "illiquid" — treat as neutral so webhooks/backtests without venue volume still score.
-        decimal edge = signal.Volume24h <= 0 ? 62m : 50m;
+        decimal edge = 50m;
 
         if (signal.Volume24h > 0)
         {
@@ -174,16 +215,19 @@ public sealed class EdgeScoreService
         if (rewardPercent > 0m && roundTripCostPercent > 0m)
         {
             var rewardToCost = rewardPercent / roundTripCostPercent;
+            // Monotonic reward-to-cost curve: previously had a gap where 4.0x paid -8 but 5.0x paid +3
+            // (a 1.0x improvement flipped the score by +11). Replaced with piecewise-linear bands.
             edge += rewardToCost switch
             {
-                >= 8m => 8m,
-                >= 5m => 3m,
-                < 2.5m => -18m,
-                < 4m => -8m,
-                _ => 0m
+                >= 8m => 10m,
+                >= 6m => 6m,
+                >= 4.5m => 3m,
+                >= 3.5m => 0m,
+                >= 2.5m => -6m,
+                _ => -18m
             };
 
-            if (rewardToCost < 4m)
+            if (rewardToCost < 3.5m)
                 reasons.Add($"Execution cost caution: reward/cost {rewardToCost:F1}x.");
         }
 

@@ -31,6 +31,39 @@ public partial class App : System.Windows.Application
     public static IServiceProvider? ServiceProvider { get; private set; }
     private static readonly string CrashLogPath = Path.Combine(AppContext.BaseDirectory, "dashboard-crash.log");
 
+    private void SmokeTestAndExit()
+    {
+        var verdict = new List<string> { $"[SMOKE] Started {DateTime.UtcNow:O}" };
+        var criticalTypes = new[]
+        {
+            typeof(ViewModels.MainViewModel),
+            typeof(ViewModels.AlphaPortfolioViewModel),
+            typeof(ViewModels.FundingMonitorViewModel),
+            typeof(ViewModels.PairsDiscoveryViewModel),
+            typeof(ViewModels.ProModeViewModel),
+            typeof(ViewModels.SubViewModels.FocusedBacktestViewModel)
+        };
+        int failures = 0;
+        foreach (var t in criticalTypes)
+        {
+            try
+            {
+                var svc = ServiceProvider!.GetService(t);
+                verdict.Add(svc is null ? $"  ❌ {t.Name}: NULL" : $"  ✅ {t.Name}");
+                if (svc is null) failures++;
+            }
+            catch (Exception ex)
+            {
+                verdict.Add($"  ❌ {t.Name}: {ex.GetType().Name}: {ex.Message}");
+                failures++;
+            }
+        }
+        verdict.Add($"[SMOKE] Failures={failures}");
+        try { File.AppendAllText(CrashLogPath, string.Join(Environment.NewLine, verdict) + Environment.NewLine + new string('-', 80) + Environment.NewLine); }
+        catch { /* best effort */ }
+        Environment.Exit(failures > 0 ? 1 : 0);
+    }
+
     private static IConfiguration BuildRuntimeConfiguration()
         => new ConfigurationBuilder()
             .AddJsonFile("appsettings.json", optional: true)
@@ -47,10 +80,24 @@ public partial class App : System.Windows.Application
             RegisterGlobalExceptionHandlers();
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
 
+            // 2026-04-24 fix: register IConfiguration BEFORE BuildServiceProvider so services
+            // that depend on it (ExchangeRoutedMarketDataService, OkxFundingRateProvider, etc.)
+            // can resolve. Previously config was built AFTER ServiceProvider which caused a
+            // DI resolution failure at startup.
+            var configuration = BuildRuntimeConfiguration();
             var services = new ServiceCollection();
+            services.AddSingleton<IConfiguration>(configuration);
             ConfigureServices(services);
             ServiceProvider = services.BuildServiceProvider();
             await EnsureDatabaseReadyAsync();
+
+            // --smoke-test mode: resolve all VMs, write verdict to crash log, exit 0.
+            // Used by nightly automation to verify DI wiring without launching UI.
+            if (e.Args is not null && e.Args.Any(a => string.Equals(a, "--smoke-test", StringComparison.OrdinalIgnoreCase)))
+            {
+                SmokeTestAndExit();
+                return;
+            }
 
             var loggedIn = await RunLoginFlowAsync();
             if (!loggedIn)
@@ -59,10 +106,9 @@ public partial class App : System.Windows.Application
                 return;
             }
 
-            var config = BuildRuntimeConfiguration();
             var auditLogger = ServiceProvider.GetRequiredService<IAuditLogger>();
             Func<Task<bool>> reLoginCallback = RunLoginFlowAsync;
-            var idleTimeoutService = IdleTimeoutService.FromConfiguration(config, auditLogger, reLoginCallback);
+            var idleTimeoutService = IdleTimeoutService.FromConfiguration(configuration, auditLogger, reLoginCallback);
 
             var mainViewModel = ServiceProvider.GetRequiredService<MainViewModel>();
             idleTimeoutService.Attach(mainViewModel);
@@ -317,6 +363,10 @@ public partial class App : System.Windows.Application
             sp.GetRequiredService<ILogger<MicrosecondPredictionEngine>>()));
 
         services.AddSingleton<FocusedBacktestViewModel>();
+        services.AddSingleton<AlphaPortfolioViewModel>();
+        services.AddSingleton<FundingMonitorViewModel>();
+        services.AddSingleton<PairsDiscoveryViewModel>();
+        services.AddSingleton<ProModeViewModel>();
         services.AddScoped<IFocusedAgent>(sp => sp.GetRequiredService<SentimentAgent>());
 
         if (!string.IsNullOrWhiteSpace(geminiApiKey))

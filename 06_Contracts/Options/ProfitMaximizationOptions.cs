@@ -16,7 +16,11 @@ public sealed class ProfitMaximizationOptions
         MinAverageRr = 1.00,
         MinWinRatePercent = 52.0,
         MinExpectancy = 0m,
-        MaxDailyDrawdownPercent = 2.0
+        MaxDailyDrawdownPercent = 2.0,
+        // Safe mode: no leverage. Capital preservation first.
+        Leverage = 1.0m,
+        MaxDrawdownBudget = 0.02m,      // 2% DD budget → throttle halves leverage at 1.2%
+        DrawdownThrottleFraction = 0.60m
     };
 
     public ProfitProfileOptions Moderate { get; set; } = new()
@@ -29,7 +33,11 @@ public sealed class ProfitMaximizationOptions
         MinAverageRr = 0.90,
         MinWinRatePercent = 50.0,
         MinExpectancy = -2m,
-        MaxDailyDrawdownPercent = 2.5
+        MaxDailyDrawdownPercent = 2.5,
+        // Normal mode: moderate leverage for pro-grade risk/return balance.
+        Leverage = 3.0m,
+        MaxDrawdownBudget = 0.035m,     // 3.5% DD budget
+        DrawdownThrottleFraction = 0.60m
     };
 
     public ProfitProfileOptions Aggressive { get; set; } = new()
@@ -42,7 +50,12 @@ public sealed class ProfitMaximizationOptions
         MinAverageRr = 0.85,
         MinWinRatePercent = 48.0,
         MinExpectancy = -8m,
-        MaxDailyDrawdownPercent = 3.0
+        MaxDailyDrawdownPercent = 3.0,
+        // Aggressive mode: higher leverage for higher return. Still safety-capped at 15x
+        // and DD-throttled at 60% of 6% budget.
+        Leverage = 7.0m,
+        MaxDrawdownBudget = 0.06m,      // 6% DD budget
+        DrawdownThrottleFraction = 0.60m
     };
 
     public ProfitProfileOptions Resolve(string? riskProfile)
@@ -79,4 +92,10 @@ public sealed class ProfitProfileOptions
     public double MinWinRatePercent { get; set; } = 50.0;
     public decimal MinExpectancy { get; set; } = -2m;
     public double MaxDailyDrawdownPercent { get; set; } = 2.5;
+
+    // Leverage + risk budget (2026-04-24). Tied to risk-profile so Safe/Normal/Aggressive
+    // semantics carry through to position sizing. Hard-capped in the runners at 15x.
+    public decimal Leverage { get; set; } = 1.0m;
+    public decimal MaxDrawdownBudget { get; set; } = 0.03m;
+    public decimal DrawdownThrottleFraction { get; set; } = 0.60m;
 }

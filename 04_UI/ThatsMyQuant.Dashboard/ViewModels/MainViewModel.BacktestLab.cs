@@ -15,8 +15,6 @@ public partial class MainViewModel
 {
     [ObservableProperty] private int _totalBacktestTrades;
     private const int BacktestLogLimit = 500;
-    private const int MinPortfolioReadySymbols = 4;
-
     private int CalculateRequiredCandleCount(DateTime start, DateTime end, string timeframe)
     {
         var duration = end - start;
@@ -95,6 +93,8 @@ public partial class MainViewModel
             {
                 ApplyBacktestResultsToUi(candles, result);
                 UpdateBacktestLabResults(snapshot);
+                UpdateReadinessDiagnostics(result, session);
+                snapshot.PaperPromotionSummary = Studio.PaperPromotionGateSummary;
                 Studio.BacktestProgress = 100;
                 Studio.BacktestStatus = "Lab backtest completed.";
                 AppendBacktestLog($"[SYSTEM] Lab Backtest Complete. Trades={result.TotalTrades}, PnL={result.TotalPnL:N2}");
@@ -205,13 +205,29 @@ public partial class MainViewModel
                         FinalEquity = result.FinalEquity,
                         ReturnPercent = $"{returnPct:F2}%",
                         PnLColor = result.TotalPnL >= 0 ? GreenBrush : RedBrush,
-                        BacktestPass = result.TotalPnL > 0 && result.ProfitFactor > 1.1
+                        BacktestPass = result.TotalPnL > 0 && result.ProfitFactor > 1.1,
+                        CostLeakagePercent = session?.TcaReport?.CostLeakagePercent ?? result.CostLeakagePercent,
+                        GrossPnL = session?.TcaReport?.GrossPnL ?? result.GrossPnL,
+                        TotalCost = (session?.TcaReport?.TotalFees ?? result.TotalFeesPaid) + (session?.TcaReport?.ImplicitSlippageCost ?? 0m),
+                        Sharpe5Pct = session?.BootstrapReport?.Sharpe5Pct ?? 0,
+                        Sharpe95Pct = session?.BootstrapReport?.Sharpe95Pct ?? 0,
+                        ProbabilityOfLoss = session?.BootstrapReport?.ProbabilityOfLoss ?? 0,
+                        FractionalKelly = session?.PortfolioRiskReport?.FractionalKelly ?? 0m,
+                        Cvar95 = session?.PortfolioRiskReport?.HistoricalCVaR ?? 0m,
+                        PromotionApproved = session?.PromotionDecision?.Approved ?? false,
+                        PromotionSummary = session?.PromotionDecision is null
+                            ? ""
+                            : session.PromotionDecision.Approved
+                                ? $"✓ {session.PromotionDecision.PassedCriteria.Count} criteria passed"
+                                : $"✗ {string.Join(" ; ", session.PromotionDecision.FailedCriteria)}"
                     };
 
                     InvokeOnUi(() => 
                     {
                         Studio.GlobalBacktestResults.Add(vm);
                         UpdateBacktestLabResults(snapshot);
+                        UpdateReadinessDiagnostics(result, session);
+                        snapshot.PaperPromotionSummary = Studio.PaperPromotionGateSummary;
                     });
                     await PersistBacktestLabSnapshotAsync(snapshot);
 
@@ -330,6 +346,12 @@ public partial class MainViewModel
             Studio.PortfolioValidationGateLabel = "Portfolio gate: --";
             Studio.PortfolioValidationGateBrush = GrayBrush;
             Studio.PortfolioValidationSummary = "Portfolio validation is waiting for a multi-asset batch.";
+            Studio.CostRealismGateLabel = "Cost gate: --";
+            Studio.CostRealismGateBrush = GrayBrush;
+            Studio.CostRealismSummary = "Cost realism is waiting for the next backtest session.";
+            Studio.PaperDriftGateLabel = "Drift gate: --";
+            Studio.PaperDriftGateBrush = GrayBrush;
+            Studio.PaperDriftSummary = "Paper drift proxy is waiting for the next gate evaluation.";
             return;
         }
 
@@ -339,10 +361,7 @@ public partial class MainViewModel
         Studio.BacktestWalkForwardPassBrush = session.WalkForwardPassed ? GreenBrush : RedBrush;
         Studio.BacktestPromotionGateLabel = $"Backtest gate: {(session.BacktestPass ? "PASS" : "FAIL")}";
         Studio.BacktestPromotionGateBrush = session.BacktestPass ? GreenBrush : RedBrush;
-        var (paperReady, summary) = EvaluatePaperPromotionGate(session);
-        Studio.PaperPromotionGateLabel = paperReady ? "Paper gate: READY" : "Paper gate: BLOCKED";
-        Studio.PaperPromotionGateBrush = paperReady ? OrangeBrush : GrayBrush;
-        Studio.PaperPromotionGateSummary = summary;
+        RefreshPaperPromotionSummary(session);
         Studio.BacktestReadinessBlockers = session.ReadinessBlockers.Count > 0
             ? $"Readiness blockers: {string.Join(", ", session.ReadinessBlockers)}"
             : "Readiness blockers: none";
@@ -358,32 +377,21 @@ public partial class MainViewModel
             return;
         }
 
-        var passed = sessions.Where(s => s.BacktestPass).ToList();
-        var passCount = passed.Count;
-        var symbolCount = sessions.Select(s => s.Symbol).Distinct(StringComparer.OrdinalIgnoreCase).Count();
-        var pooledPnl = sessions.Sum(s => s.TotalPnL);
-        var avgSharpe = sessions.Count > 0 ? sessions.Average(s => s.SharpeRatio) : 0d;
-        var avgPf = sessions.Count > 0 ? sessions.Average(s => s.ProfitFactor) : 0d;
-        var avgExpectancy = sessions.Count > 0 ? sessions.Average(s => s.ExpectancyPerTrade) : 0m;
-        var weakest = sessions
-            .OrderBy(s => s.BacktestPass)
-            .ThenBy(s => s.ObjectiveScore)
-            .ThenBy(s => s.TotalPnL)
-            .FirstOrDefault();
-        var ready = passCount >= Math.Min(MinPortfolioReadySymbols, symbolCount)
-            && avgSharpe >= 1.0
-            && avgPf >= 1.15
-            && avgExpectancy > 0m;
+        var validation = BacktestOrchestrator.EvaluatePortfolioValidation(sessions);
+        var weakest = validation.WeakestSession;
 
-        Studio.PortfolioValidationGateLabel = ready ? "Portfolio gate: READY" : "Portfolio gate: BLOCKED";
-        Studio.PortfolioValidationGateBrush = ready ? GreenBrush : GrayBrush;
+        Studio.PortfolioValidationGateLabel = validation.IsReady ? "Portfolio gate: READY" : "Portfolio gate: BLOCKED";
+        Studio.PortfolioValidationGateBrush = validation.IsReady ? GreenBrush : GrayBrush;
         Studio.PortfolioValidationSummary =
-            $"{passCount}/{symbolCount} symbols cleared the acceptance gate. " +
-            $"Pooled PnL {pooledPnl:N2}, avg Sharpe {avgSharpe:F2}, avg PF {avgPf:F2}, avg expectancy {avgExpectancy:N2}. " +
+            $"{validation.PassedSymbols}/{validation.TotalSymbols} symbols cleared the acceptance gate. " +
+            $"Pooled PnL {validation.PooledPnL:N2}, avg Sharpe {validation.AverageSharpe:F2}, avg PF {validation.AverageProfitFactor:F2}, avg expectancy {validation.AverageExpectancyPerTrade:N2}. " +
             $"Weakest bucket: {weakest?.Symbol ?? "--"} {(weakest?.ReadinessBlockers.Count > 0 ? $"[{string.Join(", ", weakest.ReadinessBlockers)}]" : "[none]")}.";
     }
 
-    private (bool IsReady, string Summary) EvaluatePaperPromotionGate(BacktestSessionResult session)
+    private (bool IsReady, string Summary) EvaluatePaperPromotionGate(
+        BacktestSessionResult session,
+        bool costGatePass,
+        bool driftGatePass)
     {
         var options = App.ServiceProvider?.GetService<IOptions<ProfitMaximizationOptions>>()?.Value ?? new ProfitMaximizationOptions();
         var config = options.Resolve(Studio.SelectedRiskProfile);
@@ -399,15 +407,96 @@ public partial class MainViewModel
             && session.WinRate >= minWinRate
             && session.AverageRR >= minRr
             && expectancy >= config.MinExpectancy
-            && session.MaxDrawdownPercent <= config.MaxDailyDrawdownPercent;
+            && session.MaxDrawdownPercent <= config.MaxDailyDrawdownPercent
+            && costGatePass
+            && driftGatePass;
 
         if (!ready)
         {
-            var blockers = session.ReadinessBlockers.Count > 0 ? string.Join(", ", session.ReadinessBlockers) : "Metric gates not satisfied";
-            return (false, $"Profile={Studio.SelectedRiskProfile}: needs Parity=PASS, ML=READY, Sharpe>={minSharpe:F2}, WinRate>={minWinRate:F1}%, R:R>={minRr:F2}, Expectancy>={config.MinExpectancy:N2}, DD<={config.MaxDailyDrawdownPercent:F2}%. Blockers: {blockers}");
+            var blockers = new List<string>();
+            if (session.ReadinessBlockers.Count > 0)
+            {
+                blockers.AddRange(session.ReadinessBlockers);
+            }
+
+            if (!costGatePass)
+            {
+                blockers.Add("CostGate");
+            }
+
+            if (!driftGatePass)
+            {
+                blockers.Add("DriftGate");
+            }
+
+            var blockerSummary = blockers.Count > 0 ? string.Join(", ", blockers.Distinct()) : "Metric gates not satisfied";
+            return (false, $"Paper blocked: {blockerSummary}. Profile={Studio.SelectedRiskProfile} still needs Parity=PASS, ML=READY, Sharpe>={minSharpe:F2}, WinRate>={minWinRate:F1}%, R:R>={minRr:F2}, Expectancy>={config.MinExpectancy:N2}, DD<={config.MaxDailyDrawdownPercent:F2}%.");
         }
 
-        return (true, $"Profile={Studio.SelectedRiskProfile}: calibrated for paper 7-14d validation (watch DD/slippage drift).");
+        return (true, $"Paper ready: backtest, cost realism, and pre-paper drift gates are aligned for {Studio.SelectedRiskProfile}. Run 7-14d paper validation and watch slippage drift.");
+    }
+
+    private void UpdateReadinessDiagnostics(BacktestResult result, BacktestSessionResult? session)
+    {
+        var totalFees = result.Trades.Sum(t => t.TotalFeesPaid);
+        var totalFunding = result.Trades.Sum(t => t.NetFunding);
+        var avgFees = result.TotalTrades > 0 ? totalFees / result.TotalTrades : 0m;
+        var avgNetPnl = result.TotalTrades > 0 ? result.TotalPnL / result.TotalTrades : 0m;
+        var feeDragRatio = result.TotalPnL != 0m ? totalFees / Math.Max(Math.Abs(result.TotalPnL), 1m) : totalFees;
+        var costGatePass = result.TotalTrades > 0
+            && avgNetPnl > 0m
+            && feeDragRatio <= 0.35m;
+        var costBlocker = result.TotalTrades == 0
+            ? "waiting for filled trades"
+            : avgNetPnl <= 0m
+                ? "net expectancy is non-positive after costs"
+                : feeDragRatio > 0.35m
+                    ? $"fee drag too heavy ({feeDragRatio:P0} of net PnL)"
+                    : "cost drag within tolerance";
+        Studio.CostRealismGateLabel = costGatePass ? "Cost gate: PASS" : "Cost gate: BLOCKED";
+        Studio.CostRealismGateBrush = costGatePass ? GreenBrush : GrayBrush;
+        Studio.CostRealismSummary =
+            $"Cost realism: total fees {totalFees:N2}, funding {totalFunding:N2}, avg fee/trade {avgFees:N2}, avg net PnL/trade {avgNetPnl:N2}. Blocker: {costBlocker}.";
+
+        if (session is null)
+        {
+            Studio.PaperDriftGateLabel = "Drift gate: --";
+            Studio.PaperDriftGateBrush = GrayBrush;
+            Studio.PaperDriftSummary = "Paper drift proxy is waiting for orchestrator gate output.";
+            return;
+        }
+
+        var driftGatePass = session.WalkForwardPassed
+            && session.WalkForwardWindows >= 3
+            && session.PboScore >= 0
+            && session.PboScore <= 0.35;
+        var driftStance = driftGatePass
+            ? "stable"
+            : "fragile";
+        var driftBlocker = !session.WalkForwardPassed
+            ? "walk-forward gate failed"
+            : session.WalkForwardWindows < 3
+                ? $"too few WF windows ({session.WalkForwardWindows})"
+                : session.PboScore < 0
+                    ? "PBO not computed"
+                    : session.PboScore > 0.35
+                        ? $"PBO too high ({session.PboScore:F3})"
+                        : "drift pressure within tolerance";
+        Studio.PaperDriftGateLabel = driftGatePass ? "Drift gate: PASS" : "Drift gate: BLOCKED";
+        Studio.PaperDriftGateBrush = driftGatePass ? GreenBrush : GrayBrush;
+        Studio.PaperDriftSummary =
+            $"Pre-paper drift proxy: WF {(session.WalkForwardPassed ? "PASS" : "FAIL")} over {session.WalkForwardWindows} windows, PBO {session.PboScore:F3}, stance {driftStance}. Blocker: {driftBlocker}.";
+        RefreshPaperPromotionSummary(session);
+    }
+
+    private void RefreshPaperPromotionSummary(BacktestSessionResult session)
+    {
+        var costGatePass = Studio.CostRealismGateLabel.Contains("PASS", StringComparison.OrdinalIgnoreCase);
+        var driftGatePass = Studio.PaperDriftGateLabel.Contains("PASS", StringComparison.OrdinalIgnoreCase);
+        var (paperReady, summary) = EvaluatePaperPromotionGate(session, costGatePass, driftGatePass);
+        Studio.PaperPromotionGateLabel = paperReady ? "Paper gate: READY" : "Paper gate: BLOCKED";
+        Studio.PaperPromotionGateBrush = paperReady ? OrangeBrush : GrayBrush;
+        Studio.PaperPromotionGateSummary = summary;
     }
 
     private StrategyBucketPerformanceSnapshot BuildBacktestLabSnapshot(string symbol, BacktestResult result, BacktestSessionResult? session = null)
@@ -441,6 +530,7 @@ public partial class MainViewModel
             BacktestHash = hash,
             BacktestPass = pass,
             PromotionStage = "Backtest Lab",
+            PaperPromotionSummary = session is null ? "Paper readiness summary pending orchestrator diagnostics." : "Paper readiness summary pending UI diagnostics.",
             RecordedAtUtc = DateTime.UtcNow
         };
     }

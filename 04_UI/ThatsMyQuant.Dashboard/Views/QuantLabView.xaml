@@ -51,6 +51,48 @@
                 </StackPanel>
             </Border>
 
+            <!-- ===================== PnL ATTRIBUTION (1h / 1d / 1w) ===================== -->
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,0,0,12">
+                <StackPanel>
+                    <TextBlock Text="P&amp;L ATTRIBUTION · PER STRATEGY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding QuantLabAttributionSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,10" />
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="0.6*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="STRATEGY" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                        <TextBlock Grid.Column="1" Text="1H" HorizontalAlignment="Right" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                        <TextBlock Grid.Column="2" Text="1D" HorizontalAlignment="Right" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                        <TextBlock Grid.Column="3" Text="1W" HorizontalAlignment="Right" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                        <TextBlock Grid.Column="4" Text="TRADES" HorizontalAlignment="Right" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding QuantLabAttributionRows}" Margin="0,4,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,2,0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="2*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="0.6*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="{Binding Strategy}" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="10" />
+                                    <TextBlock Grid.Column="1" Text="{Binding Pnl1h, StringFormat='{}{0:+0.00;-0.00;0.00}'}" HorizontalAlignment="Right" Foreground="{Binding Pnl1hBrush}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" />
+                                    <TextBlock Grid.Column="2" Text="{Binding Pnl1d, StringFormat='{}{0:+0.00;-0.00;0.00}'}" HorizontalAlignment="Right" Foreground="{Binding Pnl1dBrush}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" />
+                                    <TextBlock Grid.Column="3" Text="{Binding Pnl1w, StringFormat='{}{0:+0.00;-0.00;0.00}'}" HorizontalAlignment="Right" Foreground="{Binding Pnl1wBrush}" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" />
+                                    <TextBlock Grid.Column="4" Text="{Binding TotalTrades}" HorizontalAlignment="Right" Foreground="{StaticResource TextSoft}" FontFamily="{StaticResource MonoFont}" FontSize="10" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
             <Grid>
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.1*" />
@@ -197,6 +239,437 @@
                     </StackPanel>
                 </Border>
             </Grid>
+
+            <!-- ===================== REGIME TIMELINE + ENTROPY ===================== -->
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                        <TextBlock Text="REGIME TIMELINE · SHANNON ENTROPY" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
+                        <TextBlock Text="Symbol" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="24,0,6,0" />
+                        <TextBox Width="110"
+                                 Text="{Binding QuantLabRegimeSymbol, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="{StaticResource AppBg}"
+                                 Foreground="White"
+                                 BorderBrush="{StaticResource BorderColor}"
+                                 FontFamily="{StaticResource MonoFont}"
+                                 FontSize="11"
+                                 Padding="6,4" />
+                        <TextBlock Text="TF" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <TextBox Width="50"
+                                 Text="{Binding QuantLabRegimeTimeframe, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="{StaticResource AppBg}"
+                                 Foreground="White"
+                                 BorderBrush="{StaticResource BorderColor}"
+                                 FontFamily="{StaticResource MonoFont}"
+                                 FontSize="11"
+                                 Padding="6,4" />
+                        <Button Content="ANALYZE"
+                                Command="{Binding AnalyzeRegimeTimelineCommand}"
+                                Margin="12,0,0,0"
+                                Padding="14,6"
+                                FontSize="10"
+                                FontWeight="Black"
+                                Background="{StaticResource Accent}"
+                                Foreground="White"
+                                BorderThickness="0" />
+                        <ProgressBar Width="60" Height="4" Margin="10,0,0,0" IsIndeterminate="True"
+                                     Visibility="{Binding IsQuantLabRegimeBusy, Converter={StaticResource BoolToVisLocal}}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding QuantLabRegimeSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                        <Border Width="10" Height="10" Background="#3FB950" CornerRadius="2" />
+                        <TextBlock Text="Trending" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="4,0,12,0" VerticalAlignment="Center" />
+                        <Border Width="10" Height="10" Background="#F59E0B" CornerRadius="2" />
+                        <TextBlock Text="Ranging" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="4,0,12,0" VerticalAlignment="Center" />
+                        <Border Width="10" Height="10" Background="#F75F68" CornerRadius="2" />
+                        <TextBlock Text="Volatile" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="4,0,12,0" VerticalAlignment="Center" />
+                        <Border Width="10" Height="10" Background="#5C6570" CornerRadius="2" />
+                        <TextBlock Text="Unknown" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="4,0,12,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                    <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Height="56">
+                        <Viewbox Stretch="Fill" HorizontalAlignment="Stretch">
+                            <ItemsControl ItemsSource="{Binding QuantLabRegimeTimelineCells}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <Canvas Width="520" Height="28" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Setter Property="Canvas.Left" Value="{Binding X}" />
+                                        <Setter Property="Canvas.Top" Value="0" />
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Rectangle Height="28" Width="{Binding Width}" Fill="{Binding Brush}" ToolTip="{Binding Tooltip}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Viewbox>
+                    </Border>
+                    <TextBlock Text="SHANNON ENTROPY (0 → 1) · dashed line = 0.82 trending ceiling" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" Margin="0,10,0,4" />
+                    <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Height="116">
+                        <Viewbox Stretch="Uniform" HorizontalAlignment="Stretch">
+                            <Canvas Width="520" Height="90" SnapsToDevicePixels="True">
+                                <Polyline Canvas.ZIndex="0"
+                                          Points="{Binding QuantLabRegimeEntropyThresholdLine}"
+                                          Stroke="#F59E0B"
+                                          StrokeDashArray="3 3"
+                                          StrokeThickness="1" />
+                                <Polyline Canvas.ZIndex="1"
+                                          Points="{Binding QuantLabRegimeEntropyPoints}"
+                                          Stroke="#38BDF8"
+                                          StrokeThickness="2" />
+                            </Canvas>
+                        </Viewbox>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <!-- ===================== PAIRS COINTEGRATION ANALYTICS ===================== -->
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                        <TextBlock Text="PAIRS COINTEGRATION LAB" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" />
+                        <TextBlock Text="Y" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="24,0,6,0" />
+                        <TextBox Width="110"
+                                 Text="{Binding QuantLabPairsYSymbol, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="{StaticResource AppBg}"
+                                 Foreground="White"
+                                 BorderBrush="{StaticResource BorderColor}"
+                                 FontFamily="{StaticResource MonoFont}"
+                                 FontSize="11"
+                                 Padding="6,4" />
+                        <TextBlock Text="X" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <TextBox Width="110"
+                                 Text="{Binding QuantLabPairsXSymbol, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="{StaticResource AppBg}"
+                                 Foreground="White"
+                                 BorderBrush="{StaticResource BorderColor}"
+                                 FontFamily="{StaticResource MonoFont}"
+                                 FontSize="11"
+                                 Padding="6,4" />
+                        <TextBlock Text="TF" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" VerticalAlignment="Center" Margin="12,0,6,0" />
+                        <TextBox Width="50"
+                                 Text="{Binding QuantLabPairsTimeframe, UpdateSourceTrigger=PropertyChanged}"
+                                 Background="{StaticResource AppBg}"
+                                 Foreground="White"
+                                 BorderBrush="{StaticResource BorderColor}"
+                                 FontFamily="{StaticResource MonoFont}"
+                                 FontSize="11"
+                                 Padding="6,4" />
+                        <Button Content="ANALYZE PAIR"
+                                Command="{Binding AnalyzePairsCointegrationCommand}"
+                                Margin="12,0,0,0"
+                                Padding="14,6"
+                                FontSize="10"
+                                FontWeight="Black"
+                                Background="{StaticResource Accent}"
+                                Foreground="White"
+                                BorderThickness="0" />
+                        <ProgressBar Width="60" Height="4" Margin="10,0,0,0" IsIndeterminate="True"
+                                     Visibility="{Binding IsQuantLabPairsBusy, Converter={StaticResource BoolToVisLocal}}" />
+                    </StackPanel>
+                    <TextBlock Text="{Binding QuantLabPairsSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,10" />
+                    <UniformGrid Columns="6" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="STATUS" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabPairsCointegratedBadge}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Black" Foreground="{StaticResource Accent}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="BETA" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabPairsBetaText}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="HURST" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabPairsHurstText}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="HALF-LIFE" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabPairsHalfLifeText}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="ADF" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabPairsAdfText}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="CORRELATION" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabPairsCorrelationText}" FontFamily="{StaticResource MonoFont}" FontSize="12" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </UniformGrid>
+                    <TextBlock Text="SPREAD (y − β·x) · ±2σ BANDS" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" Margin="0,0,0,4" />
+                    <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Height="168">
+                        <Viewbox Stretch="Uniform" HorizontalAlignment="Stretch">
+                            <Canvas Width="520" Height="140" SnapsToDevicePixels="True">
+                                <Polyline Canvas.ZIndex="0"
+                                          Points="{Binding QuantLabPairsUpperBandPoints}"
+                                          Stroke="#F75F68"
+                                          StrokeDashArray="3 3"
+                                          StrokeThickness="1" />
+                                <Polyline Canvas.ZIndex="0"
+                                          Points="{Binding QuantLabPairsLowerBandPoints}"
+                                          Stroke="#3FB950"
+                                          StrokeDashArray="3 3"
+                                          StrokeThickness="1" />
+                                <Polyline Canvas.ZIndex="0"
+                                          Points="{Binding QuantLabPairsMeanLinePoints}"
+                                          Stroke="#5C6570"
+                                          StrokeDashArray="2 3"
+                                          StrokeThickness="1" />
+                                <Polyline Canvas.ZIndex="1"
+                                          Points="{Binding QuantLabPairsSpreadPoints}"
+                                          Stroke="#A78BFA"
+                                          StrokeThickness="2" />
+                            </Canvas>
+                        </Viewbox>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <!-- ===================== QUANT DIAGNOSTICS ROW ===================== -->
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.1*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,12,0">
+                    <StackPanel>
+                        <TextBlock Text="ROLLING SHARPE (20-TRADE WINDOW)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="{Binding QuantLabRollingSharpeSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Height="140">
+                            <Viewbox Stretch="Uniform" HorizontalAlignment="Stretch">
+                                <Canvas Width="520" Height="110" SnapsToDevicePixels="True">
+                                    <Polyline Canvas.ZIndex="0"
+                                              Points="{Binding QuantLabRollingSharpeZeroLine}"
+                                              Stroke="#5C6570"
+                                              StrokeDashArray="3 3"
+                                              StrokeThickness="1" />
+                                    <Polyline Canvas.ZIndex="1"
+                                              Points="{Binding QuantLabRollingSharpePoints}"
+                                              Stroke="#A78BFA"
+                                              StrokeThickness="2" />
+                                </Canvas>
+                            </Viewbox>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}">
+                    <StackPanel>
+                        <TextBlock Text="RETURN DISTRIBUTION (% · VaR / CVaR)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="{Binding QuantLabVarCvarSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <ItemsControl ItemsSource="{Binding QuantLabReturnDistributionBars}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Width="26" Margin="0,0,3,0" VerticalAlignment="Bottom" ToolTip="{Binding Label}">
+                                        <StackPanel VerticalAlignment="Bottom">
+                                            <Border Height="{Binding BarHeight}" MinHeight="2" CornerRadius="2,2,0,0" Background="{Binding BarBrush}" VerticalAlignment="Bottom" />
+                                            <TextBlock Text="{Binding Count}" HorizontalAlignment="Center" Foreground="{StaticResource TextMuted}" FontSize="7" FontFamily="{StaticResource MonoFont}" Margin="0,4,0,0" />
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Grid Margin="0,12,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.1*" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0" Style="{StaticResource TerminalCardStyle}" Margin="0,0,12,0">
+                    <StackPanel>
+                        <TextBlock Text="DRAWDOWN CURVE (%)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="{Binding QuantLabDrawdownSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Height="140">
+                            <Viewbox Stretch="Uniform" HorizontalAlignment="Stretch">
+                                <Canvas Width="520" Height="110" SnapsToDevicePixels="True">
+                                    <Polyline Canvas.ZIndex="1"
+                                              Points="{Binding QuantLabDrawdownPoints}"
+                                              Stroke="#F75F68"
+                                              StrokeThickness="2" />
+                                </Canvas>
+                            </Viewbox>
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="1" Style="{StaticResource TerminalCardStyle}">
+                    <StackPanel>
+                        <TextBlock Text="MFE vs MAE SCATTER" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                        <TextBlock Text="{Binding QuantLabMfeMaeSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,8" />
+                        <Border Background="{StaticResource AppBg}" BorderBrush="{StaticResource BorderColor}" BorderThickness="1" CornerRadius="4" Padding="8" Height="200">
+                            <Grid>
+                                <!-- Diagonal y=x reference (perfect 1:1 MFE/MAE split) -->
+                                <Canvas ClipToBounds="True">
+                                    <Line X1="0" Y1="180" X2="260" Y2="0" Stroke="#5C6570" StrokeDashArray="2 2" StrokeThickness="1" />
+                                </Canvas>
+                                <ItemsControl ItemsSource="{Binding QuantLabMfeMaeDots}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <Canvas Width="260" Height="200" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="ContentPresenter">
+                                            <Setter Property="Canvas.Left" Value="{Binding X}" />
+                                            <Setter Property="Canvas.Top" Value="{Binding Y}" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Ellipse Width="6" Height="6" Fill="{Binding Brush}" Opacity="0.85" ToolTip="{Binding Tooltip}" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="MAE →" Foreground="{StaticResource TextMuted}" FontSize="8" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,6,2" />
+                                <TextBlock Text="↑ MFE" Foreground="{StaticResource TextMuted}" FontSize="8" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="4,2,0,0" />
+                            </Grid>
+                        </Border>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- ===================== PERFORMANCE STABILITY (FOLDS) ===================== -->
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0">
+                <StackPanel>
+                    <TextBlock Text="PERFORMANCE STABILITY · 6 CHRONOLOGICAL FOLDS" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding QuantLabFoldStabilitySummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,10" />
+                    <ItemsControl ItemsSource="{Binding QuantLabPerformanceFolds}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="6" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="4" ToolTip="{Binding Tooltip}">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Label}" HorizontalAlignment="Center" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" Margin="0,0,0,6" />
+                                        <Grid Height="76">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Border Grid.Column="0" Width="16" Height="{Binding SharpeBarHeight}" CornerRadius="2,2,0,0" Background="{Binding SharpeBrush}" VerticalAlignment="Bottom" Margin="0,0,2,0" />
+                                            <Border Grid.Column="1" Width="16" Height="{Binding WinRateBarHeight}" CornerRadius="2,2,0,0" Background="{Binding WinRateBrush}" VerticalAlignment="Bottom" Margin="2,0,0,0" />
+                                        </Grid>
+                                        <TextBlock Text="{Binding Sharpe, StringFormat='SR {0:F2}'}" HorizontalAlignment="Center" Foreground="{StaticResource TextMain}" FontFamily="{StaticResource MonoFont}" FontSize="9" Margin="0,4,0,0" />
+                                        <TextBlock Text="{Binding WinRate, StringFormat='WR {0:P0}'}" HorizontalAlignment="Center" Foreground="{StaticResource TextSoft}" FontFamily="{StaticResource MonoFont}" FontSize="8" />
+                                        <TextBlock Text="{Binding TradeCount, StringFormat='n {0}'}" HorizontalAlignment="Center" Foreground="{StaticResource TextMuted}" FontFamily="{StaticResource MonoFont}" FontSize="8" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Border Width="10" Height="10" Background="#38BDF8" CornerRadius="2" />
+                        <TextBlock Text="Sharpe" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="4,0,12,0" VerticalAlignment="Center" />
+                        <Border Width="10" Height="10" Background="#A78BFA" CornerRadius="2" />
+                        <TextBlock Text="Win Rate" Foreground="{StaticResource TextMuted}" FontSize="9" Margin="4,0,12,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ===================== DEFLATED / PROBABILISTIC SHARPE ===================== -->
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0">
+                <StackPanel>
+                    <TextBlock Text="DEFLATED + PROBABILISTIC SHARPE (Bailey / López de Prado)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,8" />
+                    <TextBlock Text="{Binding QuantLabSharpeMomentsText}" Foreground="{StaticResource TextSoft}" FontFamily="{StaticResource MonoFont}" FontSize="10" Margin="0,0,0,10" />
+                    <UniformGrid Columns="2">
+                        <StackPanel Margin="0,0,8,0">
+                            <TextBlock Text="P(SR &gt; 0)  —  PSR" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabProbabilisticSharpeText}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Foreground="{StaticResource Accent}" Margin="0,4,0,4" />
+                            <TextBlock Text="Probability the true Sharpe is positive given observed skew/kurt/n." Foreground="{StaticResource TextMuted}" FontSize="9" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="DEFLATED SHARPE (N=50 trials)" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabDeflatedSharpeText}" FontFamily="{StaticResource MonoFont}" FontSize="16" FontWeight="Black" Foreground="{StaticResource Accent}" Margin="0,4,0,4" />
+                            <TextBlock Text="Probability the Sharpe beats the max-under-null selection bias when 50 candidate strategies were screened." Foreground="{StaticResource TextMuted}" FontSize="9" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </UniformGrid>
+                </StackPanel>
+            </Border>
+
+            <!-- ===================== STRATEGY CORRELATION HEATMAP ===================== -->
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0">
+                <StackPanel>
+                    <TextBlock Text="DAILY-PnL CORRELATION HEATMAP (TOP STRATEGIES)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding QuantLabCorrelationSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,10" />
+                    <ItemsControl ItemsSource="{Binding QuantLabCorrelationRows}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Vertical" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,2">
+                                    <TextBlock Text="{Binding RowLabel}" Width="120" Foreground="{StaticResource TextSoft}" FontFamily="{StaticResource MonoFont}" FontSize="10" VerticalAlignment="Center" />
+                                    <ItemsControl ItemsSource="{Binding Cells}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <StackPanel Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Width="56" Height="30" Background="{Binding Brush}" CornerRadius="2" Margin="1" ToolTip="{Binding Tooltip}">
+                                                    <TextBlock Text="{Binding Label}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="White" FontFamily="{StaticResource MonoFont}" FontSize="10" FontWeight="Bold" />
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- ===================== TCA REPORT ===================== -->
+            <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0">
+                <StackPanel>
+                    <TextBlock Text="TRANSACTION COST ANALYSIS (TCA)" Foreground="{StaticResource TextMuted}" FontSize="9" FontWeight="Bold" Margin="0,0,0,6" />
+                    <TextBlock Text="{Binding QuantLabTcaSummary}" Foreground="{StaticResource TextSoft}" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,12" />
+                    <UniformGrid Columns="3" Rows="2">
+                        <StackPanel Margin="0,0,12,10">
+                            <TextBlock Text="ENTRY SLIPPAGE" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabTcaSlippageText}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,12,10">
+                            <TextBlock Text="FEES (LEAKAGE)" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabTcaFeesPctOfEdgeText}" FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Black" Foreground="{StaticResource Accent}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,0,10">
+                            <TextBlock Text="MAKER / TAKER" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabTcaMakerRatioText}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,12,0">
+                            <TextBlock Text="EXECUTION LATENCY" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabTcaLatencyText}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel Margin="0,0,12,0">
+                            <TextBlock Text="FEES / TRADE" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabTcaFeesPerTradeText}" FontFamily="{StaticResource MonoFont}" FontSize="11" FontWeight="Black" Foreground="{StaticResource TextMain}" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <StackPanel>
+                            <TextBlock Text="TOTAL FEES" Foreground="{StaticResource TextMuted}" FontSize="8" FontWeight="Bold" />
+                            <TextBlock Text="{Binding QuantLabTcaTotalFeesText}" FontFamily="{StaticResource MonoFont}" FontSize="14" FontWeight="Black" Foreground="{StaticResource SellColor}" Margin="0,4,0,0" />
+                        </StackPanel>
+                    </UniformGrid>
+                </StackPanel>
+            </Border>
 
             <Border Style="{StaticResource TerminalCardStyle}" Margin="0,12,0,0"
                     Visibility="{Binding StrategyEvidenceVisualMode, Converter={StaticResource StrategyEvidenceModeToVisLocal}, ConverterParameter=Grid}">

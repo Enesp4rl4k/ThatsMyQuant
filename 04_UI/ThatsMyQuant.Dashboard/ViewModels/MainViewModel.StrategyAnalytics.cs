@@ -340,15 +340,15 @@ public partial class MainViewModel
             if (dialog.ShowDialog() != true) return;
 
             var sb = new System.Text.StringBuilder();
-            sb.AppendLine("Timestamp,Symbol,Strategy,Regime,Trades,WinRate,ProfitFactor,NetPnL,StartingCapital,FinalEquity,SharpeRatio,SortinoRatio,MaxDrawdownPct,AvgRR,MaxConsecLosses,PboScore,StochasticDominance,PromotionStage,BacktestPass");
+            sb.AppendLine("Timestamp,Symbol,Strategy,Regime,Trades,WinRate,ProfitFactor,NetPnL,StartingCapital,FinalEquity,SharpeRatio,SortinoRatio,MaxDrawdownPct,AvgRR,MaxConsecLosses,PboScore,StochasticDominance,PromotionStage,BacktestPass,PaperPromotionSummary");
 
             foreach (var b in BacktestBuckets)
             {
                 sb.AppendLine(string.Join(",",
-                    b.RecordedAtUtc.ToString("yyyy-MM-dd HH:mm:ss"),
-                    b.Symbol,
-                    b.StrategyTag,
-                    b.RegimeTag,
+                    EscapeCsv(b.RecordedAtUtc.ToString("yyyy-MM-dd HH:mm:ss")),
+                    EscapeCsv(b.Symbol),
+                    EscapeCsv(b.StrategyTag),
+                    EscapeCsv(b.RegimeTag),
                     b.Trades,
                     b.WinRate.ToString("F4"),
                     b.ProfitFactor.ToString("F2"),
@@ -362,8 +362,9 @@ public partial class MainViewModel
                     b.MaxConsecutiveLosses,
                     b.PboScore.ToString("F4"),
                     b.StochasticDominance.ToString("F4"),
-                    b.PromotionStage,
-                    b.BacktestPass));
+                    EscapeCsv(b.PromotionStage),
+                    b.BacktestPass,
+                    EscapeCsv(b.PaperPromotionSummary)));
             }
 
             await System.IO.File.WriteAllTextAsync(dialog.FileName, sb.ToString());
@@ -373,5 +374,20 @@ public partial class MainViewModel
         {
             AddSystemLog($"Export Error: {ex.Message}");
         }
+    }
+
+    private static string EscapeCsv(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        if (!value.Contains(',') && !value.Contains('"') && !value.Contains('\n') && !value.Contains('\r'))
+        {
+            return value;
+        }
+
+        return $"\"{value.Replace("\"", "\"\"")}\"";
     }
 }

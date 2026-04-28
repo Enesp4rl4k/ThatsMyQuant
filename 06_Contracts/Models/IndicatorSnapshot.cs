@@ -10,6 +10,25 @@ public record IndicatorSnapshot
     /// <summary>RSI(14) — 0-100. Below 30 = oversold, above 70 = overbought.</summary>
     public double? RSI { get; init; }
 
+    /// <summary>Rate of Change(10) — percent change vs 10 bars ago. Positive = bullish momentum.</summary>
+    public double? ROC { get; init; }
+
+    /// <summary>Stochastic RSI %K (0-100). Below 20 = oversold, above 80 = overbought.</summary>
+    public double? StochRsiK { get; init; }
+
+    /// <summary>Stochastic RSI %D (signal line, 0-100). K crossing above D = bullish momentum pivot.</summary>
+    public double? StochRsiD { get; init; }
+
+    // --- Trend Strength (ADX) ---
+    /// <summary>Average Directional Index (14). Above 25 = strong trend, below 20 = weak / ranging.</summary>
+    public double? ADX { get; init; }
+
+    /// <summary>DI+ (14) — positive directional movement. DI+ > DI- = uptrend.</summary>
+    public double? DIPlus { get; init; }
+
+    /// <summary>DI- (14) — negative directional movement. DI- > DI+ = downtrend.</summary>
+    public double? DIMinus { get; init; }
+
     // --- Trend (MACD) ---
     /// <summary>MACD(12,26,9) main line.</summary>
     public double? MACD { get; init; }
@@ -59,6 +78,9 @@ public record IndicatorSnapshot
 
     /// <summary>Nearest unbroken resistance level above current price.</summary>
     public SupportResistanceLevel? NearestResistance { get; init; }
+
+    /// <summary>The open price of the bar when indicators were computed (used for bar-direction volume signal).</summary>
+    public decimal BarOpen { get; init; }
 
     /// <summary>The price at the time indicators were computed.</summary>
     public decimal CurrentPrice { get; init; }

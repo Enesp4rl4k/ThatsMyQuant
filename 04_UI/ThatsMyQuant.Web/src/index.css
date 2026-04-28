@@ -4,157 +4,529 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Claude design language — light theme is canonical */
+    --background: 45 36% 97%;          /* #FAF9F5 paper */
+    --foreground: 40 8% 12%;           /* #1F1E1B ink-900 */
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 40 8% 12%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 40 8% 12%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 40 8% 12%;              /* ink primary */
+    --primary-foreground: 45 36% 97%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 42 26% 92%;           /* paper-100 */
+    --secondary-foreground: 40 8% 12%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 42 26% 92%;
+    --muted-foreground: 36 5% 41%;     /* ink-500 */
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 222 64% 33%;             /* navy-500 #1E3A8A */
+    --accent-foreground: 0 0% 100%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 350 53% 46%;        /* loss-700 */
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 40 8% 12%;
+    --input: 0 0% 100%;
+    --ring: 222 64% 33%;
 
-    --radius: 0.5rem;
+    --radius: 0.625rem;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
+    /* Warm dark — not cosmic. Still Claude-feel, just inverted paper */
+    --background: 36 12% 9%;           /* #1A1916 */
+    --foreground: 42 16% 92%;
 
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
+    --card: 36 10% 12%;
+    --card-foreground: 42 16% 92%;
 
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 36 10% 12%;
+    --popover-foreground: 42 16% 92%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 42 16% 92%;
+    --primary-foreground: 36 12% 9%;
 
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 36 8% 18%;
+    --secondary-foreground: 42 16% 92%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 36 8% 18%;
+    --muted-foreground: 38 10% 65%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 218 55% 62%;             /* lightened navy for dark contrast */
+    --accent-foreground: 36 12% 9%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 350 50% 55%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --border: 42 16% 92%;
+    --input: 36 10% 14%;
+    --ring: 218 55% 62%;
+  }
+
+  /* Noir — pure grayscale variant of dark. No warm/colored tints anywhere; every
+     surface is on a neutral black-to-gray ramp. Inherits Tailwind's dark variant
+     because tailwind.config.js has darkMode: ["selector", ".dark, .noir"]. */
+  .noir {
+    --background: 0 0% 0%;             /* #000000 */
+    --foreground: 0 0% 92%;             /* #EBEBEB neutral text */
+
+    --card: 0 0% 6%;                    /* #0F0F0F */
+    --card-foreground: 0 0% 92%;
+
+    --popover: 0 0% 6%;
+    --popover-foreground: 0 0% 92%;
+
+    --primary: 0 0% 92%;
+    --primary-foreground: 0 0% 0%;
+
+    --secondary: 0 0% 12%;              /* #1F1F1F */
+    --secondary-foreground: 0 0% 92%;
+
+    --muted: 0 0% 12%;
+    --muted-foreground: 0 0% 62%;       /* gray-400 */
+
+    --accent: 0 0% 70%;                 /* neutral gray accent */
+    --accent-foreground: 0 0% 0%;
+
+    --destructive: 0 0% 35%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 0 0% 92%;
+    --input: 0 0% 8%;
+    --ring: 0 0% 50%;
   }
 }
 
 @layer base {
   * {
-    @apply border-border;
+    border-color: rgba(31, 30, 27, 0.08);
   }
+
+  .dark * {
+    border-color: rgba(255, 250, 235, 0.08);
+  }
+
+  .noir * {
+    border-color: rgba(180, 180, 180, 0.07);
+  }
+
   body {
-    @apply bg-background text-foreground;
-    font-family: 'Fira Sans', sans-serif;
-    background-color: #0B0E13;
-    background-image: 
-      radial-gradient(at 0% 0%, hsla(220,16%,12%,1) 0, transparent 50%), 
-      radial-gradient(at 100% 100%, hsla(215,39%,15%,1) 0, transparent 50%);
+    @apply text-foreground;
+    font-family: 'Inter', system-ui, sans-serif;
+    background-color: #FAF9F5;
+    background-image:
+      radial-gradient(at 0% 0%, rgba(30, 58, 138, 0.04) 0, transparent 50%),
+      radial-gradient(at 100% 100%, rgba(30, 58, 138, 0.03) 0, transparent 50%);
     background-attachment: fixed;
     overflow-x: hidden;
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
-  /* Orbital Orbs */
-  body::before, body::after {
-    content: "";
-    position: fixed;
-    top: 0; left: 0; bottom: 0; right: 0;
-    z-index: -1;
-    pointer-events: none;
+  .dark body {
+    background-color: #1A1916;
+    background-image:
+      radial-gradient(at 0% 0%, rgba(30, 58, 138, 0.06) 0, transparent 55%),
+      radial-gradient(at 100% 100%, rgba(23, 46, 111, 0.05) 0, transparent 55%);
   }
 
-  body::before {
-    background: radial-gradient(circle at 20% 30%, rgba(30, 58, 138, 0.08) 0%, transparent 40%);
-    animation: orb-float-1 20s ease-in-out infinite;
+  /* Claude-feel headings — serif */
+  h1, h2, h3 {
+    font-family: 'Newsreader', 'Source Serif 4', Georgia, serif;
+    letter-spacing: -0.015em;
+    font-feature-settings: "ss01", "ss02";
   }
 
-  body::after {
-    background: radial-gradient(circle at 80% 70%, rgba(15, 23, 42, 0.08) 0%, transparent 40%);
-    animation: orb-float-2 25s ease-in-out infinite;
+  /* Tabular numbers for monospace data */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
   }
 
-  /* Micro-Grain Texture */
+  /* Existing pages use `text-2xl font-black tracking-tight` for titles —
+     auto-upgrade to Claude-style serif so we don't rewrite 11 pages. */
+  .text-2xl.font-black.tracking-tight {
+    font-family: 'Newsreader', 'Source Serif 4', Georgia, serif;
+    font-weight: 500;
+    letter-spacing: -0.015em;
+    font-size: 1.875rem;  /* slightly larger reads better in serif */
+  }
+  .text-2xl.font-black.tracking-tight .font-light {
+    font-family: 'Newsreader', 'Source Serif 4', Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+  }
+
+  /* Subtle paper grain (replaces noisy grain texture in dark mode) */
   .grain {
-    position: fixed;
-    top: -50%; left: -50%; width: 200%; height: 200%;
-    background-image: url("https://grainy-gradients.vercel.app/noise.svg");
-    opacity: 0.015;
-    pointer-events: none;
-    z-index: 100;
+    display: none;
   }
 }
 
-@keyframes orb-float-1 {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(5%, 10%); }
+/* === Claude palette overrides for legacy hardcoded classes ===
+   The codebase has hundreds of bg-[#0D1117]/60 etc. Rather than refactor every
+   file, we remap them to Claude's warm palette using attribute selectors.
+*/
+
+/* --- LIGHT MODE (default — html WITHOUT .dark class) --- */
+html:not(.dark):not(.noir) [class*="bg-[#0D1117]"],
+html:not(.dark):not(.noir) [class*="bg-[#0A0E14]"],
+html:not(.dark):not(.noir) [class*="bg-[#0D0F14]"] {
+  background-color: rgba(255, 255, 255, 0.9) !important;
+  backdrop-filter: none !important;
+  border-color: rgba(31, 30, 27, 0.08) !important;
+  box-shadow: 0 1px 2px rgba(31, 30, 27, 0.03), 0 1px 3px rgba(31, 30, 27, 0.04) !important;
 }
 
-@keyframes orb-float-2 {
-  0%, 100% { transform: translate(0, 0); }
-  50% { transform: translate(-5%, -10%); }
+html:not(.dark):not(.noir) [class*="bg-[#070A0F]"],
+html:not(.dark):not(.noir) [class*="bg-[#05070A]"] {
+  background-color: #FAF9F5 !important;
+  backdrop-filter: none !important;
 }
 
-@layer components {
-  .glass-panel {
-    @apply bg-white/5 border border-white/10 backdrop-blur-xl;
-    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-  }
-
-  .liquid-glass {
-    filter: url(#liquid);
-    transition: filter 0.3s ease;
-  }
-
-  .liquid-glass:hover {
-    filter: url(#liquid-hover);
-  }
+/* Sidebar — slightly tinted paper so it separates from page bg */
+html:not(.dark):not(.noir) aside {
+  background-color: #F5F2E8 !important;
+  border-right: 1px solid rgba(31, 30, 27, 0.08) !important;
+  backdrop-filter: none !important;
 }
 
-@keyframes liquid-drift {
-  0% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(2px, -2px) scale(1.02); }
-  100% { transform: translate(0, 0) scale(1); }
+/* Topbar — pure white with subtle bottom border */
+html:not(.dark):not(.noir) header {
+  background-color: rgba(255, 255, 255, 0.85) !important;
+  border-bottom: 1px solid rgba(31, 30, 27, 0.08) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
 }
 
-@keyframes scanline {
-  0% { transform: translateY(-100%); }
-  100% { transform: translateY(100%); }
+/* Inputs in light mode */
+html:not(.dark):not(.noir) input[type="text"],
+html:not(.dark):not(.noir) input[type="email"],
+html:not(.dark):not(.noir) input[type="password"],
+html:not(.dark):not(.noir) input[type="number"],
+html:not(.dark):not(.noir) input[type="datetime-local"],
+html:not(.dark):not(.noir) input[type="date"],
+html:not(.dark):not(.noir) select,
+html:not(.dark):not(.noir) textarea {
+  background-color: #FFFFFF !important;
+  color: #1F1E1B !important;
+  border-color: rgba(31, 30, 27, 0.14) !important;
 }
 
+html:not(.dark):not(.noir) input:focus,
+html:not(.dark):not(.noir) select:focus,
+html:not(.dark):not(.noir) textarea:focus {
+  border-color: rgba(30, 58, 138, 0.6) !important;
+  box-shadow: 0 0 0 3px rgba(30, 58, 138, 0.12) !important;
+  outline: none !important;
+}
+
+/* Borders */
+html:not(.dark):not(.noir) .border-white\/5,
+html:not(.dark):not(.noir) .border-white\/\[0\.04\],
+html:not(.dark):not(.noir) .border-white\/\[0\.05\] {
+  border-color: rgba(31, 30, 27, 0.07) !important;
+}
+html:not(.dark):not(.noir) .border-white\/10 {
+  border-color: rgba(31, 30, 27, 0.12) !important;
+}
+
+/* Hover/active translucent whites → warm slate hovers */
+html:not(.dark):not(.noir) .hover\:bg-white\/\[0\.02\]:hover,
+html:not(.dark):not(.noir) .hover\:bg-white\/\[0\.04\]:hover,
+html:not(.dark):not(.noir) .hover\:bg-white\/\[0\.05\]:hover,
+html:not(.dark):not(.noir) .bg-white\/\[0\.02\],
+html:not(.dark):not(.noir) .bg-white\/\[0\.04\],
+html:not(.dark):not(.noir) .bg-white\/\[0\.05\] {
+  background-color: rgba(31, 30, 27, 0.035) !important;
+}
+html:not(.dark):not(.noir) .bg-white\/5 {
+  background-color: rgba(31, 30, 27, 0.045) !important;
+}
+html:not(.dark):not(.noir) .bg-white\/10 {
+  background-color: rgba(31, 30, 27, 0.07) !important;
+}
+
+/* Text — re-map foreground colors */
+html:not(.dark):not(.noir) .text-foreground { color: #1F1E1B !important; }
+html:not(.dark):not(.noir) .text-muted-foreground { color: #6B6A64 !important; }
+html:not(.dark):not(.noir) .text-muted-foreground\/40 { color: rgba(31, 30, 27, 0.4) !important; }
+html:not(.dark):not(.noir) .text-muted-foreground\/50 { color: rgba(31, 30, 27, 0.48) !important; }
+html:not(.dark):not(.noir) .text-muted-foreground\/60 { color: rgba(31, 30, 27, 0.55) !important; }
+html:not(.dark):not(.noir) .text-muted-foreground\/70 { color: rgba(31, 30, 27, 0.6) !important; }
+html:not(.dark):not(.noir) .text-muted-foreground\/80 { color: rgba(31, 30, 27, 0.65) !important; }
+
+html:not(.dark):not(.noir) .text-white,
+html:not(.dark):not(.noir) .text-white\/70,
+html:not(.dark):not(.noir) .text-white\/80,
+html:not(.dark):not(.noir) .text-white\/90 {
+  color: #1F1E1B !important;
+}
+
+/* Accent — cyan → navy */
+html:not(.dark):not(.noir) .text-accent { color: #1E3A8A !important; }
+html:not(.dark):not(.noir) .text-accent\/70 { color: rgba(30, 58, 138, 0.75) !important; }
+html:not(.dark):not(.noir) .text-accent\/80 { color: rgba(30, 58, 138, 0.85) !important; }
+html:not(.dark):not(.noir) .bg-accent\/5 { background-color: rgba(30, 58, 138, 0.05) !important; }
+html:not(.dark):not(.noir) .bg-accent\/10 { background-color: rgba(30, 58, 138, 0.08) !important; }
+html:not(.dark):not(.noir) .bg-accent\/15 { background-color: rgba(30, 58, 138, 0.10) !important; }
+html:not(.dark):not(.noir) .bg-accent\/20 { background-color: rgba(30, 58, 138, 0.14) !important; }
+html:not(.dark):not(.noir) .border-accent\/20 { border-color: rgba(30, 58, 138, 0.25) !important; }
+html:not(.dark):not(.noir) .border-accent\/30 { border-color: rgba(30, 58, 138, 0.35) !important; }
+html:not(.dark):not(.noir) .border-accent\/40 { border-color: rgba(30, 58, 138, 0.45) !important; }
+html:not(.dark):not(.noir) .border-accent { border-color: #1E3A8A !important; }
+html:not(.dark):not(.noir) .bg-accent { background-color: #1E3A8A !important; }
+
+/* Cyan-flavoured arbitrary colors used in charts/orbs → navy */
+html:not(.dark):not(.noir) [class*="bg-cyan"],
+html:not(.dark):not(.noir) [class*="text-cyan"] {
+  color: #1E3A8A;
+}
+
+/* Page-bg gradient orbs (Phase 6 AppShell) — softer in light mode */
+html:not(.dark):not(.noir) .bg-accent\/5 { background: radial-gradient(circle, rgba(30,58,138,0.05), transparent 70%); }
+html:not(.dark):not(.noir) [class*="bg-indigo-500/5"] { background: radial-gradient(circle, rgba(160,100,75,0.04), transparent 70%); }
+
+/* Bright neon shadows in dark theme → soft warm glow in light */
+html:not(.dark):not(.noir) [class*="shadow-[0_0_15px_rgba(0,191,255"] {
+  box-shadow: 0 0 12px rgba(30, 58, 138, 0.35) !important;
+}
+
+/* PnL semantic colors — slightly darker for paper contrast */
+html:not(.dark):not(.noir) .text-emerald-300,
+html:not(.dark):not(.noir) .text-emerald-400,
+html:not(.dark):not(.noir) .text-emerald-500 { color: #2D6A4F !important; }
+html:not(.dark):not(.noir) .text-rose-300,
+html:not(.dark):not(.noir) .text-rose-400,
+html:not(.dark):not(.noir) .text-rose-500 { color: #B5364B !important; }
+html:not(.dark):not(.noir) .text-amber-300,
+html:not(.dark):not(.noir) .text-amber-400 { color: #A05A00 !important; }
+html:not(.dark):not(.noir) .bg-emerald-400\/10,
+html:not(.dark):not(.noir) .bg-emerald-500\/\[0\.04\] { background-color: rgba(45, 106, 79, 0.08) !important; }
+html:not(.dark):not(.noir) .bg-rose-400\/10,
+html:not(.dark):not(.noir) .bg-rose-500\/\[0\.04\] { background-color: rgba(181, 54, 75, 0.08) !important; }
+
+/* Gradient bg (logo span) → ink */
+html:not(.dark):not(.noir) .bg-gradient-to-r.from-white {
+  background: #1F1E1B !important;
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  color: transparent !important;
+}
+
+/* Range slider accent in light mode */
+html:not(.dark):not(.noir) input[type="range"] {
+  accent-color: #1E3A8A;
+}
+
+/* === Accordion / scrollbar / refinements === */
+
+/* Scrollbar — paper feel */
+html:not(.dark):not(.noir) ::-webkit-scrollbar { width: 10px; height: 10px; }
+html:not(.dark):not(.noir) ::-webkit-scrollbar-track { background: transparent; }
+html:not(.dark):not(.noir) ::-webkit-scrollbar-thumb {
+  background: rgba(31, 30, 27, 0.12);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html:not(.dark):not(.noir) ::-webkit-scrollbar-thumb:hover {
+  background: rgba(31, 30, 27, 0.2);
+  background-clip: padding-box;
+}
+
+/* Compact density mode — tightens table cells + card paddings */
+:root[data-density="compact"] table th,
+:root[data-density="compact"] table td {
+  padding-top: 0.35rem !important;
+  padding-bottom: 0.35rem !important;
+}
+
+:root[data-density="compact"] .rounded-xl[class*="p-5"] {
+  padding: 0.85rem !important;
+}
+
+:root[data-density="compact"] main {
+  padding-top: 1rem !important;
+}
+
+/* Animation keyframes */
 @keyframes shimmer {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
 
 .animate-shimmer {
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+  background: linear-gradient(90deg, transparent, rgba(31, 30, 27, 0.05), transparent);
   background-size: 200% 100%;
   animation: shimmer 2s infinite;
+}
+
+/* Glass panel utility (was glass; now paper) */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(31, 30, 27, 0.08);
+  box-shadow: 0 1px 2px rgba(31, 30, 27, 0.03);
+}
+
+.dark .glass-panel {
+  background: rgba(36, 33, 30, 0.7);
+  border-color: rgba(255, 250, 235, 0.06);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* === NOIR THEME — pure-black variant of dark mode === */
+/* Activated when <html class="dark theme-noir">. Layers on top of .dark; only
+   overrides backgrounds, borders, and glow intensity. Text/foreground stays
+   identical so all existing components remain readable. */
+
+/* Pure grayscale: NO colored radial tints. Just a flat black body with the
+   slightest dark-gray vignette so panels still pop without any blue/magenta cast. */
+html.noir body {
+  background-color: #000000;
+  background-image:
+    radial-gradient(at 0% 0%, rgba(255, 255, 255, 0.015) 0, transparent 60%),
+    radial-gradient(at 100% 100%, rgba(255, 255, 255, 0.012) 0, transparent 60%);
+}
+
+/* Panel backgrounds — all common hardcoded panel hexes graded onto a
+   pure greyscale ramp (#0A → #14 → #1C). No colored tints. */
+html.noir [class*="bg-[#0D1117]"],
+html.noir [class*="bg-[#0A0E14]"],
+html.noir [class*="bg-[#0D0F14]"] {
+  background-color: #0F0F0F !important;
+  border-color: rgba(255, 255, 255, 0.06) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
+}
+html.noir [class*="bg-[#0A0A0A]"] {
+  background-color: #0A0A0A !important;
+  border-color: rgba(255, 255, 255, 0.05) !important;
+}
+html.noir [class*="bg-[#070A0F]"],
+html.noir [class*="bg-[#05070A]"] {
+  background-color: #070707 !important;
+  border-color: rgba(255, 255, 255, 0.045) !important;
+}
+
+/* Tighter borders in Noir for the minimal look — neutral gray, no white wash */
+html.noir .border-white\/5,
+html.noir .border-white\/\[0\.04\],
+html.noir .border-white\/\[0\.05\],
+html.noir .border-white\/\[0\.07\] {
+  border-color: rgba(180, 180, 180, 0.06) !important;
+}
+html.noir .border-white\/10 {
+  border-color: rgba(180, 180, 180, 0.09) !important;
+}
+
+/* Sidebar + topbar — pure black with subtle line separators */
+html.noir aside {
+  background-color: #000000 !important;
+  border-right: 1px solid rgba(180, 180, 180, 0.07) !important;
+  backdrop-filter: none !important;
+}
+html.noir header {
+  background-color: #050505 !important;
+  border-bottom: 1px solid rgba(180, 180, 180, 0.07) !important;
+  backdrop-filter: blur(16px) !important;
+  -webkit-backdrop-filter: blur(16px) !important;
+}
+
+/* Strip the body grain overlay tint that the default theme uses for warmth —
+   in Noir we want flat neutral grayscale, not the parchment-y grain effect. */
+html.noir .grain { opacity: 0 !important; }
+html.noir body::before, html.noir body::after { display: none !important; }
+
+/* Translucent white overlays sprinkled throughout the UI (bg-white/5 etc.)
+   carry a faint cool tint on a flat-black background. Force them onto a neutral
+   gray so the page reads as pure greyscale. */
+html.noir .bg-white\/5,
+html.noir .bg-white\/\[0\.02\],
+html.noir .bg-white\/\[0\.03\],
+html.noir .bg-white\/\[0\.04\],
+html.noir .bg-white\/\[0\.05\],
+html.noir .bg-white\/\[0\.06\] { background-color: rgba(160, 160, 160, 0.05) !important; }
+html.noir .bg-white\/10 { background-color: rgba(160, 160, 160, 0.08) !important; }
+
+/* Boost the ring glow intensity in Noir — pure-black bg lets it shine */
+html.noir svg circle[stroke-linecap="round"] {
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+/* Inputs in Noir — slightly elevated card */
+html.noir input[type="text"],
+html.noir input[type="email"],
+html.noir input[type="password"],
+html.noir input[type="number"],
+html.noir input[type="datetime-local"],
+html.noir input[type="date"],
+html.noir select,
+html.noir textarea {
+  background-color: #0A0A0A !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* === Print stylesheet — Phase 15 PDF export === */
+@media print {
+  body {
+    background: white !important;
+    background-image: none !important;
+    color: #18181b !important;
+    overflow: visible !important;
+  }
+
+  body::before, body::after { display: none !important; }
+  .grain { display: none !important; }
+
+  aside, header, nav, [data-print="hide"] {
+    display: none !important;
+  }
+
+  main {
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  .rounded-xl, .rounded-lg, [class*="bg-[#0D"], [class*="bg-[#070"], [class*="bg-[#0A"] {
+    background: white !important;
+    color: #1F1E1B !important;
+    border-color: #d4d4d8 !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: none !important;
+  }
+
+  .text-foreground,
+  .text-muted-foreground\/40,
+  .text-muted-foreground\/50,
+  .text-muted-foreground\/60,
+  .text-muted-foreground\/70,
+  .text-muted-foreground\/80,
+  .text-white\/40,
+  .text-white\/60,
+  .text-white\/80 {
+    color: #1F1E1B !important;
+  }
+
+  .text-emerald-300, .text-emerald-400, .text-emerald-500 { color: #2D6A4F !important; }
+  .text-rose-300, .text-rose-400, .text-rose-500 { color: #B5364B !important; }
+  .text-amber-300, .text-amber-400 { color: #A05A00 !important; }
+  .text-accent { color: #1E3A8A !important; }
+
+  .rounded-xl {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  h1, h2, h3, p, td, th { color: #18181b !important; }
+
+  @page {
+    size: A4;
+    margin: 1.5cm;
+  }
 }

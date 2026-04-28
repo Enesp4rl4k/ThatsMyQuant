@@ -5,6 +5,7 @@ using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
+using ThatsMyQuant.Contracts.Options;
 using Xunit;
 
 namespace ThatsMyQuant.Tests.Strategy;
@@ -28,7 +29,8 @@ public class PaperTradingServiceTests
                 analysis,
                 marketData,
                 logger,
-                positionSupervisor: new PositionSupervisorService());
+                positionSupervisor: new PositionSupervisorService(),
+                universeOptions: new MarketUniverseOptions { EnableCrypto = true, EnableBist = true, EnableForex = true });
 
             service.Portfolio.OpenPositions.Add(new PaperPosition
             {

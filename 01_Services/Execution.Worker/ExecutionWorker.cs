@@ -13,7 +13,12 @@ namespace ThatsMyQuant.Execution.Worker;
 
 public class ExecutionWorker : BackgroundService
 {
-    private static readonly TimeSpan ClaimLeaseTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ClaimLeaseTimeout      = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RecoveryLoopInterval   = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan LifecycleLoopInterval  = TimeSpan.FromSeconds(3);
+    private const int RecoveryBatchSize  = 25;
+    private const int SeedBatchSize      = 100;
+    private const int MaxRetryAttempts   = 3;
     private readonly ILogger<ExecutionWorker> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly TickPipeline _tickPipeline;
@@ -61,7 +66,7 @@ public class ExecutionWorker : BackgroundService
 
     private async Task RunSignalRecoveryLoopAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        using var timer = new PeriodicTimer(RecoveryLoopInterval);
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
@@ -75,7 +80,7 @@ public class ExecutionWorker : BackgroundService
             {
                 using var scope = _serviceProvider.CreateScope();
                 var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
-                await ClaimAndEnqueueSignalsAsync(signalRepository, 25, stoppingToken);
+                await ClaimAndEnqueueSignalsAsync(signalRepository, RecoveryBatchSize, stoppingToken);
 
                 _telemetry.SetExecutionSignalQueueDepth(_executionSignalQueue.PendingCount);
             }
@@ -88,7 +93,7 @@ public class ExecutionWorker : BackgroundService
 
     private async Task RunLifecycleLoopAsync(CancellationToken stoppingToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(3));
+        using var timer = new PeriodicTimer(LifecycleLoopInterval);
 
         while (await timer.WaitForNextTickAsync(stoppingToken))
         {
@@ -137,7 +142,7 @@ public class ExecutionWorker : BackgroundService
     {
         using var scope = _serviceProvider.CreateScope();
         var signalRepository = scope.ServiceProvider.GetRequiredService<ISignalRepository>();
-        await ClaimAndEnqueueSignalsAsync(signalRepository, 100, stoppingToken);
+        await ClaimAndEnqueueSignalsAsync(signalRepository, SeedBatchSize, stoppingToken);
     }
 
     private async Task RunStartupReconciliationAsync(CancellationToken stoppingToken)
@@ -244,7 +249,7 @@ public class ExecutionWorker : BackgroundService
     private void HandleExecutionException(Signal signal, Exception ex)
     {
         signal.RetryCount++;
-        if (signal.RetryCount >= 3)
+        if (signal.RetryCount >= MaxRetryAttempts)
         {
             signal.Status = TradeStatus.DeadLetter;
             signal.Reasoning = $"{signal.Reasoning} | Worker execution failed (Max Retries): {ex.Message}";

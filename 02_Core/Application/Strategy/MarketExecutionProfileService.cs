@@ -99,6 +99,100 @@ public sealed class MarketExecutionProfileService
         return price * (1m + (direction * cost));
     }
 
+    /// <summary>
+    /// Depth-aware execution price that walks a live <see cref="OrderBookSnapshot"/>
+    /// to compute the volume-weighted fill price for a target quantity. Falls back
+    /// to the profile-based <see cref="ApplyExecutionPrice"/> when the book is empty
+    /// or insufficient. Entry buys walk asks (pay up), entry sells walk bids (pay
+    /// down); exits invert.
+    /// </summary>
+    public decimal ApplyExecutionPriceWithBook(
+        decimal price,
+        decimal quantity,
+        TradeSide side,
+        bool isEntry,
+        string symbol,
+        OrderBookSnapshot? book,
+        IDictionary<string, string>? metadata = null,
+        decimal? overrideSlippagePercent = null,
+        decimal? overrideSpreadPercent = null,
+        Candle? candle = null)
+    {
+        if (!book.HasValue || quantity <= 0m)
+        {
+            return ApplyExecutionPrice(price, side, isEntry, symbol, metadata,
+                overrideSlippagePercent, overrideSpreadPercent, candle);
+        }
+
+        var snap = book.Value;
+        bool takesAsks = (side == TradeSide.Buy && isEntry) || (side == TradeSide.Sell && !isEntry);
+        var levels = takesAsks ? snap.Asks : snap.Bids;
+        if (levels is null || levels.Length == 0)
+        {
+            return ApplyExecutionPrice(price, side, isEntry, symbol, metadata,
+                overrideSlippagePercent, overrideSpreadPercent, candle);
+        }
+
+        decimal remaining = quantity;
+        decimal notional = 0m;
+        decimal filled = 0m;
+        foreach (var level in levels)
+        {
+            if (remaining <= 0m) break;
+            if (level.Price <= 0m || level.Quantity <= 0m) continue;
+            var take = Math.Min(remaining, level.Quantity);
+            notional += take * level.Price;
+            filled += take;
+            remaining -= take;
+        }
+
+        if (filled <= 0m)
+        {
+            return ApplyExecutionPrice(price, side, isEntry, symbol, metadata,
+                overrideSlippagePercent, overrideSpreadPercent, candle);
+        }
+
+        // Not enough depth to fill the full quantity — extrapolate the last level
+        // price for the residual + a safety surcharge so the backtest/paper book-
+        // walk result never optimistically under-counts slippage in thin markets.
+        if (remaining > 0m)
+        {
+            var worst = levels[^1].Price;
+            notional += remaining * worst * 1.002m;
+            filled += remaining;
+        }
+
+        var vwap = notional / filled;
+        return vwap;
+    }
+
+    /// <summary>
+    /// Depth-aware slippage percentage estimate — walks the book to see how far
+    /// the fill VWAP drifts from the top-of-book mid. Suitable for the cost-aware
+    /// gate in pairs entries where we want a forward-looking number rather than
+    /// the static profile figure.
+    /// </summary>
+    public decimal EstimateDepthSlippagePercent(
+        string symbol,
+        decimal quantity,
+        TradeSide side,
+        bool isEntry,
+        OrderBookSnapshot? book)
+    {
+        if (!book.HasValue || quantity <= 0m) return 0m;
+        var snap = book.Value;
+        if (snap.Asks is null || snap.Bids is null ||
+            snap.Asks.Length == 0 || snap.Bids.Length == 0) return 0m;
+
+        var bestBid = snap.Bids[0].Price;
+        var bestAsk = snap.Asks[0].Price;
+        if (bestBid <= 0m || bestAsk <= 0m) return 0m;
+        var mid = (bestBid + bestAsk) / 2m;
+
+        var vwap = ApplyExecutionPriceWithBook(mid, quantity, side, isEntry, symbol, book);
+        return Math.Abs(vwap - mid) / mid * 100m;
+    }
+
     public decimal CalculateNetPnl(
         decimal entryPrice,
         decimal exitPrice,

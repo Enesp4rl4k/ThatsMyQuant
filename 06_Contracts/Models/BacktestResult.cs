@@ -52,6 +52,45 @@ public record BacktestResult
     public Dictionary<string, int> EntryRejectReasons { get; init; } = new();
     public bool InferenceModelAvailable { get; init; }
     public bool InferencePredictionValid { get; init; }
+
+    // ── Pillar 4: Portfolio-level validation breakdowns ──
+
+    /// <summary>Performance breakdown by market regime (Trending, Volatile, Ranging).</summary>
+    public Dictionary<string, BucketPerformance> RegimeBuckets { get; init; } = new();
+
+    /// <summary>Performance breakdown by exit policy tag (TrendRunner, MeanReversion, etc).</summary>
+    public Dictionary<string, BucketPerformance> ExitPolicyBuckets { get; init; } = new();
+
+    /// <summary>Performance breakdown by calendar quarter (e.g. "2025-Q3").</summary>
+    public Dictionary<string, BucketPerformance> QuarterlyBuckets { get; init; } = new();
+
+    /// <summary>Top 5 entry rejection reasons ordered by count descending.</summary>
+    public List<string> TopRejectReasons { get; init; } = new();
+
+    /// <summary>Total round-trip fees paid across all trades.</summary>
+    public decimal TotalFeesPaid { get; init; }
+
+    /// <summary>Net funding cash-flow across all trades.</summary>
+    public decimal TotalNetFunding { get; init; }
+
+    /// <summary>Gross PnL before fees and funding — shows raw alpha before execution drag.</summary>
+    public decimal GrossPnL { get; init; }
+
+    /// <summary>Cost leakage: percentage of gross PnL consumed by fees + slippage.</summary>
+    public double CostLeakagePercent { get; init; }
+}
+
+/// <summary>
+/// Performance metrics for a bucketed subset of trades (regime, exit policy, quarter).
+/// </summary>
+public record BucketPerformance
+{
+    public int TradeCount { get; init; }
+    public int Winners { get; init; }
+    public double WinRate => TradeCount > 0 ? Winners * 100.0 / TradeCount : 0;
+    public decimal TotalPnL { get; init; }
+    public double AverageRR { get; init; }
+    public double ProfitFactor { get; init; }
 }
 
 public record BacktestTradeResult

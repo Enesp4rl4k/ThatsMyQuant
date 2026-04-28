@@ -41,7 +41,7 @@ public sealed class BacktestTimeframeProfileOptions
 
     public BacktestProfile OneHour { get; set; } = new()
     {
-        MinConfidence = 62,
+        MinConfidence = 55,
         MinRiskReward = 1.50m,
         TrendPositionCapPercent = 12.0m,
         RangePositionCapPercent = 6.0m,
@@ -86,4 +86,13 @@ public sealed class BacktestProfile
     public decimal RangePositionCapPercent { get; set; } = 7.0m;
     public decimal VolatilePositionCapPercent { get; set; } = 3.0m;
     public decimal AtrSlippageScalar { get; set; } = 1.0m;
+
+    /// <summary>TP distance as a multiple of ATR. Default 2.5× ensures 2.5:1 gross RR.</summary>
+    public decimal TakeProfitAtrMultiple { get; set; } = 2.5m;
+
+    /// <summary>SL distance as a multiple of ATR. Default 1.0× ATR — tight but respects vol.</summary>
+    public decimal StopLossAtrMultiple { get; set; } = 1.0m;
+
+    /// <summary>Whether to use ATR-scaled TP/SL instead of indicator-derived levels. Default: true.</summary>
+    public bool UseAtrScaledExits { get; set; } = true;
 }

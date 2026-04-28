@@ -29,4 +29,17 @@ public sealed class RiskGovernorOptions
     public decimal MaxRequestedLeverage { get; set; } = 3m;
     public decimal MaxRequestedLeverageCross { get; set; } = 2m;
     public decimal MaxRequestedLeverageIsolated { get; set; } = 3m;
+    public decimal CommissionPercentPerSide { get; set; } = 0.05m;
+    public int LossStreakLookbackTrades { get; set; } = 5;
+    public int LossStreakThreshold { get; set; } = 3;
+    public decimal SevereSingleLossPercent { get; set; } = 2.0m;
+
+    // Volatility targeting — scales position size to normalize realized portfolio volatility.
+    // Off by default (Enabled=false) so existing behavior is preserved. Turn on to cap
+    // risk-budget in high-vol regimes and lean-in during calm regimes.
+    public bool VolatilityTargetingEnabled { get; set; } = false;
+    public decimal VolatilityTargetAnnualPercent { get; set; } = 15.0m;
+    public int VolatilityLookbackBars { get; set; } = 20;
+    public decimal VolatilityMultiplierFloor { get; set; } = 0.35m;
+    public decimal VolatilityMultiplierCap { get; set; } = 1.60m;
 }

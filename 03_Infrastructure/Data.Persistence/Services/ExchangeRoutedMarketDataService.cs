@@ -333,22 +333,26 @@ public class ExchangeRoutedMarketDataService : IMarketDataService
         var normalized = symbol.Trim().ToUpperInvariant();
         normalized = normalized.Replace("=X", string.Empty, StringComparison.OrdinalIgnoreCase);
 
-        if (normalized.Contains("-USD", StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = normalized.Replace("-USD", "USDT", StringComparison.OrdinalIgnoreCase);
-        }
-
         if (normalized.Contains("/"))
         {
             normalized = normalized.Replace("/", string.Empty, StringComparison.OrdinalIgnoreCase);
         }
 
-        if (normalized.Contains("-") && !normalized.EndsWith("USDT", StringComparison.OrdinalIgnoreCase))
+        // Strip hyphens FIRST so OKX-style "BTC-USDT" canonicalises to "BTCUSDT" cleanly.
+        // The previous "-USD"→"USDT" replace turned "BTC-USDT" into "BTCUSDTT" and then the
+        // tail USDT-append produced "BTCUSDTTUSDT" which doesn't exist on any exchange and
+        // forced a synthetic-data fallback for every symbol passed in OKX hyphenated form.
+        normalized = SymbolNormalizer.ToCanonical(normalized);
+
+        // Yahoo-style "BTC-USD" (sans T) → "BTCUSDT". After ToCanonical the hyphen is gone
+        // so we look for the bare "USD" suffix.
+        if (normalized.EndsWith("USD", StringComparison.OrdinalIgnoreCase) &&
+            !normalized.EndsWith("USDT", StringComparison.OrdinalIgnoreCase) &&
+            !normalized.EndsWith("USDC", StringComparison.OrdinalIgnoreCase))
         {
-            normalized = normalized.Replace("-", string.Empty, StringComparison.OrdinalIgnoreCase);
+            normalized = normalized + "T";
         }
 
-        normalized = SymbolNormalizer.ToCanonical(normalized);
         return normalized.EndsWith("USDT", StringComparison.OrdinalIgnoreCase)
             ? normalized
             : $"{normalized}USDT";

@@ -12,6 +12,10 @@
         <converters:SharpeToColorConverter x:Key="SharpeToColorConverter" />
         <converters:DrawdownToColorConverter x:Key="DrawdownToColorConverter" />
         <converters:PboToColorConverter x:Key="PboToColorConverter" />
+        <!-- 2026-04-24: moved from MainWindow so UserControls (new tabs: Alpha Portfolio,
+             Funding Monitor, Pairs Discovery, Pro Mode) can resolve these at parse time. -->
+        <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
+        <BooleanToVisibilityConverter x:Key="BoolToVis" />
         
         <!-- INSTITUTIONAL GLASS DESIGN SYSTEM (OBSIDIAN/CYAN) -->
         <Color x:Key="AccentColor">#0284C7</Color>
@@ -121,6 +125,161 @@
             <Setter Property="Background" Value="#26EF4444" />
             <Setter Property="BorderBrush" Value="#60EF4444" />
             <Setter Property="Foreground" Value="#FCA5A5" />
+        </Style>
+
+        <!-- INNER TAB CONTROL STYLE — for nested sub-tabs inside main tabs. Cleaner, flatter look. -->
+        <Style x:Key="InnerTabControlStyle" TargetType="TabControl">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabControl">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <Border Grid.Row="0" Background="Transparent" BorderBrush="{StaticResource BorderColor}" BorderThickness="0,0,0,1" Padding="0,0,0,0">
+                                <TabPanel IsItemsHost="True" Margin="0" Panel.ZIndex="1" />
+                            </Border>
+                            <Border Grid.Row="1" Background="Transparent" Padding="0,8,0,0">
+                                <ContentPresenter ContentSource="SelectedContent" />
+                            </Border>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Setter Property="ItemContainerStyle">
+                <Setter.Value>
+                    <Style TargetType="TabItem">
+                        <Setter Property="Background" Value="Transparent" />
+                        <Setter Property="Foreground" Value="#AFB8C1" />
+                        <Setter Property="BorderThickness" Value="0" />
+                        <Setter Property="Padding" Value="14,8" />
+                        <Setter Property="Margin" Value="0,0,4,0" />
+                        <Setter Property="FontSize" Value="10" />
+                        <Setter Property="FontWeight" Value="Bold" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="TabItem">
+                                    <Grid Cursor="Hand">
+                                        <Border x:Name="InnerBg" Background="{TemplateBinding Background}" CornerRadius="3,3,0,0" Padding="{TemplateBinding Padding}">
+                                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center" TextBlock.Foreground="{TemplateBinding Foreground}" />
+                                        </Border>
+                                        <Border x:Name="InnerIndicator" Height="2" Background="{StaticResource Accent}" VerticalAlignment="Bottom" Opacity="0" />
+                                    </Grid>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="InnerBg" Property="Background" Value="#141A24" />
+                                            <Setter TargetName="InnerIndicator" Property="Opacity" Value="1" />
+                                            <Setter Property="Foreground" Value="White" />
+                                        </Trigger>
+                                        <MultiTrigger>
+                                            <MultiTrigger.Conditions>
+                                                <Condition Property="IsMouseOver" Value="True" />
+                                                <Condition Property="IsSelected" Value="False" />
+                                            </MultiTrigger.Conditions>
+                                            <Setter TargetName="InnerBg" Property="Background" Value="#0F131B" />
+                                            <Setter Property="Foreground" Value="#E6EDF3" />
+                                        </MultiTrigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- GLOBAL COMBOBOXITEM — readable on dark dropdown background -->
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#E6EDF3" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ItemBorder"
+                                Background="{TemplateBinding Background}"
+                                Padding="{TemplateBinding Padding}"
+                                CornerRadius="3">
+                            <ContentPresenter VerticalAlignment="Center" TextBlock.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#1F2C40" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#0F3B5C" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- GLOBAL COMBOBOX — default dark style applies everywhere, no key needed -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#0F131B" />
+            <Setter Property="BorderBrush" Value="#2A3342" />
+            <Setter Property="Foreground" Value="#E6EDF3" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <ToggleButton Name="ToggleButton"
+                                          Background="{TemplateBinding Background}"
+                                          BorderBrush="{TemplateBinding BorderBrush}"
+                                          BorderThickness="1"
+                                          Focusable="false"
+                                          IsChecked="{Binding Path=IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border x:Name="Outer" CornerRadius="4" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="22" />
+                                                </Grid.ColumnDefinitions>
+                                                <Path Grid.Column="1" Fill="#AFB8C1" Data="M 0 0 L 4 4 L 8 0 Z" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                            </Grid>
+                                        </Border>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True">
+                                                <Setter TargetName="Outer" Property="BorderBrush" Value="{StaticResource Accent}" />
+                                            </Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
+                            </ToggleButton>
+                            <ContentPresenter Name="ContentSite" IsHitTestVisible="False"
+                                              Content="{TemplateBinding SelectionBoxItem}"
+                                              ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
+                                              Margin="10,0,28,0" VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                            <Popup Name="Popup" Placement="Bottom" IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False" PopupAnimation="Slide">
+                                <Grid Name="DropDown" SnapsToDevicePixels="True" MinWidth="{TemplateBinding ActualWidth}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                    <Border x:Name="DropDownBorder" Background="#0F131B" BorderThickness="1" BorderBrush="{StaticResource Accent}" CornerRadius="0,0,4,4" />
+                                    <ScrollViewer Margin="2,4,2,4" SnapsToDevicePixels="True">
+                                        <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Grid>
+                            </Popup>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <!-- INSTITUTIONAL GLASS COMBOBOX -->
@@ -243,6 +402,52 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <!-- GLOBAL TEXTBOX — dark background + readable text applies everywhere -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#0F131B" />
+            <Setter Property="BorderBrush" Value="#2A3342" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="#E6EDF3" />
+            <Setter Property="CaretBrush" Value="#E6EDF3" />
+            <Setter Property="SelectionBrush" Value="{StaticResource Accent}" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TextBox">
+                        <Border x:Name="border" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
+                            <ScrollViewer x:Name="PART_ContentHost" Focusable="false" Margin="{TemplateBinding Padding}" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsFocused" Value="true">
+                                <Setter Property="BorderBrush" TargetName="border" Value="{StaticResource Accent}" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="true">
+                                <Setter Property="BorderBrush" TargetName="border" Value="#3A4556" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- GLOBAL LABEL — consistent foreground -->
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#E6EDF3" />
+            <Setter Property="FontSize" Value="11" />
+        </Style>
+
+        <!-- GLOBAL CHECKBOX foreground (text beside the box) -->
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#E6EDF3" />
+            <Setter Property="FontSize" Value="11" />
         </Style>
 
         <Style x:Key="GlassTextBoxStyle" TargetType="TextBox">

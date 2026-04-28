@@ -8,13 +8,20 @@ public static class MarketHoursScheduler
     private static readonly TimeZoneInfo TurkeyTimeZone =
         TimeZoneInfo.FindSystemTimeZoneById("Turkey Standard Time");
 
-    public static bool? OverrideCanTrade { get; set; } = null;
+    private static readonly AsyncLocal<bool?> _overrideCanTrade = new();
+
+    public static bool? OverrideCanTrade
+    {
+        get => _overrideCanTrade.Value;
+        set => _overrideCanTrade.Value = value;
+    }
 
     public static MarketSessionInfo GetCurrentSession(string market = "BIST")
     {
-        if (OverrideCanTrade.HasValue)
+        var ovr = _overrideCanTrade.Value;
+        if (ovr.HasValue)
             return new MarketSessionInfo { Session = "Test", IsMarketOpen = true,
-                CanTrade = OverrideCanTrade.Value, Description = "Test override", NextSessionStart = DateTime.UtcNow.AddHours(1) };
+                CanTrade = ovr.Value, Description = "Test override", NextSessionStart = DateTime.UtcNow.AddHours(1) };
 
         var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TurkeyTimeZone);
 

@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Configuration;
+using ThatsMyQuant.Contracts.Options;
 using ThatsMyQuant.Contracts.Models;
 using ThatsMyQuant.Contracts.Enums;
 using System.Threading;
@@ -12,6 +13,8 @@ public sealed class StrategyPromotionService
     private readonly MarketExecutionProfileService _executionProfiles;
     private readonly object _sync = new();
     private StrategyPerformanceState _state;
+    private readonly BacktestQualityGateOptions _qualityGate;
+    private readonly StrategyPromotionOptions _promotionOptions;
 
     // Promotion criteria — configurable via appsettings.json or env vars
     private readonly int _backtestMinTrades;
@@ -24,18 +27,21 @@ public sealed class StrategyPromotionService
     public StrategyPromotionService(
         IStrategyPerformanceStore store,
         MarketExecutionProfileService? executionProfiles = null,
-        IConfiguration? configuration = null)
+        IConfiguration? configuration = null,
+        StrategyPromotionOptions? promotionOptions = null)
     {
         _store = store;
         _executionProfiles = executionProfiles ?? new MarketExecutionProfileService();
         _state = new StrategyPerformanceState();
+        _qualityGate = BuildQualityGate(configuration);
+        _promotionOptions = promotionOptions ?? BuildPromotionOptions(configuration);
 
-        _backtestMinTrades      = int.TryParse(configuration?["Promotion:Backtest:MinTrades"],       out var btTrades)      ? btTrades      : 6;
-        _backtestMinProfitFactor= double.TryParse(configuration?["Promotion:Backtest:MinProfitFactor"], out var btPf)       ? btPf          : 1.15;
-        _backtestMinWinRate     = double.TryParse(configuration?["Promotion:Backtest:MinWinRate"],    out var btWr)          ? btWr          : 0.42;
-        _paperMinTrades         = int.TryParse(configuration?["Promotion:Paper:MinTrades"],           out var ptTrades)      ? ptTrades      : 8;
-        _paperMinProfitFactor   = double.TryParse(configuration?["Promotion:Paper:MinProfitFactor"],  out var ptPf)          ? ptPf          : 1.20;
-        _paperMinWinRate        = double.TryParse(configuration?["Promotion:Paper:MinWinRate"],       out var ptWr)          ? ptWr          : 0.45;
+        _backtestMinTrades      = int.TryParse(configuration?["Promotion:Backtest:MinTrades"],       out var btTrades)      ? btTrades      : _qualityGate.MinTrades;
+        _backtestMinProfitFactor= double.TryParse(configuration?["Promotion:Backtest:MinProfitFactor"], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var btPf)       ? btPf          : _qualityGate.MinProfitFactor;
+        _backtestMinWinRate     = double.TryParse(configuration?["Promotion:Backtest:MinWinRate"],    System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var btWr)          ? btWr          : _qualityGate.MinWinRatePercent / 100.0;
+        _paperMinTrades         = int.TryParse(configuration?["Promotion:Paper:MinTrades"],           out var ptTrades)      ? ptTrades      : 30;
+        _paperMinProfitFactor   = double.TryParse(configuration?["Promotion:Paper:MinProfitFactor"],  System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ptPf)          ? ptPf          : 1.30;
+        _paperMinWinRate        = double.TryParse(configuration?["Promotion:Paper:MinWinRate"],       System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ptWr)          ? ptWr          : 0.50;
     }
 
     public async Task InitializeAsync()
@@ -125,7 +131,7 @@ public sealed class StrategyPromotionService
         return CheckHftLatency(decision, bucket, profile, capitalBias, biasLabel);
     }
 
-    private static PromotionGuardResult? CheckLadderGates(Signal signal, TradeDecision decision, StrategyBucketPerformanceSnapshot? backtestBucket, StrategyBucketPerformanceSnapshot? paperBucket)
+    private PromotionGuardResult? CheckLadderGates(Signal signal, TradeDecision decision, StrategyBucketPerformanceSnapshot? backtestBucket, StrategyBucketPerformanceSnapshot? paperBucket)
     {
         if (backtestBucket is null || !backtestBucket.BacktestPass)
         {
@@ -158,6 +164,26 @@ public sealed class StrategyPromotionService
                 false,
                 0m,
                 $"Backtest PBO={backtestBucket.PboScore:F2} indicates overfitting for {signal.Symbol} {decision.StrategyTag}. Strategy not robust enough for promotion.",
+                false,
+                0,
+                "Backtest");
+        }
+
+        var observedSymbols = _state.BacktestBuckets
+            .Select(bucket => bucket.Symbol)
+            .Where(symbol => !string.IsNullOrWhiteSpace(symbol))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (observedSymbols >= Math.Max(2, _qualityGate.MinPortfolioReadySymbols) &&
+            !_state.PortfolioValidationReady)
+        {
+            var summary = string.IsNullOrWhiteSpace(_state.PortfolioValidationSummary)
+                ? $"Portfolio validation requires {_qualityGate.MinPortfolioReadySymbols} symbols."
+                : _state.PortfolioValidationSummary;
+            return new PromotionGuardResult(
+                false,
+                0m,
+                $"Portfolio validation gate is not passed yet. {summary}",
                 false,
                 0,
                 "Backtest");
@@ -563,9 +589,64 @@ public sealed class StrategyPromotionService
 
             UpdateBuckets(_state.BacktestBuckets, snapshots);
             UpsertExitPolicySnapshots(exitPolicySnapshots);
+            RefreshPortfolioValidationState();
         }
 
         await PersistAsync();
+    }
+
+    /// <summary>
+    /// Returns a snapshot of the promotion ladder state for each strategy bucket,
+    /// for dashboard/monitoring. No mutation, no side effects.
+    /// </summary>
+    public IReadOnlyList<PromotionLadderSnapshot> GetPromotionLadder()
+    {
+        lock (_sync)
+        {
+            var buckets = new Dictionary<string, PromotionLadderSnapshot>(StringComparer.OrdinalIgnoreCase);
+            void Add(StrategyBucketPerformanceSnapshot bucket, string stage)
+            {
+                var key = $"{bucket.Symbol}|{bucket.StrategyTag}|{bucket.RegimeTag}|{bucket.SessionTag}";
+                if (!buckets.TryGetValue(key, out var snap))
+                {
+                    snap = new PromotionLadderSnapshot
+                    {
+                        Symbol = bucket.Symbol,
+                        StrategyTag = bucket.StrategyTag,
+                        RegimeTag = bucket.RegimeTag,
+                        SessionTag = bucket.SessionTag,
+                    };
+                    buckets[key] = snap;
+                }
+                switch (stage)
+                {
+                    case "Backtest": snap.BacktestPass = bucket.BacktestPass; snap.BacktestTrades = bucket.Trades; snap.BacktestPF = bucket.ProfitFactor; break;
+                    case "Paper": snap.PaperPass = bucket.PaperPass; snap.PaperTrades = bucket.Trades; snap.PaperPF = bucket.ProfitFactor; snap.PaperWinRate = bucket.WinRate; break;
+                    case "Live": snap.LiveEligible = bucket.ScaledLiveEligible; snap.LiveTrades = bucket.Trades; snap.LivePF = bucket.ProfitFactor; snap.LiveEdgeScore = bucket.AverageEdgeScore; break;
+                }
+            }
+
+            foreach (var b in _state.BacktestBuckets) Add(b, "Backtest");
+            foreach (var b in _state.PaperBuckets) Add(b, "Paper");
+            foreach (var b in _state.LiveBuckets) Add(b, "Live");
+
+            foreach (var snap in buckets.Values)
+            {
+                snap.CurrentStage = snap.LiveEligible ? "ScaledLive"
+                    : snap.PaperPass ? "LiveProbe"
+                    : snap.BacktestPass ? "Paper"
+                    : "Backtest";
+                snap.NextStageEligible = snap.CurrentStage switch
+                {
+                    "Backtest" => snap.BacktestPass,
+                    "Paper" => snap.PaperPass,
+                    "LiveProbe" => snap.LiveEligible,
+                    _ => false,
+                };
+            }
+
+            return buckets.Values.OrderBy(s => s.Symbol).ThenBy(s => s.StrategyTag).ToList();
+        }
     }
 
     public async Task RecordPaperState(IEnumerable<PaperPosition> closedPositions)
@@ -594,17 +675,24 @@ public sealed class StrategyPromotionService
         var percentReturns = trades.Select(t => t.EntryPrice * t.Quantity > 0 ? GetLivePnl(t) / (t.EntryPrice * t.Quantity) * 100m : 0m).ToList();
         var equityCurve = new List<decimal> { 100_000m };
         foreach (var pnl in pnlValues) equityCurve.Add(equityCurve.Last() + pnl);
+        var maxDrawdownPercent = ComputeMaxDrawdownPercent(equityCurve);
+        var sharpeRatio = ComputeSharpeRatio(percentReturns);
+        var expectancy = pnlValues.Count == 0 ? 0m : pnlValues.Average();
 
         var pass = pnlValues.Count >= _backtestMinTrades
             && (double)ComputeProfitFactor(pnlValues) >= _backtestMinProfitFactor
-            && pnlValues.Average() > 0
+            && expectancy >= _qualityGate.MinExpectancyPerTrade
+            && maxDrawdownPercent <= _qualityGate.MaxDrawdownPercent
+            && sharpeRatio >= Math.Min(_qualityGate.ShortMinSharpe, _qualityGate.LongMinSharpe)
             && trades.Count(t => GetLivePnl(t) > 0) * 1.0 / Math.Max(1, trades.Count) >= _backtestMinWinRate;
+
         return new StrategyBucketPerformanceSnapshot
         {
             Symbol = symbol, StrategyTag = strategy, RegimeTag = regime, SessionTag = session,
             Trades = pnlValues.Count, WinRate = pnlValues.Count == 0 ? 0 : pnlValues.Count(v => v > 0) * 100.0 / pnlValues.Count,
-            ProfitFactor = ComputeProfitFactor(pnlValues), ExpectedValue = pnlValues.Count == 0 ? 0 : pnlValues.Average(),
+            ProfitFactor = ComputeProfitFactor(pnlValues), ExpectedValue = expectancy,
             TotalPnL = pnlValues.Sum(), UlcerIndex = ComputeUlcerIndex(equityCurve), SortinoRatio = ComputeSortinoRatio(percentReturns),
+            SharpeRatio = sharpeRatio, MaxDrawdownPercent = (double)maxDrawdownPercent,
             BacktestPass = pass, RecordedAtUtc = DateTime.UtcNow, PromotionReady = pass, PromotionStage = "Backtest"
         };
     }
@@ -936,13 +1024,14 @@ public sealed class StrategyPromotionService
             .ToList();
     }
 
-    private static BucketMatch FindBestBucketMatch(
+    private BucketMatch FindBestBucketMatch(
         IEnumerable<StrategyBucketPerformanceSnapshot> buckets,
         string symbol,
         string strategyTag,
         string regimeTag,
         string sessionTag)
     {
+        // Specificity 4: exact Symbol + Strategy + Regime + Session.
         var exact = buckets.FirstOrDefault(bucket =>
             string.Equals(bucket.Symbol, symbol, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(bucket.StrategyTag, strategyTag, StringComparison.OrdinalIgnoreCase) &&
@@ -953,6 +1042,7 @@ public sealed class StrategyPromotionService
             return new BucketMatch(exact, 4);
         }
 
+        // Specificity 3: same Symbol, drop Session. Symbol-safe.
         var symbolBroad = buckets.FirstOrDefault(bucket =>
             string.Equals(bucket.Symbol, symbol, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(bucket.StrategyTag, strategyTag, StringComparison.OrdinalIgnoreCase) &&
@@ -960,6 +1050,15 @@ public sealed class StrategyPromotionService
         if (symbolBroad is not null)
         {
             return new BucketMatch(symbolBroad, 3);
+        }
+
+        // Specificity 2 and below aggregate ACROSS SYMBOLS. Under StrictSymbolIsolation
+        // (default for paper/live multi-symbol portfolios) we refuse the fallback so
+        // Symbol B's promotion decision cannot inherit Symbol A's performance —
+        // callers get an empty match and rely on signal confidence + fresh evidence.
+        if (_promotionOptions.StrictSymbolIsolation)
+        {
+            return new BucketMatch(null, 0);
         }
 
         var sessionBroad = buckets.FirstOrDefault(bucket =>
@@ -1709,6 +1808,124 @@ public sealed class StrategyPromotionService
         }
 
         return scaledLiveEligible ? "ScaledLive" : "Paper";
+    }
+
+    private void RefreshPortfolioValidationState()
+    {
+        var sessions = _state.BacktestBuckets
+            .Select(snapshot => new BacktestSessionResult
+            {
+                Symbol = snapshot.Symbol,
+                Version = snapshot.BacktestVersion,
+                BacktestPass = snapshot.BacktestPass,
+                TotalTrades = snapshot.Trades,
+                TotalPnL = snapshot.TotalPnL,
+                SharpeRatio = snapshot.SharpeRatio,
+                ProfitFactor = snapshot.ProfitFactor,
+                ExpectancyPerTrade = snapshot.ExpectedValue
+            })
+            .ToList();
+
+        var validation = BacktestOrchestrator.EvaluatePortfolioValidation(sessions, _qualityGate);
+        _state.PortfolioValidationReady = validation.IsReady;
+        _state.PortfolioReadySymbols = validation.PassedSymbols;
+        _state.PortfolioRequiredSymbols = _qualityGate.MinPortfolioReadySymbols;
+        _state.PortfolioPooledPnL = validation.PooledPnL;
+        _state.PortfolioAverageSharpe = validation.AverageSharpe;
+        _state.PortfolioAverageProfitFactor = validation.AverageProfitFactor;
+        _state.PortfolioAverageExpectancyPerTrade = validation.AverageExpectancyPerTrade;
+        _state.PortfolioValidationSummary =
+            $"{validation.PassedSymbols}/{validation.TotalSymbols} symbols cleared the backtest gate. " +
+            $"Need {_qualityGate.MinPortfolioReadySymbols}, pooled PnL {validation.PooledPnL:N2}, avg Sharpe {validation.AverageSharpe:F2}, avg PF {validation.AverageProfitFactor:F2}, avg expectancy {validation.AverageExpectancyPerTrade:N2}.";
+        _state.PortfolioValidationRecordedAtUtc = DateTime.UtcNow;
+    }
+
+    private static decimal ComputeMaxDrawdownPercent(IReadOnlyList<decimal> equityCurve)
+    {
+        if (equityCurve.Count == 0)
+        {
+            return 0m;
+        }
+
+        var peak = equityCurve[0];
+        var maxDrawdown = 0m;
+        foreach (var equity in equityCurve)
+        {
+            if (equity > peak)
+            {
+                peak = equity;
+            }
+
+            if (peak <= 0m)
+            {
+                continue;
+            }
+
+            var drawdown = ((peak - equity) / peak) * 100m;
+            if (drawdown > maxDrawdown)
+            {
+                maxDrawdown = drawdown;
+            }
+        }
+
+        return maxDrawdown;
+    }
+
+    private static double ComputeSharpeRatio(IReadOnlyList<decimal> percentReturns)
+    {
+        if (percentReturns.Count < 2)
+        {
+            return 0d;
+        }
+
+        var returns = percentReturns.Select(value => (double)value).ToList();
+        var mean = returns.Average();
+        var variance = returns.Sum(value => Math.Pow(value - mean, 2)) / (returns.Count - 1);
+        var stdDev = Math.Sqrt(Math.Max(variance, 0d));
+        return stdDev > 0d ? mean / stdDev * Math.Sqrt(252) : 0d;
+    }
+
+    private static BacktestQualityGateOptions BuildQualityGate(IConfiguration? configuration)
+    {
+        var options = new BacktestQualityGateOptions
+        {
+            MinTrades = 6,
+            MinProfitFactor = 1.15,
+            MinWinRatePercent = 42.0,
+            MinExpectancyPerTrade = 0.01m,
+            MaxDrawdownPercent = 25m,
+            MinPortfolioReadySymbols = 4,
+            ShortMinSharpe = 0.5,
+            LongMinSharpe = 0.5
+        };
+        if (configuration == null)
+        {
+            return options;
+        }
+
+        if (int.TryParse(configuration["Backtest:QualityGate:MinTrades"], out var minTrades)) options.MinTrades = minTrades;
+        if (double.TryParse(configuration["Backtest:QualityGate:MinProfitFactor"], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var minPf)) options.MinProfitFactor = minPf;
+        if (double.TryParse(configuration["Backtest:QualityGate:MinWinRatePercent"], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var minWin)) options.MinWinRatePercent = minWin;
+        if (decimal.TryParse(configuration["Backtest:QualityGate:MinExpectancyPerTrade"], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var minExp)) options.MinExpectancyPerTrade = minExp;
+        if (decimal.TryParse(configuration["Backtest:QualityGate:MaxDrawdownPercent"], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var maxDd)) options.MaxDrawdownPercent = maxDd;
+        if (int.TryParse(configuration["Backtest:QualityGate:MinPortfolioReadySymbols"], out var minSymbols)) options.MinPortfolioReadySymbols = minSymbols;
+        if (double.TryParse(configuration["Backtest:QualityGate:ShortMinSharpe"], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var shortSharpe)) options.ShortMinSharpe = shortSharpe;
+        if (double.TryParse(configuration["Backtest:QualityGate:LongMinSharpe"], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var longSharpe)) options.LongMinSharpe = longSharpe;
+        return options;
+    }
+
+    private static StrategyPromotionOptions BuildPromotionOptions(IConfiguration? configuration)
+    {
+        var opts = new StrategyPromotionOptions();
+        if (configuration == null) return opts;
+
+        if (bool.TryParse(configuration["Strategy:Promotion:StrictSymbolIsolation"], out var strict))
+            opts.StrictSymbolIsolation = strict;
+        if (decimal.TryParse(configuration["Strategy:Promotion:CrossSymbolFallbackPenalty"],
+                System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var penalty))
+            opts.CrossSymbolFallbackPenalty = penalty;
+        return opts;
     }
 
 

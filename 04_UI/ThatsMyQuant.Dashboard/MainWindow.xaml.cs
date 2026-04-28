@@ -77,6 +77,14 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 return;
             }
+
+            // Ctrl+K — quick symbol jump: focuses the chart header SymbolSelector ComboBox.
+            if (e.Key == Key.K)
+            {
+                FocusSymbolSelector();
+                e.Handled = true;
+                return;
+            }
         }
 
         if (e.Key == Key.F5 && !textTyping)
@@ -105,6 +113,46 @@ public partial class MainWindow : Window
                 e.Handled = true;
             }
         }
+    }
+
+    private void FocusSymbolSelector()
+    {
+        // Jump to Terminal tab first so the chart is visible.
+        SelectMainTabByIndex(0);
+
+        // Walk the visual tree to find the ComboBox named "SymbolSelector" inside the chart control.
+        var selector = FindVisualChild<ComboBox>(this, "SymbolSelector");
+        if (selector is null)
+        {
+            return;
+        }
+
+        selector.Focus();
+        selector.IsDropDownOpen = true;
+        // Pre-select existing text so typing replaces the symbol.
+        if (selector.Template.FindName("PART_EditableTextBox", selector) is TextBox editBox)
+        {
+            editBox.SelectAll();
+        }
+    }
+
+    private static T? FindVisualChild<T>(DependencyObject parent, string? name = null) where T : FrameworkElement
+    {
+        var count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent);
+        for (int i = 0; i < count; i++)
+        {
+            var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+            if (child is T typed && (name is null || typed.Name == name))
+            {
+                return typed;
+            }
+            var recurse = FindVisualChild<T>(child, name);
+            if (recurse is not null)
+            {
+                return recurse;
+            }
+        }
+        return null;
     }
 
     private void SelectMainTabByIndex(int index)
@@ -186,5 +234,17 @@ public partial class MainWindow : Window
                 break;
             }
         }
+    }
+
+    private void ActivePositionsGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (sender is not DataGrid grid) return;
+        if (grid.SelectedItem is not PositionViewModel position) return;
+
+        var detailVm = ViewModel.BuildPositionDetailViewModel(position);
+        if (detailVm is null) return;
+
+        var window = new Views.PositionDetailWindow(detailVm) { Owner = this };
+        window.Show();
     }
 }

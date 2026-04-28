@@ -17,6 +17,8 @@ public partial class MainWindow : Window
     private readonly string _workspaceRoot;
     private readonly string? _bundleRoot;
     private readonly LauncherServiceDefinition _dashboardDefinition;
+    private Dictionary<string, string>? _cachedCredentialEnvironment;
+    private readonly object _credentialCacheLock = new();
 
     public MainWindow()
     {
@@ -29,7 +31,12 @@ public partial class MainWindow : Window
 
         var sharedApiUrls = new Dictionary<string, string>
         {
-            ["ASPNETCORE_ENVIRONMENT"] = "Development"
+            ["ASPNETCORE_ENVIRONMENT"] = "Development",
+            // 2026-04-24: Launcher defaults to Mock exchange mode so services don't refuse
+            // to start when no OKX/Binance credentials are present (paper-safe default).
+            // For live trading, operator must set TMQ_EXCHANGE_MODE=OKX + supply credentials
+            // via exchange_credentials.dpapi or env vars (see StartupSafetyPolicy).
+            ["TMQ_EXCHANGE_MODE"] = Environment.GetEnvironmentVariable("TMQ_EXCHANGE_MODE") ?? "Mock"
         };
 
         var gatewayDefinition = new LauncherServiceDefinition(
@@ -110,10 +117,9 @@ public partial class MainWindow : Window
     {
         await WithButtonsDisabled(async () =>
         {
-            foreach (var service in _services.Where(status => status.Definition != _dashboardDefinition))
-            {
-                await StartServiceAsync(service);
-            }
+            var workers = _services.Where(status => status.Definition != _dashboardDefinition).ToList();
+            var tasks = workers.Select(service => StartServiceAsync(service));
+            await Task.WhenAll(tasks);
         });
     }
 
@@ -285,14 +291,58 @@ public partial class MainWindow : Window
             ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, string>(definition.Environment, StringComparer.OrdinalIgnoreCase);
 
-        environment["TMQ_EXCHANGE_MODE"] = ReadExchangeMode();
+        // Ensure all worker services load appsettings.Development.json and use
+        // Development-mode defaults (e.g., detailed errors, SQLite dev DB path).
+        if (!environment.ContainsKey("DOTNET_ENVIRONMENT") && !environment.ContainsKey("ASPNETCORE_ENVIRONMENT"))
+        {
+            environment["DOTNET_ENVIRONMENT"] = "Development";
+        }
 
-        foreach (var pair in ReadCredentialEnvironment())
+        // Default child services to paper mode unless the user has explicitly opted
+        // into live trading. Paper mode relaxes the credential requirement (the worker
+        // uses PaperTradingService) so DPAPI decrypt failures on launcher-spawned
+        // children don't block the paper loop from starting.
+        if (!environment.ContainsKey("TMQ_MODE"))
+        {
+            environment["TMQ_MODE"] = "paper";
+        }
+
+        // Credentials are decrypted ONCE per launcher session and cached so that
+        // every spawned service gets the identical env payload (prevents DPAPI
+        // race conditions under parallel startup).
+        var credentials = GetCachedCredentialEnvironment();
+        foreach (var pair in credentials)
         {
             environment[pair.Key] = pair.Value;
         }
 
+        // Safety: if the operator selected a live venue (OKXSwap/Binance/etc.) but
+        // DPAPI decryption failed (no OKX__ApiKey or TMQ_BINANCE_API_KEY in the
+        // cache), force Mock mode so StartupSafetyPolicy doesn't abort the worker.
+        // This keeps the paper loop runnable even without valid credentials.
+        var exchangeMode = ReadExchangeMode();
+        var hasOkxCreds = credentials.ContainsKey("OKX__ApiKey");
+        var hasBinanceCreds = credentials.ContainsKey("TMQ_BINANCE_API_KEY");
+        var isPaperMode = string.Equals(environment["TMQ_MODE"], "paper", StringComparison.OrdinalIgnoreCase);
+        var isMockAlready = exchangeMode.Equals("Mock", StringComparison.OrdinalIgnoreCase);
+
+        if (!isMockAlready && !hasOkxCreds && !hasBinanceCreds && isPaperMode)
+        {
+            exchangeMode = "Mock";
+            AppendLog($"[{definition.DisplayName}] No decrypted credentials found; forcing TMQ_EXCHANGE_MODE=Mock for paper startup.");
+        }
+
+        environment["TMQ_EXCHANGE_MODE"] = exchangeMode;
+
         return definition with { Environment = environment };
+    }
+
+    private Dictionary<string, string> GetCachedCredentialEnvironment()
+    {
+        lock (_credentialCacheLock)
+        {
+            return _cachedCredentialEnvironment ??= ReadCredentialEnvironment();
+        }
     }
 
     private string BuildEnvironmentSummary()
@@ -331,6 +381,7 @@ public partial class MainWindow : Window
         var credentialsPath = ResolveSharedCredentialsPath();
         var environment = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        bool isDemoMode = false;
         if (File.Exists(settingsPath))
         {
             try
@@ -339,7 +390,8 @@ public partial class MainWindow : Window
                 if (document.RootElement.TryGetProperty("OKX", out var okx) &&
                     okx.TryGetProperty("IsDemoMode", out var demoMode))
                 {
-                    environment["OKX__IsDemoMode"] = demoMode.GetBoolean() ? "true" : "false";
+                    isDemoMode = demoMode.GetBoolean();
+                    environment["OKX__IsDemoMode"] = isDemoMode ? "true" : "false";
                 }
             }
             catch
@@ -359,9 +411,27 @@ public partial class MainWindow : Window
 
             var binanceApiKey = TryUnprotect(root, "BinanceApiKey");
             var binanceApiSecret = TryUnprotect(root, "BinanceApiSecret");
-            var okxApiKey = TryUnprotect(root, "ApiKey");
-            var okxSecretKey = TryUnprotect(root, "SecretKey");
-            var okxPassphrase = TryUnprotect(root, "Passphrase");
+            // Live OKX slot (legacy names kept for backward compatibility).
+            var okxLiveApiKey = TryUnprotect(root, "ApiKey");
+            var okxLiveSecretKey = TryUnprotect(root, "SecretKey");
+            var okxLivePassphrase = TryUnprotect(root, "Passphrase");
+            // Demo OKX slot (added 2026-04-25). Active when OKX:IsDemoMode=true.
+            var okxDemoApiKey = TryUnprotect(root, "DemoApiKey");
+            var okxDemoSecretKey = TryUnprotect(root, "DemoSecretKey");
+            var okxDemoPassphrase = TryUnprotect(root, "DemoPassphrase");
+
+            // Select the active OKX set based on IsDemoMode, with graceful fallback
+            // to the opposite set so the services fail with a clear AUTH error rather
+            // than silently booting with the wrong environment's keys.
+            var okxApiKey = isDemoMode
+                ? (string.IsNullOrWhiteSpace(okxDemoApiKey) ? okxLiveApiKey : okxDemoApiKey)
+                : (string.IsNullOrWhiteSpace(okxLiveApiKey) ? okxDemoApiKey : okxLiveApiKey);
+            var okxSecretKey = isDemoMode
+                ? (string.IsNullOrWhiteSpace(okxDemoSecretKey) ? okxLiveSecretKey : okxDemoSecretKey)
+                : (string.IsNullOrWhiteSpace(okxLiveSecretKey) ? okxDemoSecretKey : okxLiveSecretKey);
+            var okxPassphrase = isDemoMode
+                ? (string.IsNullOrWhiteSpace(okxDemoPassphrase) ? okxLivePassphrase : okxDemoPassphrase)
+                : (string.IsNullOrWhiteSpace(okxLivePassphrase) ? okxDemoPassphrase : okxLivePassphrase);
 
             if (!string.IsNullOrWhiteSpace(binanceApiKey))
             {

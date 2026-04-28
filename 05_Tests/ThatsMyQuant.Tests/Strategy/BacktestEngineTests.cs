@@ -208,6 +208,30 @@ public class BacktestEngineTests
     }
 
     [Fact]
+    public async Task RunAsync_ShouldHandleRangingCandlesWithoutCrashing()
+    {
+        var engine = CreateEngine(CreateDecision());
+        var candles = CreateRangingCandles(120, 100m, 3m);
+
+        var result = await engine.RunAsync(candles, "BTCUSDT", "5m", 100_000m);
+
+        result.Should().NotBeNull();
+        result.EquityCurve.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task RunAsync_ShouldHandleVolatileCandlesWithoutCrashing()
+    {
+        var engine = CreateEngine(CreateDecision());
+        var candles = CreateVolatileCandles(180, 100m, 6m);
+
+        var result = await engine.RunAsync(candles, "BTCUSDT", "5m", 100_000m);
+
+        result.Should().NotBeNull();
+        result.EquityCurve.Should().NotBeEmpty();
+    }
+
+    [Fact]
     public async Task RunAsync_ShouldHaltNewEntries_WhenRollingSevenDayDrawdownExceedsTwoPercent()
     {
         var decision = new TradeDecision
@@ -658,6 +682,58 @@ public class BacktestEngineTests
                 Volume = 5_000m
             });
         }
+        return candles;
+    }
+
+    private static List<Candle> CreateRangingCandles(int count, decimal centerPrice, decimal amplitude)
+    {
+        var candles = new List<Candle>(count);
+        for (var i = 0; i < count; i++)
+        {
+            var open = centerPrice + (decimal)Math.Sin(i / 4d) * amplitude;
+            var close = centerPrice + (decimal)Math.Sin((i + 1) / 4d) * amplitude;
+            candles.Add(new Candle
+            {
+                Timestamp = new DateTime(2026, 4, 1).AddMinutes(i * 5),
+                Open = open,
+                High = Math.Max(open, close) + 1.25m,
+                Low = Math.Min(open, close) - 1.25m,
+                Close = close,
+                Volume = 8_000m + (i % 9) * 220m
+            });
+        }
+
+        return candles;
+    }
+
+    private static List<Candle> CreateVolatileCandles(int count, decimal startPrice, decimal shockSize)
+    {
+        var candles = new List<Candle>(count);
+        var price = startPrice;
+        for (var i = 0; i < count; i++)
+        {
+            var move = i % 8 switch
+            {
+                0 => shockSize,
+                1 => -shockSize * 0.80m,
+                2 => shockSize * 0.45m,
+                3 => -shockSize * 0.55m,
+                _ => (i % 2 == 0 ? 1m : -1m) * shockSize * 0.18m
+            };
+            var open = price;
+            var close = Math.Max(1m, price + move);
+            candles.Add(new Candle
+            {
+                Timestamp = new DateTime(2026, 4, 1).AddMinutes(i * 5),
+                Open = open,
+                High = Math.Max(open, close) + (shockSize * 0.35m),
+                Low = Math.Min(open, close) - (shockSize * 0.35m),
+                Close = close,
+                Volume = 12_000m + ((i * 97) % 13) * 350m
+            });
+            price = close;
+        }
+
         return candles;
     }
 

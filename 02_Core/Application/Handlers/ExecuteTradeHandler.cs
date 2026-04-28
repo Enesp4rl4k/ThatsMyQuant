@@ -35,6 +35,16 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
     private readonly IOptions<OrderBookExecutionOptions> _orderBookExecution;
     private readonly decimal _defaultLeverage;
     private readonly MarginMode _defaultMarginMode;
+    private readonly ThatsMyQuant.Application.Analytics.ExecutionParityService? _parityService;
+    private readonly ThatsMyQuant.Application.Strategy.ProMode.IOperatorAlertService? _operatorAlerts;
+    private readonly SlippageAlertOptions _slippageAlert;
+    private readonly OrderExecutionOptions _orderExecution;
+
+    // Per-symbol cooldown so a wide-spread venue does not spam Telegram.
+    // Static because MediatR handlers are typically Transient and the map must
+    // survive across invocations.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _slippageAlertCooldown =
+        new(StringComparer.OrdinalIgnoreCase);
 
     public ExecuteTradeHandler(
         ILogger<ExecuteTradeHandler> logger,
@@ -45,8 +55,13 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         IOptions<OrderBookExecutionOptions> orderBookExecution,
         OperationalTelemetry? telemetry = null,
         IStrategyPerformanceStore? performanceStore = null,
-        IConfiguration? configuration = null)
+        IConfiguration? configuration = null,
+        ThatsMyQuant.Application.Analytics.ExecutionParityService? parityService = null,
+        ThatsMyQuant.Application.Strategy.ProMode.IOperatorAlertService? operatorAlerts = null,
+        IOptions<SlippageAlertOptions>? slippageAlertOptions = null,
+        IOptions<OrderExecutionOptions>? orderExecutionOptions = null)
     {
+        _parityService = parityService;
         _logger = logger;
         _tradeRepository = tradeRepository;
         _circuitBreaker = circuitBreaker;
@@ -55,6 +70,10 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         _orderBookExecution = orderBookExecution;
         _telemetry = telemetry ?? new OperationalTelemetry();
         _performanceStore = performanceStore;
+        _operatorAlerts = operatorAlerts;
+        _slippageAlert = slippageAlertOptions?.Value ?? new SlippageAlertOptions();
+        _orderExecution = orderExecutionOptions?.Value ?? new OrderExecutionOptions();
+        _orderExecution.Normalize();
 
         var flag = configuration?["TMQ_REQUIRE_PROMOTION"] ?? configuration?["Promotion:Required"];
         _requirePromotion = bool.TryParse(flag, out var required) && required;
@@ -147,6 +166,12 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         if (executionPlan.ExchangeService.TryGetLatestOrderBook(executionSignal.Symbol, out var ob))
             liveBook = ob;
 
+        // [P1.4] Maker rebate routing — convert opening Market signals to maker-Limit
+        // orders at top-of-book inside price. The OkxExecutionService already handles
+        // post_only submission and the timeout-then-market fallback when these options
+        // are set; this block decides ONLY whether to rewrite the signal.
+        TryRouteAsMakerLimit(executionSignal, liveBook, isHftMode);
+
         if (!OrderBookExecutionAdvisor.TryApply(
                 executionSignal,
                 liveBook,
@@ -179,6 +204,7 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
             if (executionSignal.Price > 0m && trackedTrade.EntryPrice > 0m)
             {
                 _telemetry.RecordEntrySlippagePercent(trackedTrade.EntrySlippagePercent, executionSignal.Symbol);
+                EvaluateSlippageBreach(executionSignal.Symbol, trackedTrade.EntrySlippagePercent);
             }
 
             _circuitBreaker.RecordSuccess();
@@ -197,6 +223,16 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         }
 
         await _tradeRepository.UpdateAsync(trackedTrade);
+
+        // Parity tracking: expected = signal price, actual = realised entry fill.
+        // The service classifies divergence (price/size/both) for TCA + live health.
+        if (_parityService is not null && trackedTrade.EntryPrice > 0 && request.Signal.Price > 0)
+        {
+            var correlationId = request.Signal.Id.ToString();
+            var nowUtc = DateTime.UtcNow;
+            _parityService.RecordPaperFill(correlationId, request.Signal.Price, request.Signal.Quantity, nowUtc);
+            _parityService.RecordLiveFill(correlationId, trackedTrade.EntryPrice, request.Signal.Quantity, nowUtc);
+        }
 
         _logger.LogInformation("Trade {Status}: {TradeId} @ {Price}",
             trackedTrade.Status, trackedTrade.Id, trackedTrade.EntryPrice);
@@ -317,6 +353,32 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
             return "Promotion required but performance state unavailable.";
         }
 
+        var backtestMatch = state.BacktestBuckets.FirstOrDefault(b =>
+            string.Equals(b.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(b.StrategyTag, strategyTag, StringComparison.OrdinalIgnoreCase));
+        if (backtestMatch == null)
+        {
+            return $"Promotion required: no backtest record for strategy '{strategyTag}' on {signal.Symbol}.";
+        }
+
+        if (!backtestMatch.BacktestPass)
+        {
+            return $"Promotion required: backtest acceptance gate failed for strategy '{strategyTag}' on {signal.Symbol}.";
+        }
+
+        var paperMatch = state.PaperBuckets.FirstOrDefault(b =>
+            string.Equals(b.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(b.StrategyTag, strategyTag, StringComparison.OrdinalIgnoreCase));
+        if (paperMatch == null)
+        {
+            return $"Promotion required: no paper record for strategy '{strategyTag}' on {signal.Symbol}.";
+        }
+
+        if (!paperMatch.PaperPass)
+        {
+            return $"Promotion required: paper gate failed for strategy '{strategyTag}' on {signal.Symbol}.";
+        }
+
         var match = state.LiveBuckets.FirstOrDefault(b =>
             string.Equals(b.Symbol, signal.Symbol, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(b.StrategyTag, strategyTag, StringComparison.OrdinalIgnoreCase));
@@ -334,6 +396,64 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
         return null;
     }
 
+    /// <summary>
+    /// [P1.4] Rewrites an opening Market signal as a maker-Limit signal at the
+    /// top-of-book inside price using <see cref="MakerExecutionPolicy"/>. The
+    /// downstream <c>OkxExecutionService</c> handles post_only submission and the
+    /// timeout-then-market fallback when <c>PostOnlyMode</c> + <c>LimitOrderTimeoutSeconds</c>
+    /// are configured. Closing / reduceOnly orders are NEVER rerouted —
+    /// guaranteed-exit semantics outweigh fee savings on stops.
+    /// </summary>
+    private void TryRouteAsMakerLimit(Signal signal, OrderBookSnapshot? book, bool isHftMode)
+    {
+        if (!_orderExecution.EnableMakerRouting) return;
+        if (signal.OrderType != OrderType.Market) return;
+        if (book is null) return;
+        if (book.Value.Bids.Length == 0 || book.Value.Asks.Length == 0) return;
+        if (isHftMode) return; // HFT signals need taker latency
+
+        bool isReduceOnly = signal.Metadata.TryGetValue("ReduceOnly", out var ro)
+            && bool.TryParse(ro, out var roFlag) && roFlag;
+        if (isReduceOnly) return;
+
+        decimal bestBid = book.Value.Bids[0].Price;
+        decimal bestAsk = book.Value.Asks[0].Price;
+        if (bestBid <= 0m || bestAsk <= 0m || bestAsk <= bestBid) return;
+
+        decimal mid = (bestBid + bestAsk) / 2m;
+        decimal spread = bestAsk - bestBid;
+
+        try
+        {
+            var plan = MakerExecutionPolicy.Plan(
+                side: signal.Side,
+                mid: mid,
+                topOfBookSpread: spread,
+                urgency: _orderExecution.MakerUrgency,
+                patientTimeoutMs: _orderExecution.MakerPatientTimeoutMs,
+                urgentTimeoutMs: _orderExecution.MakerUrgentTimeoutMs,
+                fallback: MakerExecutionPolicy.FallbackAction.Market);
+
+            if (plan.OrderType != OrderType.Limit) return; // policy decided market (e.g. zero spread)
+
+            signal.OrderType = OrderType.Limit;
+            signal.Price = plan.LimitPrice;
+            signal.Metadata["MakerRouted"] = "true";
+            signal.Metadata["MakerExpectedRebateBps"] = plan.ExpectedMakerRebateBps.ToString(CultureInfo.InvariantCulture);
+            signal.Metadata["MakerPlanReason"] = plan.Reason;
+
+            _logger.LogInformation(
+                "Maker routing: {Symbol} {Side} → Limit @ {Px} (mid={Mid}, spread={Spr}, urgency={U:F2}, timeout={T}ms)",
+                signal.Symbol, signal.Side, plan.LimitPrice, mid, spread,
+                _orderExecution.MakerUrgency, plan.TimeoutMs);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Maker routing skipped for {Symbol}: {Msg}", signal.Symbol, ex.Message);
+        }
+    }
+
     private static string? TryGetString(Signal signal, string key) =>
         signal.Metadata.TryGetValue(key, out var val) ? val : null;
 
@@ -345,4 +465,41 @@ public class ExecuteTradeHandler : IRequestHandler<ExecuteTradeCommand, Trade>
 
     private static int? TryGetInt(Signal signal, string key) =>
         signal.Metadata.TryGetValue(key, out var val) && int.TryParse(val, out var parsed) ? parsed : null;
+
+    /// <summary>
+    /// Compares the fill's entry slippage against <see cref="SlippageAlertOptions.ThresholdBps"/>
+    /// and fires a Telegram / log alert via <see cref="IOperatorAlertService"/> on breach.
+    /// Per-symbol cooldown prevents alert floods on a wide-spread venue.
+    /// </summary>
+    private void EvaluateSlippageBreach(string symbol, decimal slippagePercent)
+    {
+        if (!_slippageAlert.Enabled || _slippageAlert.ThresholdBps <= 0m) return;
+
+        var absBps = Math.Abs(slippagePercent) * 100m; // percent → bps
+        if (absBps < _slippageAlert.ThresholdBps) return;
+
+        _telemetry.RecordSlippageBreach(symbol);
+
+        var now = DateTime.UtcNow;
+        var cooldown = TimeSpan.FromSeconds(Math.Max(0, _slippageAlert.CooldownSeconds));
+        var key = symbol ?? string.Empty;
+        if (_slippageAlertCooldown.TryGetValue(key, out var lastAlert) && now - lastAlert < cooldown)
+        {
+            return; // suppressed by cooldown
+        }
+        _slippageAlertCooldown[key] = now;
+
+        _logger.LogWarning(
+            "Slippage breach: {Symbol} |slip|={Bps:F1}bps (threshold {Threshold}bps).",
+            symbol, absBps, _slippageAlert.ThresholdBps);
+
+        if (_operatorAlerts is not null)
+        {
+            var title = $"Slippage breach · {symbol}";
+            var body = $"|entry slip| = {absBps:F1}bps (threshold {_slippageAlert.ThresholdBps}bps). Check venue spread / venue health; consider widening limit offset or lowering order size.";
+            _ = _operatorAlerts.NotifyAsync(
+                ThatsMyQuant.Application.Strategy.ProMode.AlertPriority.Warning,
+                title, body);
+        }
+    }
 }

@@ -193,7 +193,7 @@ public sealed class LauncherProcessManager : IDisposable
             startInfo = new ProcessStartInfo
             {
                 FileName = "dotnet",
-                Arguments = $"run --project \"{Path.Combine(_workspaceRoot, definition.ProjectPath)}\"",
+                Arguments = $"run --no-build --no-launch-profile -c Release --project \"{Path.Combine(_workspaceRoot, definition.ProjectPath)}\"",
                 WorkingDirectory = _workspaceRoot,
                 UseShellExecute = definition.LaunchWindow && !requiresCustomEnvironment
             };
@@ -240,7 +240,7 @@ public sealed class LauncherProcessManager : IDisposable
 
     private async Task WaitForHealthyAsync(string healthUrl, CancellationToken cancellationToken)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(30);
+        var deadline = DateTime.UtcNow.AddSeconds(120);
         while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
         {
             if (await CheckHealthAsync(healthUrl, cancellationToken))

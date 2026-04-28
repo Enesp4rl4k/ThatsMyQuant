@@ -24,6 +24,9 @@ public partial class MainViewModel : ObservableObject
 {
 
     private readonly IMarketDataService _marketDataService;
+    private readonly IStreamingMarketDataService? _streamingService;
+    private readonly System.Collections.Generic.HashSet<string> _streamingSubscribed = new(StringComparer.OrdinalIgnoreCase);
+    private bool _streamingConnected;
     private readonly ITechnicalAnalysisService _technicalAnalysis;
     private readonly IAiAnalystService _aiAnalyst;
     private readonly IEnumerable<IAlertingService> _alertingServices;
@@ -49,6 +52,16 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private StrategyStudioViewModel _studio = new();
     [ObservableProperty] private FocusedBacktestViewModel _focusBacktest;
     [ObservableProperty] private ExchangeSettingsViewModel _exchangeSettings = new();
+    [ObservableProperty] private TelegramSettingsViewModel _telegramSettings = new();
+    [ObservableProperty] private AlphaPortfolioViewModel _alphaPortfolio;
+    [ObservableProperty] private FundingMonitorViewModel _fundingMonitor;
+    [ObservableProperty] private PairsDiscoveryViewModel _pairsDiscovery;
+    [ObservableProperty] private ProModeViewModel _proMode;
+    // 2026-04-25: New visualization tabs (radar, multi-indicator, sunburst, order-book heatmap).
+    [ObservableProperty] private SignalConfidenceViewModel _signalConfidence = new();
+    [ObservableProperty] private MultiIndicatorChartViewModel _multiIndicatorChart = new();
+    [ObservableProperty] private PortfolioSunburstViewModel _portfolioSunburst = new();
+    [ObservableProperty] private OrderBookHeatmapViewModel _orderBookHeatmap = new();
 
     // --- Auth / Role ---
     public bool IsAdminUser => CurrentSession.Current?.Role == Role.Admin;
@@ -591,9 +604,15 @@ public partial class MainViewModel : ObservableObject
         bool enableBackgroundTimers = true,
         bool enableAutomaticAnalysis = true,
         IUserPromptService? userPromptService = null,
-        IAuditLogger? auditLogger = null)
+        IAuditLogger? auditLogger = null,
+        AlphaPortfolioViewModel? alphaPortfolio = null,
+        FundingMonitorViewModel? fundingMonitor = null,
+        PairsDiscoveryViewModel? pairsDiscovery = null,
+        ProModeViewModel? proMode = null,
+        IStreamingMarketDataService? streamingService = null)
     {
         _marketDataService = marketDataService;
+        _streamingService = streamingService;
         _technicalAnalysis = technicalAnalysis;
         _aiAnalyst = aiAnalyst;
         _alertingServices = alertingServices;
@@ -608,6 +627,10 @@ public partial class MainViewModel : ObservableObject
         _userPromptService = userPromptService ?? new MessageBoxUserPromptService();
         _focusBacktest = focusBacktest;
         _performanceStore = performanceStore;
+        _alphaPortfolio = alphaPortfolio ?? new AlphaPortfolioViewModel();
+        _fundingMonitor = fundingMonitor ?? new FundingMonitorViewModel();
+        _pairsDiscovery = pairsDiscovery ?? new PairsDiscoveryViewModel();
+        _proMode = proMode ?? new ProModeViewModel();
         _enableAutomaticAnalysis = enableAutomaticAnalysis;
         _auditLogger = auditLogger;
         ReduceUiMotion = UiMotionPreferences.ReduceMotion;
@@ -688,8 +711,30 @@ public partial class MainViewModel : ObservableObject
                 await RefreshQueueStats();
                 await RefreshStrategyLeaderboard();
                 await RefreshLiveMarketSnapshotAsync();
+                SamplePnlForSparkline();
             };
             _queueTimer.Start();
+
+            StartExchangeHealthPolling();
+            StartLiveActivityFeed();
+
+            // Kick off an immediate refresh so chart + watchlist populate on first render
+            // instead of waiting 5s for the first timer tick.
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    await RefreshSelectedChartAsync();
+                    await RefreshLiveMarketSnapshotAsync();
+                }
+                catch (Exception ex)
+                {
+                    AddSystemLog($"Initial market refresh error: {ex.Message}");
+                }
+            });
+
+            // Start WebSocket streaming for real-time price updates (replaces 5s polling lag).
+            StartStreamingIfAvailable();
         }
 
         RefreshSettingsHealthTelemetry();
@@ -712,6 +757,18 @@ public partial class MainViewModel : ObservableObject
                 if (!SuppressAutomaticSymbolAnalysis)
                 {
                     _ = AnalyzeSymbol(MarketOverview.SelectedSymbol, MarketOverview.SelectedMarket, MarketOverview.SelectedTimeframe);
+                }
+
+                if (e.PropertyName == nameof(MarketOverview.SelectedSymbol))
+                {
+                    // Clear per-symbol real-time panels so prior symbol's data doesn't linger.
+                    InvokeOnUi(() =>
+                    {
+                        TopBids.Clear();
+                        TopAsks.Clear();
+                        RecentTrades.Clear();
+                    });
+                    EnsureSymbolSubscribed(MarketOverview.SelectedSymbol);
                 }
             }
         };
@@ -884,6 +941,96 @@ public partial class MainViewModel : ObservableObject
         }
 
         InvokeOnUi(() => PortfolioView.UnrealizedPnL = unrealizedTotal);
+        RefreshTradingMetrics();
+    }
+
+    /// <summary>
+    /// Factory used by MainWindow.ActivePositionsGrid_MouseDoubleClick to open the
+    /// PositionDetailWindow. Resolves the best matching Trade/Signal from the local
+    /// cache (if any) so the chart and audit sidebar can show the bot's reasoning.
+    /// </summary>
+    public PositionDetailViewModel? BuildPositionDetailViewModel(PositionViewModel position)
+    {
+        if (position is null) return null;
+
+        var matchingTrade = _tradeCache
+            .Where(t => string.Equals(t.Symbol, position.Symbol, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(t => t.EntryTime)
+            .FirstOrDefault();
+
+        Contracts.Models.Signal? matchingSignal = null;
+        if (matchingTrade is not null)
+        {
+            matchingSignal = _signalCache
+                .FirstOrDefault(s => s.Id == matchingTrade.SignalId);
+        }
+        matchingSignal ??= _signalCache
+            .Where(s => string.Equals(s.Symbol, position.Symbol, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(s => s.Timestamp)
+            .FirstOrDefault();
+
+        // Timeframe is not persisted on Trade/Signal today — default to 4h which matches
+        // the paper strategy's dominant timeframe (see appsettings.Paper.json Paper:Timeframe).
+        var timeframe = "4h";
+
+        return new PositionDetailViewModel(position, _marketDataService, matchingTrade, matchingSignal, timeframe);
+    }
+
+    /// <summary>
+    /// Recomputes closed-trade aggregate stats (win rate, R:R multiple, profit factor,
+    /// average PnL) and pushes them to <see cref="PortfolioView"/>. Safe to call from
+    /// background threads — marshals to the UI dispatcher.
+    /// </summary>
+    private void RefreshTradingMetrics()
+    {
+        var closed = _tradeCache
+            .Where(t => t.Status == Contracts.Enums.TradeStatus.Executed && t.IsClosed && t.ExitTime.HasValue)
+            .ToList();
+
+        if (closed.Count == 0)
+        {
+            InvokeOnUi(() =>
+            {
+                PortfolioView.ClosedTradeCount = 0;
+                PortfolioView.WinningTradeCount = 0;
+                PortfolioView.LosingTradeCount = 0;
+                PortfolioView.WinRate = 0d;
+                PortfolioView.AverageRiskReward = 0d;
+                PortfolioView.ProfitFactor = 0d;
+                PortfolioView.AverageTradePnL = 0m;
+                PortfolioView.RealizedPnL = 0m;
+            });
+            return;
+        }
+
+        decimal grossWin = 0m, grossLoss = 0m, totalPnL = 0m;
+        int wins = 0, losses = 0;
+        foreach (var t in closed)
+        {
+            var pnl = CalculateTradePnL(t);
+            totalPnL += pnl;
+            if (pnl > 0m) { grossWin += pnl; wins++; }
+            else if (pnl < 0m) { grossLoss += Math.Abs(pnl); losses++; }
+        }
+
+        var winRate = closed.Count > 0 ? (double)wins / closed.Count : 0d;
+        var avgWin = wins > 0 ? grossWin / wins : 0m;
+        var avgLoss = losses > 0 ? grossLoss / losses : 0m;
+        var rr = avgLoss > 0m ? (double)(avgWin / avgLoss) : (wins > 0 ? double.PositiveInfinity : 0d);
+        var pf = grossLoss > 0m ? (double)(grossWin / grossLoss) : (grossWin > 0m ? double.PositiveInfinity : 0d);
+        var avgPnl = totalPnL / closed.Count;
+
+        InvokeOnUi(() =>
+        {
+            PortfolioView.ClosedTradeCount = closed.Count;
+            PortfolioView.WinningTradeCount = wins;
+            PortfolioView.LosingTradeCount = losses;
+            PortfolioView.WinRate = winRate;
+            PortfolioView.AverageRiskReward = double.IsInfinity(rr) ? 0d : rr;
+            PortfolioView.ProfitFactor = double.IsInfinity(pf) ? 0d : pf;
+            PortfolioView.AverageTradePnL = avgPnl;
+            PortfolioView.RealizedPnL = totalPnL;
+        });
     }
 
     private async Task RefreshSelectedChartAsync()
@@ -3459,10 +3606,20 @@ public partial class MainViewModel : ObservableObject
         MarketOverview.Symbols.Clear();
         WatchlistItems.Clear();
         
+        // Full universe exposed via chart header autocomplete. Watchlist shows only the first 8
+        // so the right panel stays compact — user can type any symbol into the chart header ComboBox
+        // and it subscribes to the WebSocket stream automatically.
         string[] symbols = MarketOverview.SelectedMarket switch
         {
             "BIST" => new[] { "THYAO", "GARAN", "AKBNK", "SISE", "EREGL", "TUPRS", "BIMAS", "ASELS", "KCHOL" },
-            "Crypto" => new[] { "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT", "LINKUSDT" },
+            "Crypto" => new[]
+            {
+                "BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT", "LINKUSDT", "DOGEUSDT", "ADAUSDT",
+                "BNBUSDT", "MATICUSDT", "DOTUSDT", "TRXUSDT", "LTCUSDT", "SHIBUSDT", "ATOMUSDT", "NEARUSDT",
+                "APTUSDT", "ARBUSDT", "OPUSDT", "FILUSDT", "INJUSDT", "SUIUSDT", "SEIUSDT", "TIAUSDT",
+                "PEPEUSDT", "WIFUSDT", "ORDIUSDT", "RNDRUSDT", "FETUSDT", "AAVEUSDT", "UNIUSDT", "ETCUSDT",
+                "XLMUSDT", "BCHUSDT", "ICPUSDT", "IMXUSDT", "GRTUSDT", "STXUSDT", "ENAUSDT", "JUPUSDT"
+            },
             "Forex" => new[] { "USDTRY=X", "EURTRY=X", "EURUSD=X", "GBPUSD=X", "USDJPY=X" },
             _ => Array.Empty<string>()
         };
@@ -3470,6 +3627,11 @@ public partial class MainViewModel : ObservableObject
         foreach (var s in symbols)
         {
             MarketOverview.Symbols.Add(s);
+        }
+
+        // Watchlist stays focused on the top 8 — full universe is available via the chart header search.
+        foreach (var s in symbols.Take(8))
+        {
             WatchlistItems.Add(new WatchlistItemViewModel { Symbol = s, Price = 0, ChangePercent = 0, CandidateSummary = "Waiting for discovery" });
         }
         

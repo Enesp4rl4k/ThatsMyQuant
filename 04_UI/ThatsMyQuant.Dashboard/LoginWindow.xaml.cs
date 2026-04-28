@@ -17,7 +17,10 @@ public partial class LoginWindow : Window
 
     private void Window_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        DragMove();
+        // Guard against race where the mouse has already been released by the time
+        // the event handler runs — calling DragMove() without a held button throws.
+        if (e.ChangedButton != MouseButton.Left || e.LeftButton != MouseButtonState.Pressed) return;
+        try { DragMove(); } catch (InvalidOperationException) { /* button released between check and call */ }
     }
 
     private void Close_Click(object sender, RoutedEventArgs e)

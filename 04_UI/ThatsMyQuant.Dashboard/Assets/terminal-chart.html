@@ -141,7 +141,7 @@
       ctx.fillStyle = state.theme.background;
       ctx.fillRect(0, 0, width, height);
 
-      const padding = { left: 16, right: 18, top: 18, bottom: 28 };
+      const padding = { left: 16, right: 64, top: 18, bottom: 44 };
       const plotWidth = width - padding.left - padding.right;
       const plotHeight = height - padding.top - padding.bottom;
       if (plotWidth <= 0 || plotHeight <= 0) return;
@@ -168,6 +168,8 @@
       const candleBodyWidth = Math.max(3, candleGap * 0.65);
 
       drawGrid(padding, plotWidth, plotHeight);
+      drawPriceAxis(padding, plotWidth, plotHeight, min, range);
+      drawTimeAxis(items, padding, plotWidth, plotHeight, candleGap);
       const indicators = computeIndicators(items);
       drawIndicatorOverlays(indicators, padding, plotWidth, plotHeight, min, range);
       drawOrderLines(padding, plotWidth, plotHeight, min, range);
@@ -177,6 +179,51 @@
       drawMarkers(padding, plotWidth, plotHeight);
       drawDrawings(padding, plotWidth, plotHeight);
       drawCrosshair(items, start, padding, plotWidth, plotHeight, min, range, indicators);
+    }
+
+    function formatPrice(v) {
+      const a = Math.abs(v);
+      if (a >= 1000) return v.toFixed(0);
+      if (a >= 10) return v.toFixed(2);
+      if (a >= 1) return v.toFixed(3);
+      return v.toFixed(5);
+    }
+
+    function drawPriceAxis(padding, plotWidth, plotHeight, min, range) {
+      ctx.save();
+      ctx.fillStyle = state.theme.muted;
+      ctx.font = "10px Segoe UI";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      const axisX = padding.left + plotWidth + 6;
+      for (let i = 0; i <= 5; i++) {
+        const y = padding.top + (plotHeight / 5) * i;
+        const value = min + range * (1 - i / 5);
+        ctx.fillText(formatPrice(value), axisX, y);
+      }
+      ctx.restore();
+    }
+
+    function drawTimeAxis(items, padding, plotWidth, plotHeight, candleGap) {
+      if (!items.length) return;
+      ctx.save();
+      ctx.fillStyle = state.theme.muted;
+      ctx.font = "10px Segoe UI";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      const y = padding.top + plotHeight + 8;
+      const ticks = 6;
+      for (let i = 0; i <= ticks; i++) {
+        const idx = Math.min(items.length - 1, Math.round((items.length - 1) * i / ticks));
+        const candle = items[idx];
+        if (!candle || !candle.time) continue;
+        const x = padding.left + (idx * candleGap) + (candleGap * 0.5);
+        const d = new Date(candle.time);
+        if (isNaN(d.getTime())) continue;
+        const label = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+        ctx.fillText(label, x, y);
+      }
+      ctx.restore();
     }
 
     function drawGrid(padding, plotWidth, plotHeight) {
