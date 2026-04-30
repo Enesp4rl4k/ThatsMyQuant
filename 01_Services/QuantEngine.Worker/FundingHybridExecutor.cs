@@ -765,6 +765,7 @@ public sealed class FundingHybridExecutor : BackgroundService
         // the OKX-confirmed qty (in base-asset units) so reconciliation matches.
         decimal storedQty = sig.Qty;
         decimal storedEntryPrice = sig.ReferencePrice;
+        decimal storedEntryFee = 0m; // populated from Trade.TotalFeesPaid in live mode
         // Compute SL/TP trigger prices for OKX bracket attachment.
         // Long  → TP above entry, SL below entry.
         // Short → TP below entry, SL above entry.
@@ -811,7 +812,9 @@ public sealed class FundingHybridExecutor : BackgroundService
                     storedQty = trade.Quantity;          // Base-asset units (OkxExecutionService converts contracts→base for Trade.Quantity? actually no — it's contracts. Reconciliation uses base via GetOpenPositions which we already converted. Keep storedQty = signal.Quantity rounded to ctVal*lotSz at SDK layer would be ideal but for now use trade.Quantity which equals contracts.)
                     if (trade.EntryPrice > 0m) storedEntryPrice = trade.EntryPrice;
                 }
-                _logger.LogWarning("FUND_HYBRID OPEN OK {Symbol} TradeId={TradeId} fillPx={Px:F4} qty={Qty:F6}", symbol, trade?.Id, trade?.EntryPrice ?? 0m, trade?.Quantity ?? 0m);
+                // Real fee from the venue-side fill — feeds the round-trip RealFeePaid calc on close.
+                if (trade is not null && trade.TotalFeesPaid > 0m) storedEntryFee = trade.TotalFeesPaid;
+                _logger.LogWarning("FUND_HYBRID OPEN OK {Symbol} TradeId={TradeId} fillPx={Px:F4} qty={Qty:F6} entryFee=${Fee:F4}", symbol, trade?.Id, trade?.EntryPrice ?? 0m, trade?.Quantity ?? 0m, storedEntryFee);
             }
             catch (Exception ex)
             {
@@ -830,7 +833,8 @@ public sealed class FundingHybridExecutor : BackgroundService
             EntryFunding: sig.CurrentFunding,
             EntryTimeUtc: nowUtc,
             ClientOrderId: clientOrderId,
-            ExecutionMode: _mode == HybridMode.Live ? "OKX_DEMO" : "PAPER_DRYRUN");
+            ExecutionMode: _mode == HybridMode.Live ? "OKX_DEMO" : "PAPER_DRYRUN",
+            EntryRealFee: storedEntryFee);
 
         // Mirror open into PaperPortfolio so the dashboard's paper_portfolio.json
         // snapshot reflects live exposure. Matched on close by Symbol+EntryTime.
@@ -966,15 +970,11 @@ public sealed class FundingHybridExecutor : BackgroundService
         var oppositeSide = existing.Side == TradeSide.Buy ? TradeSide.Sell : TradeSide.Buy;
         var clientOrderId = $"FH_{symbol}_CLOSE_{DateTime.UtcNow:yyyyMMddHHmmss}";
 
-        var pnl = existing.Side == TradeSide.Buy
-            ? (sig.ReferencePrice - existing.EntryPrice) * existing.Qty
-            : (existing.EntryPrice - sig.ReferencePrice) * existing.Qty;
-        var costEstimate = sig.ReferencePrice * existing.Qty * _config.RoundTripCostRate;
-        var netPnl = pnl - costEstimate;
-
-        _logger.LogWarning(
-            "[{Mode}] FUND_HYBRID CLOSE {Symbol} {Side}->{OppSide} qty={Qty:F6} entry={Entry:F4} exit={Exit:F4} estPnL=${PnL:F2} reason={R}",
-            _mode, symbol, existing.Side, oppositeSide, existing.Qty, existing.EntryPrice, sig.ReferencePrice, netPnl, sig.Reasoning);
+        // Initial estimate using mark price + assumed cost — will be REPLACED below with
+        // measured values from the venue Trade response when running live. The estimate
+        // remains the canonical answer only in dry-run / pure-simulation mode.
+        var actualExitPrice = sig.ReferencePrice;
+        decimal? realRoundTripFee = null;
 
         if (_mode == HybridMode.Live && exchange is not null)
         {
@@ -994,7 +994,24 @@ public sealed class FundingHybridExecutor : BackgroundService
                 signal.Metadata["ClientOrderId"] = clientOrderId;
                 signal.Metadata["ReduceOnly"] = "true";
                 var trade = await exchange.ExecuteOrderAsync(signal).ConfigureAwait(false);
-                _logger.LogWarning("FUND_HYBRID CLOSE OK {Symbol} TradeId={TradeId} fillPx={Px:F4}", symbol, trade?.Id, trade?.ExitPrice ?? 0m);
+                if (trade is not null)
+                {
+                    if (trade.ExitPrice > 0m) actualExitPrice = trade.ExitPrice;
+                    var exitFee = trade.TotalFeesPaid;
+                    if (existing.EntryRealFee > 0m && exitFee > 0m)
+                    {
+                        // Both legs measured — canonical real round-trip cost.
+                        realRoundTripFee = existing.EntryRealFee + exitFee;
+                    }
+                    else if (exitFee > 0m)
+                    {
+                        // Exit only — approximate by doubling (legs symmetric on OKX VIP-0).
+                        realRoundTripFee = exitFee * 2m;
+                    }
+                }
+                _logger.LogWarning(
+                    "FUND_HYBRID CLOSE OK {Symbol} TradeId={TradeId} fillPx={Px:F4} entryFee=${EF:F4} exitFee=${XF:F4} realRT=${RT:F4}",
+                    symbol, trade?.Id, actualExitPrice, existing.EntryRealFee, trade?.TotalFeesPaid ?? 0m, realRoundTripFee ?? 0m);
             }
             catch (Exception ex)
             {
@@ -1003,13 +1020,26 @@ public sealed class FundingHybridExecutor : BackgroundService
             }
         }
 
+        // Now compute PnL with the actual fill price + real fee where available.
+        var pnl = existing.Side == TradeSide.Buy
+            ? (actualExitPrice - existing.EntryPrice) * existing.Qty
+            : (existing.EntryPrice - actualExitPrice) * existing.Qty;
+        var costApplied = realRoundTripFee
+            ?? (actualExitPrice * existing.Qty * _config.RoundTripCostRate);
+        var netPnl = pnl - costApplied;
+
+        _logger.LogWarning(
+            "[{Mode}] FUND_HYBRID CLOSE {Symbol} {Side}->{OppSide} qty={Qty:F6} entry={Entry:F4} exit={Exit:F4} gross=${G:F4} cost=${C:F4} net=${N:F4} costSrc={Src} reason={R}",
+            _mode, symbol, existing.Side, oppositeSide, existing.Qty, existing.EntryPrice, actualExitPrice,
+            pnl, costApplied, netPnl, realRoundTripFee.HasValue ? "MEASURED" : "ESTIMATED", sig.Reasoning);
+
         // Mirror to PaperPortfolio (canonical record of the trade lifecycle).
         var position = new PaperPosition
         {
             Symbol = symbol,
             Side = existing.Side,
             EntryPrice = existing.EntryPrice,
-            CurrentPrice = sig.ReferencePrice,
+            CurrentPrice = actualExitPrice,
             Quantity = existing.Qty,
             EntryTime = existing.EntryTimeUtc,
             ExitTime = DateTime.UtcNow,
@@ -1020,7 +1050,8 @@ public sealed class FundingHybridExecutor : BackgroundService
             RegimeTag = "FundingMeanReversion",
             ExecutionMode = _mode == HybridMode.Live ? "OKX_DEMO" : "PAPER_DRYRUN",
             PromotionStage = "Paper",
-            NetFunding = existing.EntryFunding
+            NetFunding = existing.EntryFunding,
+            RealFeePaid = realRoundTripFee
         };
         lock (_portfolio)
         {
@@ -1067,8 +1098,10 @@ public sealed class FundingHybridExecutor : BackgroundService
         _opportunisticSymbols.Remove(symbol);
         _notionalGuard?.Release($"Funding:{_tierName}", symbol);
 
-        // [TCA persistence] update Trade row with exit + PnL.
-        await PersistFundingCloseAsync(symbol, existing, sig, pnl, costEstimate, netPnl).ConfigureAwait(false);
+        // [TCA persistence] update Trade row with exit + PnL. Pass the actually-applied
+        // cost (real round-trip when measured, else the estimate) so the SQLite Trade row
+        // matches the PaperPortfolio mirror.
+        await PersistFundingCloseAsync(symbol, existing, sig, pnl, costApplied, netPnl).ConfigureAwait(false);
 
         // Publish PositionClosedNotification — TelegramPositionPushHandler renders the
         // "✅/❌ CLOSED" push and AiTradeReviewHandler queues the post-mortem. Fire-and-forget.
@@ -1177,7 +1210,14 @@ public sealed class FundingHybridExecutor : BackgroundService
         // executor closes the position. Worker-side trailing — OKX bracket SL stays
         // as the worst-case backstop in case the worker is offline.
         decimal MaxFavorablePrice = 0m,
-        bool TrailingArmed = false);
+        bool TrailingArmed = false,
+        // 2026-04-30: capture entry-leg real fee from the Trade.TotalFeesPaid returned
+        // by IExchangeService.ExecuteOrderAsync at open time. Combined with the exit-leg
+        // fee at close time, this gives the true round-trip fee per position — populated
+        // into PaperPosition.RealFeePaid so TCA / ShadowAudit / promotion-gate all see
+        // measured cost instead of the assumed RoundTripCostRate. Default 0 = unknown
+        // (dry-run mode or back-compat state files).
+        decimal EntryRealFee = 0m);
 
     private enum HybridMode { Off, DryRun, Live }
 }
