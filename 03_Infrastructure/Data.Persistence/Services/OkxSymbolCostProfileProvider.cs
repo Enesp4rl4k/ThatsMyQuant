@@ -14,11 +14,12 @@ namespace ThatsMyQuant.Infrastructure.Services;
 /// type. Result cached for <see cref="CacheTtl"/> so a multi-symbol backtest batch doesn't
 /// pound the endpoint.
 ///
-/// Limitation: OKX public API does not expose historical L1 books for free. A backtest run
-/// started today gets *today's* spread applied to every bar of the historical series. That's
-/// still dramatically better than flat 3bps for every symbol — typical BTC-USDT-SWAP L1 is
-/// ~1-3 bps but SOL ~3-6, DOGE ~5-10, small-caps 10-30+. If you need per-bar historical
-/// spreads you must pipe in tick-level book snapshots (paid data / self-collected).
+/// 2026-04-30: in addition to caching, every successful spread fetch is appended to
+/// <c>spread_snapshots.csv</c> in the persistence directory. This builds an organic
+/// historical spread series which a future backtest layer can read with timestamp-aware
+/// nearest-neighbor lookup, replacing the "today's spread applied to all of history"
+/// hack. Until the reader ships, this just accumulates data — cheap, append-only, no
+/// behavioral change for existing consumers.
 /// </summary>
 public sealed class OkxSymbolCostProfileProvider : ISymbolCostProfileProvider
 {
@@ -27,6 +28,9 @@ public sealed class OkxSymbolCostProfileProvider : ISymbolCostProfileProvider
     private readonly IConfiguration _configuration;
     private readonly ILogger<OkxSymbolCostProfileProvider> _logger;
     private readonly ConcurrentDictionary<string, (SymbolCostProfile Profile, DateTime Utc)> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string _snapshotPath;
+    private readonly object _snapshotWriteLock = new();
+    private bool _snapshotHeaderWritten;
 
     public OkxSymbolCostProfileProvider(
         IHttpClientFactory httpFactory,
@@ -36,6 +40,19 @@ public sealed class OkxSymbolCostProfileProvider : ISymbolCostProfileProvider
         _httpFactory = httpFactory;
         _configuration = configuration;
         _logger = logger;
+
+        // Same persistence dir as paper_portfolio.json by default; can be overridden via
+        // Persistence:SpreadSnapshotPath. Append-only — file grows ~1 row per (symbol, 5min)
+        // hit, well under 100KB/day even for a 25-symbol watchlist. Rotated externally.
+        var configured = _configuration["Persistence:SpreadSnapshotPath"];
+        _snapshotPath = !string.IsNullOrWhiteSpace(configured)
+            ? configured!
+            : Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ThatsMyQuant",
+                "spread_snapshots.csv");
+        try { Directory.CreateDirectory(Path.GetDirectoryName(_snapshotPath)!); }
+        catch (Exception ex) { _logger.LogDebug(ex, "Could not create spread snapshot dir."); }
     }
 
     public async Task<SymbolCostProfile?> GetAsync(string symbol, CancellationToken ct = default)
@@ -98,7 +115,10 @@ public sealed class OkxSymbolCostProfileProvider : ISymbolCostProfileProvider
             var mid = (bid + ask) / 2m;
             if (mid <= 0m) return null;
 
-            return (ask - bid) / mid * 10_000m; // spread in bps
+            var spreadBps = (ask - bid) / mid * 10_000m;
+            // Append to historical series — best-effort, never throws upstream.
+            TryAppendSnapshot(instId, bid, ask, mid, spreadBps);
+            return spreadBps;
         }
         catch (Exception ex)
         {
@@ -133,6 +153,33 @@ public sealed class OkxSymbolCostProfileProvider : ISymbolCostProfileProvider
         if (isSwap && !normalized.EndsWith("-SWAP", StringComparison.OrdinalIgnoreCase))
             normalized = $"{normalized}-SWAP";
         return normalized;
+    }
+
+    /// <summary>
+    /// Append-only writer for the spread time series. Format: ISO-8601 UTC, instId, bid,
+    /// ask, mid, spread_bps. Locked because multiple symbol fetches may complete
+    /// concurrently. Errors swallowed — telemetry must not break the cost profile path.
+    /// </summary>
+    private void TryAppendSnapshot(string instId, decimal bid, decimal ask, decimal mid, decimal spreadBps)
+    {
+        try
+        {
+            lock (_snapshotWriteLock)
+            {
+                var needHeader = !_snapshotHeaderWritten && !File.Exists(_snapshotPath);
+                using var sw = new StreamWriter(_snapshotPath, append: true);
+                if (needHeader) sw.WriteLine("ts_utc,instId,bid,ask,mid,spread_bps");
+                _snapshotHeaderWritten = true;
+                sw.WriteLine(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "{0:O},{1},{2},{3},{4},{5:F4}",
+                    DateTime.UtcNow, instId, bid, ask, mid, spreadBps));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Spread snapshot append failed for {InstId}", instId);
+        }
     }
 
     private static bool TryDec(JsonElement el, out decimal value)
