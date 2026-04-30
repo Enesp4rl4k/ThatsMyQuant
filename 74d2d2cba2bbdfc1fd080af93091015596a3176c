@@ -1,0 +1,24 @@
+02_Core/Application/Strategy/EngleGrangerDetector.cs
+  994a9e37d0902156 166-169,173-193,195-196,198-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.17",
+  "base_commit_sha": "74d2d2cba2bbdfc1fd080af93091015596a3176c",
+  "prompts": {
+    "994a9e37d0902156": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b53b664-d5d7-4d2a-8b01-f9b7a9ed63f0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "messages": [],
+      "total_additions": 34,
+      "total_deletions": 10,
+      "accepted_lines": 30,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/3b78980963a83a84f7d18f6725937f242c6bc8eed9aeaef76deb500b3cb635af"
+    }
+  }
+}
