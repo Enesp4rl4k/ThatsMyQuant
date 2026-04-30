@@ -348,6 +348,18 @@ public sealed class PairsHybridExecutor : BackgroundService
 
     private async Task HandleOpenAsync(PairConfig pair, PairsLiveSignal sig, IExchangeService? exchange, CancellationToken ct)
     {
+        // Orphan-halt gate: pairs trade is two legs — if EITHER leg's symbol has an
+        // unaccounted OKX position, refuse to open the whole pair. A half-hedged spread
+        // is worse than no trade.
+        if (ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.IsHalted(pair.SymbolY)
+            || ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.IsHalted(pair.SymbolX))
+        {
+            _logger.LogWarning(
+                "PairsHybrid[{Tier}] {Pair} entry BLOCKED: at least one leg orphan-halted (Y={Y} X={X}).",
+                _tierName, pair.Key, pair.SymbolY, pair.SymbolX);
+            return;
+        }
+
         // LongSpread = Long Y, Short X.    ShortSpread = Short Y, Long X.
         var sideY = sig.Side == PairsLiveSide.LongSpread ? TradeSide.Buy : TradeSide.Sell;
         var sideX = sig.Side == PairsLiveSide.LongSpread ? TradeSide.Sell : TradeSide.Buy;

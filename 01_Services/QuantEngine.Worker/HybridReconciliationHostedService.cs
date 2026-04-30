@@ -180,25 +180,55 @@ public sealed class HybridReconciliationHostedService : BackgroundService
             }
         }
 
-        // Orphans on OKX that we don't track internally.
-        // LOG ONLY (no Telegram): the ghost-cleanup path already handles bracket-fired
-        // positions with a downgrade-to-INFO branch. The remaining "orphan" cases here
-        // are almost always state-file restart desync or symbols the worker's
-        // OpenPositions dict hasn't loaded yet — not actionable, so they don't deserve
-        // a Telegram push every 2 minutes for the same 6 symbols.
+        // Orphans on OKX that we don't track internally — "OKX-has-but-internal-flat".
+        // 2026-04-30: graduated to safe-halt pattern. Auto-close is unsafe (could destroy
+        // an operator's manually-opened position); auto-adopt is unsafe (we lack entry
+        // context — Kelly size, hedge ratio, entry funding — so any TP/SL the executor
+        // computes is wrong). Instead we:
+        //   1. Mark the symbol in OrphanHaltRegistry → executors refuse to open new
+        //      positions on this symbol while flagged (no second-bet leverage).
+        //   2. Critical Telegram alert (rate-limited per symbol via _alerter.SendAsync's
+        //      idempotency key) so the operator decides: cancel on OKX, transfer mgmt
+        //      back to the bot via state file edit, or leave it alone.
+        //   3. When the next reconciliation tick observes the orphan no longer present
+        //      (operator closed it on OKX, or our adoption shipped), Clear the halt.
+        var observedOkxSymbols = new HashSet<string>(okxPositions.Select(p => p.Symbol), StringComparer.OrdinalIgnoreCase);
         foreach (var okxPos in okxPositions)
         {
             if (!internalSymbols.Contains(okxPos.Symbol))
             {
+                var firstSeen = !ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.IsHalted(okxPos.Symbol);
+                ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.Halt(okxPos.Symbol, DateTime.UtcNow);
                 _logger.LogWarning(
-                    "RECONCILE ORPHAN: OKX has open position {Symbol} qty={Qty} long={IsLong} but internal state is FLAT. Manual cleanup may be needed.",
+                    "RECONCILE ORPHAN HALTED: OKX has open position {Symbol} qty={Qty} long={IsLong} — internal state FLAT. New entries on this symbol blocked until operator resolves.",
                     okxPos.Symbol, okxPos.Quantity, okxPos.IsLong);
+                if (firstSeen)
+                {
+                    _ = _alerter?.SendAsync($"reconcile_orphan_{okxPos.Symbol}", AlertSeverity.Critical,
+                        $"Reconciliation Orphan [{okxPos.Symbol}]",
+                        $"OKX has an open `{okxPos.Symbol}` position (qty={okxPos.Quantity} {(okxPos.IsLong ? "long" : "short")}) that the bot does NOT track internally.\n" +
+                        $"Possible causes: (a) ghost-fill from earlier outage, (b) state file lost on restart, (c) you opened it manually.\n" +
+                        $"Bot has HALTED new entries on this symbol. Resolve by closing on OKX (recommended) or adopting via future state-file edit.",
+                        CancellationToken.None);
+                }
+            }
+        }
+
+        // Clear halts for symbols whose orphans are no longer observed on OKX (operator
+        // closed the position, or it was bracket-fired and ghost-cleaned). This restores
+        // normal trading on the symbol without requiring a worker restart.
+        foreach (var halted in ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.Snapshot().Keys)
+        {
+            if (!observedOkxSymbols.Contains(halted))
+            {
+                ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.Clear(halted);
+                _logger.LogInformation("RECONCILE ORPHAN CLEARED: {Symbol} no longer present on OKX — entries re-enabled.", halted);
             }
         }
 
         _logger.LogInformation(
-            "Reconciliation tick complete: internal symbols={Internal} okx open={Okx}",
-            internalSymbols.Count, okxPositions.Count);
+            "Reconciliation tick complete: internal symbols={Internal} okx open={Okx} orphans-halted={Halted}",
+            internalSymbols.Count, okxPositions.Count, ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.Snapshot().Count);
     }
 
     private void CompareSymbol(string symbol, Contracts.Enums.TradeSide expectedSide, decimal expectedQty, IReadOnlyList<ExchangePositionSnapshot> okxPositions, string sourceTag)

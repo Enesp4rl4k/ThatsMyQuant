@@ -740,6 +740,18 @@ public sealed class FundingHybridExecutor : BackgroundService
 
     private async Task HandleOpenAsync(string symbol, FundingLiveSignal sig, IExchangeService? exchange, CancellationToken ct)
     {
+        // Orphan-halt gate: if reconciliation has flagged this symbol as having an
+        // unaccounted OKX position, refuse to open. Opening a second position over an
+        // existing untracked one over-leverages the account and creates cascading
+        // reconciliation noise — see OrphanHaltRegistry.cs for the full rationale.
+        if (ThatsMyQuant.Application.Strategy.OrphanHaltRegistry.IsHalted(symbol))
+        {
+            _logger.LogWarning(
+                "FundingHybrid[{Tier}] {Symbol} entry BLOCKED: symbol is orphan-halted (OKX has untracked position). Resolve on OKX or via adoption first.",
+                _tierName, symbol);
+            return;
+        }
+
         var clientOrderId = $"FH_{symbol}_{DateTime.UtcNow:yyyyMMddHHmmss}";
         var notional = sig.Qty * sig.ReferencePrice;
         var basis = _portfolio.InitialBalance > 0m ? _portfolio.InitialBalance : 100_000m;
