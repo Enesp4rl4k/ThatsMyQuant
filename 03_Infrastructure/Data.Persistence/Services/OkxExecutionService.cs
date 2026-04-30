@@ -366,19 +366,32 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         decimal filledQty = 0m;
         decimal remainingQty = signal.Quantity;
         var fillStatus = TradeStatus.Pending;
+        var fillOutcome = FillPollOutcome.Live;
 
         decimal fillFeeSigned = 0m;
         if (!string.IsNullOrEmpty(ordId))
         {
-            (filledQty, remainingQty, fillStatus, fillFeeSigned) = await PollFillStatusAsync(ordId, okxSymbol, signal.Quantity);
+            var initial = await PollFillStatusAsync(ordId, okxSymbol, signal.Quantity);
+            filledQty = initial.FilledQty;
+            remainingQty = initial.RemainingQty;
+            fillStatus = initial.Status;
+            fillFeeSigned = initial.FillFeeSigned;
+            fillOutcome = initial.Outcome;
         }
 
         // --- Limit-order timeout → Market fallback -----------------------------------
         // Applies only when the original order was a limit and the operator opted in
         // via OrderExecution:LimitOrderTimeoutSeconds. Partial fills are accepted as-is
         // and we only re-submit the *remaining* quantity as a market order.
+        //
+        // CRITICAL: If the fill-poll outcome is Unknown (every retry failed), we DO NOT
+        // run the cancel+market-fallback path. The original order may have silently
+        // filled on the venue while our poll was failing — submitting a fresh market
+        // order would create a duplicate fill and a runaway position. Reconciliation
+        // tick will discover the real OKX state next cycle and sync.
         if (!isMarket
             && fillStatus == TradeStatus.Pending
+            && fillOutcome != FillPollOutcome.Unknown
             && !string.IsNullOrEmpty(ordId)
             && _execOptions.LimitOrderTimeoutSeconds > 0)
         {
@@ -387,8 +400,11 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             remainingQty = waited.RemainingQty;
             fillStatus = waited.Status;
             fillFeeSigned += waited.FillFeeSigned;
+            fillOutcome = waited.Outcome;
 
-            if (fillStatus == TradeStatus.Pending && remainingQty > 0m)
+            if (fillStatus == TradeStatus.Pending
+                && remainingQty > 0m
+                && fillOutcome != FillPollOutcome.Unknown)
             {
                 _logger.LogWarning(
                     "OKX: limit order {OrdId} for {Symbol} did not fill within {Timeout}s — cancelling and re-submitting remaining {Qty} as MARKET.",
@@ -402,7 +418,14 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                     remainingQty = mktResult.RemainingQty;
                     fillStatus = mktResult.Status;
                     fillFeeSigned += mktResult.FillFeeSigned;
+                    fillOutcome = mktResult.Outcome;
                 }
+            }
+            else if (fillOutcome == FillPollOutcome.Unknown)
+            {
+                _logger.LogError(
+                    "OKX: fill state UNKNOWN for limit order {OrdId} {Symbol} after timeout — skipping market fallback to avoid duplicate fill. Reconcile loop will sync.",
+                    ordId, okxSymbol);
             }
         }
 
@@ -594,10 +617,29 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     }
 
     /// <summary>
-    /// Polls OKX GET /api/v5/trade/order for fill status.
-    /// Max 3 attempts with 500ms delay. Returns (0, requestedQty, Pending) on any failure.
+    /// Distinguishes "we know the order is alive on OKX with no fills yet" (Live) from
+    /// "we asked OKX 3 times and got no usable answer" (Unknown). Without this distinction,
+    /// callers treat both as Pending and may submit a duplicate market fallback while the
+    /// original limit is silently filling on the venue — classic ghost-fill double-spend.
     /// </summary>
-    private async Task<(decimal FilledQty, decimal RemainingQty, TradeStatus Status, decimal FillFeeSigned)> PollFillStatusAsync(
+    private enum FillPollOutcome { Filled, Live, Unknown }
+
+    private readonly record struct FillPollResult(
+        decimal FilledQty,
+        decimal RemainingQty,
+        TradeStatus Status,
+        decimal FillFeeSigned,
+        FillPollOutcome Outcome);
+
+    /// <summary>
+    /// Polls OKX GET /api/v5/trade/order for fill status. Max 3 attempts with 500ms delay.
+    /// Outcome semantics:
+    ///   Filled  — venue confirmed fully or partially filled; FilledQty / FillFeeSigned reflect reality.
+    ///   Live    — venue confirmed the order is on the book with no fill yet; safe to wait/cancel/replace.
+    ///   Unknown — every poll attempt failed (HTTP error / timeout / parse). Caller MUST NOT submit a
+    ///             market fallback — the order may have filled silently. Reconcile loop will resolve.
+    /// </summary>
+    private async Task<FillPollResult> PollFillStatusAsync(
         string ordId,
         string instId,
         decimal requestedQty,
@@ -625,7 +667,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 if (!response.IsSuccessStatusCode)
                 {
                     TrackHttpFailure(response);
-                    _logger.LogError("OKX fill poll HTTP {Status} for ordId={OrdId}", response.StatusCode, ordId);
+                    _logger.LogError("OKX fill poll HTTP {Status} for ordId={OrdId} (attempt {Attempt}/{Max})", response.StatusCode, ordId, attempt, maxAttempts);
                     if (attempt < maxAttempts) await Task.Delay(delayMs, cancellationToken);
                     continue;
                 }
@@ -635,6 +677,8 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 var data = doc.RootElement.GetProperty("data");
                 if (data.GetArrayLength() == 0)
                 {
+                    // OKX returned empty — order not yet visible. Retry; if all retries
+                    // come back empty we treat as Unknown (caller should not act).
                     if (attempt < maxAttempts) await Task.Delay(delayMs, cancellationToken);
                     continue;
                 }
@@ -646,19 +690,22 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
 
                 return state switch
                 {
-                    "filled"           => (fillSz, 0m, TradeStatus.Executed, fillFeeSigned),
-                    "partially_filled" => (fillSz, requestedQty - fillSz, TradeStatus.Pending, fillFeeSigned),
-                    _                  => (0m, requestedQty, TradeStatus.Pending, 0m)
+                    "filled"           => new FillPollResult(fillSz, 0m, TradeStatus.Executed, fillFeeSigned, FillPollOutcome.Filled),
+                    "partially_filled" => new FillPollResult(fillSz, requestedQty - fillSz, TradeStatus.Pending, fillFeeSigned, FillPollOutcome.Filled),
+                    _                  => new FillPollResult(0m, requestedQty, TradeStatus.Pending, 0m, FillPollOutcome.Live)
                 };
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "OKX fill poll exception on attempt {Attempt} for ordId={OrdId}", attempt, ordId);
+                _logger.LogError(ex, "OKX fill poll exception on attempt {Attempt}/{Max} for ordId={OrdId}", attempt, maxAttempts, ordId);
                 if (attempt < maxAttempts) await Task.Delay(delayMs, cancellationToken);
             }
         }
 
-        return (0m, requestedQty, TradeStatus.Pending, 0m);
+        // All 3 attempts failed (HTTP/parse/empty). Return Unknown so the caller refuses
+        // to submit a duplicate market fallback. Reconciliation will sync next tick.
+        _logger.LogWarning("OKX fill poll EXHAUSTED for ordId={OrdId} on {Inst} — outcome=Unknown; caller will skip fallback, reconcile will resolve.", ordId, instId);
+        return new FillPollResult(0m, requestedQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
     }
 
     /// <summary>
@@ -666,7 +713,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     /// <see cref="OrderExecutionOptions.LimitOrderTimeoutSeconds"/> budget is exhausted.
     /// Uses <see cref="OrderExecutionOptions.LimitFillPollIntervalMs"/> between samples.
     /// </summary>
-    private async Task<(decimal FilledQty, decimal RemainingQty, TradeStatus Status, decimal FillFeeSigned)> WaitForLimitFillOrTimeoutAsync(
+    private async Task<FillPollResult> WaitForLimitFillOrTimeoutAsync(
         string ordId,
         string instId,
         decimal requestedQty,
@@ -674,24 +721,20 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     {
         var deadline = DateTime.UtcNow.AddSeconds(_execOptions.LimitOrderTimeoutSeconds);
         var pollMs = _execOptions.LimitFillPollIntervalMs;
-
-        decimal lastFilled = 0m;
-        decimal lastRemaining = requestedQty;
-        var lastStatus = TradeStatus.Pending;
-        decimal lastFee = 0m;
+        var last = new FillPollResult(0m, requestedQty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
 
         while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
         {
-            (lastFilled, lastRemaining, lastStatus, lastFee) = await PollFillStatusAsync(ordId, instId, requestedQty, cancellationToken).ConfigureAwait(false);
-            if (lastStatus == TradeStatus.Executed || lastRemaining <= 0m) break;
-            try
-            {
-                await Task.Delay(pollMs, cancellationToken).ConfigureAwait(false);
-            }
+            last = await PollFillStatusAsync(ordId, instId, requestedQty, cancellationToken).ConfigureAwait(false);
+            if (last.Status == TradeStatus.Executed || last.RemainingQty <= 0m) break;
+            // If poll repeatedly comes back Unknown the venue is unreachable — exit early
+            // and surface the Unknown outcome so the caller refuses to act.
+            if (last.Outcome == FillPollOutcome.Unknown) break;
+            try { await Task.Delay(pollMs, cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
 
-        return (lastFilled, lastRemaining, lastStatus, lastFee);
+        return last;
     }
 
     private async Task<bool> TryCancelOrderAsync(string instId, string ordId, CancellationToken cancellationToken = default)
@@ -730,7 +773,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
     }
 
-    private async Task<(decimal FilledQty, decimal RemainingQty, TradeStatus Status, decimal FillFeeSigned)> SubmitMarketFallbackAsync(
+    private async Task<FillPollResult> SubmitMarketFallbackAsync(
         Signal original,
         string okxSymbol,
         decimal remainingQty,
@@ -770,7 +813,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             {
                 TrackHttpFailure(resp);
                 _logger.LogError("OKX market fallback failed: HTTP {Status}.", resp.StatusCode);
-                return (0m, remainingQty, TradeStatus.Pending, 0m);
+                return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
             }
             var json = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
@@ -778,12 +821,14 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             {
                 _logger.LogError("OKX market fallback rejected: {Msg}",
                     doc.RootElement.TryGetProperty("msg", out var m) ? m.GetString() : "<no msg>");
-                return (0m, remainingQty, TradeStatus.Pending, 0m);
+                // Fallback REJECTED — order definitely not placed. Outcome=Live (no fill,
+                // nothing to reconcile from the fallback attempt itself).
+                return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
             }
 
             var fbOrdId = doc.RootElement.GetProperty("data")[0].GetProperty("ordId").GetString() ?? string.Empty;
             if (string.IsNullOrEmpty(fbOrdId))
-                return (0m, remainingQty, TradeStatus.Pending, 0m);
+                return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
 
             return await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
         }
@@ -791,7 +836,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         catch (Exception ex)
         {
             _logger.LogError(ex, "OKX: exception during market fallback submission.");
-            return (0m, remainingQty, TradeStatus.Pending, 0m);
+            return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
         }
     }
 
