@@ -1484,13 +1484,15 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     /// reconciliation ghost-cleanup so we can publish a CLOSED notification with real
     /// exit price + PnL after an OKX-side bracket TP/SL fires asynchronously.
     /// </summary>
-    public async Task<ExchangeFillSnapshot?> GetLastFillAsync(string symbol, CancellationToken cancellationToken = default)
+    public async Task<ExchangeFillSnapshot?> GetLastFillAsync(string symbol, int lookbackMinutes = 5, CancellationToken cancellationToken = default)
     {
         try
         {
             var instId = ResolveOkxInstrumentId(symbol);
             var instType = IsSwapMode ? "SWAP" : "SPOT";
-            var path = $"/api/v5/trade/fills?instType={instType}&instId={Uri.EscapeDataString(instId)}&limit=10";
+            // /api/v5/trade/fills returns the last 3 days max. limit=100 covers all
+            // realistic ghost-recovery windows; older fills require fills-history.
+            var path = $"/api/v5/trade/fills?instType={instType}&instId={Uri.EscapeDataString(instId)}&limit=100";
             var ts = GetIsoTimestamp();
             var sig = ComputeSignature(ts, "GET", path, string.Empty);
 
@@ -1509,8 +1511,9 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             var data = doc.RootElement.GetProperty("data");
             if (data.GetArrayLength() == 0) return null;
 
-            // OKX returns most recent first. Pick the latest fill within last 5 minutes.
-            var cutoff = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeMilliseconds();
+            // OKX returns most recent first. Pick the latest fill within the requested window.
+            var safeMinutes = lookbackMinutes < 1 ? 1 : lookbackMinutes;
+            var cutoff = DateTimeOffset.UtcNow.AddMinutes(-safeMinutes).ToUnixTimeMilliseconds();
             JsonElement? latest = null;
             long latestTs = 0;
             foreach (var f in data.EnumerateArray())

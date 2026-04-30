@@ -12,12 +12,14 @@ public interface IExchangePositionReader
     Task<IReadOnlyList<ExchangePositionSnapshot>> GetOpenPositionsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns the most recent fill for a symbol (the closing fill of a bracket TP/SL trigger
-    /// for example), or <c>null</c> if no fill found in the last few minutes.
-    /// Used by ghost-cleanup to recover the exit price + side so a CLOSED notification can
-    /// be published with real PnL data.
+    /// Returns the most recent fill for a symbol within the last <paramref name="lookbackMinutes"/>
+    /// minutes (a closing fill of a bracket TP/SL trigger, for example), or <c>null</c> if no
+    /// fill is found in that window. Default 5 minutes preserves the original tight-window
+    /// semantics for fast ghost-recovery; ghost-cleanup paths invoked after a worker restart
+    /// (where the bracket may have fired hours ago) should pass a wider window so the real
+    /// fee + fill price are not lost to a too-narrow cutoff.
     /// </summary>
-    Task<ExchangeFillSnapshot?> GetLastFillAsync(string symbol, CancellationToken cancellationToken = default)
+    Task<ExchangeFillSnapshot?> GetLastFillAsync(string symbol, int lookbackMinutes = 5, CancellationToken cancellationToken = default)
         => Task.FromResult<ExchangeFillSnapshot?>(null);
 
     /// <summary>

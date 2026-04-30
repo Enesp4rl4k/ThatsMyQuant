@@ -495,8 +495,9 @@ public sealed class PairsHybridExecutor : BackgroundService
             {
                 if (exchange is IExchangePositionReader reader)
                 {
-                    var fillY = await reader.GetLastFillAsync(pair.SymbolY, ct).ConfigureAwait(false);
-                    var fillX = await reader.GetLastFillAsync(pair.SymbolX, ct).ConfigureAwait(false);
+                    // Live close path — fill just placed, default 5-min window is sufficient.
+                    var fillY = await reader.GetLastFillAsync(pair.SymbolY, cancellationToken: ct).ConfigureAwait(false);
+                    var fillX = await reader.GetLastFillAsync(pair.SymbolX, cancellationToken: ct).ConfigureAwait(false);
                     decimal feeY = fillY?.FeePaid ?? 0m;
                     decimal feeX = fillX?.FeePaid ?? 0m;
                     if (feeY > 0m || feeX > 0m)

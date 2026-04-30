@@ -136,7 +136,13 @@ public sealed class FundingHybridExecutor : BackgroundService
                 using var scope = _serviceProvider.CreateScope();
                 var reader = scope.ServiceProvider.GetService<IExchangePositionReader>();
                 ExchangeFillSnapshot? fill = null;
-                if (reader is not null) fill = await reader.GetLastFillAsync(symbol).ConfigureAwait(false);
+                // 60-min window: ghost-cleanup commonly fires after a worker restart where
+                // the OKX-side bracket may have triggered tens of minutes ago. The default
+                // 5-min window in GetLastFillAsync is for live fast-path recovery only.
+                // Without the wider window the fill (and its real fee) is lost to the cutoff
+                // and we silently fall back to the assumed cost — exactly the regression
+                // observed in trade #53 (entry == exit == 55.23, RealFeePaid null).
+                if (reader is not null) fill = await reader.GetLastFillAsync(symbol, lookbackMinutes: 60).ConfigureAwait(false);
 
                 var exitPrice = fill?.Price ?? existing.EntryPrice;
                 var exitQty   = fill?.Quantity > 0m ? fill.Quantity : existing.Qty;
