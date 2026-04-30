@@ -752,6 +752,19 @@ public sealed class FundingHybridExecutor : BackgroundService
             return;
         }
 
+        // Settlement-bar mask: refuse entries within the configured minutes after an
+        // OKX funding settlement boundary (00:00/08:00/16:00 UTC). Spreads widen and
+        // volume craters around the boundary; entering there means systematically
+        // worse fill prices than the backtest's mark-price assumption. Exits are NOT
+        // gated — closing on a stop matters more than fee optimization.
+        if (ThatsMyQuant.Application.Strategy.FundingAlphaBacktestRunner.IsSettlementBar(DateTime.UtcNow, _config))
+        {
+            _logger.LogInformation(
+                "FundingHybrid[{Tier}] {Symbol} entry SKIPPED: within settlement-skip window ({Min} min after a UTC funding boundary).",
+                _tierName, symbol, _config.SettlementSkipMinutes);
+            return;
+        }
+
         var clientOrderId = $"FH_{symbol}_{DateTime.UtcNow:yyyyMMddHHmmss}";
         var notional = sig.Qty * sig.ReferencePrice;
         var basis = _portfolio.InitialBalance > 0m ? _portfolio.InitialBalance : 100_000m;
