@@ -3,25 +3,29 @@ using System.Threading;
 
 namespace ThatsMyQuant.Application.HftInfrastructure;
 
+// Cache line padding via StructLayout to completely prevent False Sharing between CPU cores.
+// L1 Cache lines are typically 64 bytes on modern x64 architecture. Lifted to a top-level
+// struct (was nested in HftRingBuffer<T>) — when nested in a generic, the runtime treats
+// its layout as generic-context and reflection-based assembly scanners (e.g. MediatR
+// v12 ServiceRegistrar.GetDefinedTypes) throw "generic types cannot have explicit layout"
+// while enumerating types for handler registration.
+[StructLayout(LayoutKind.Explicit, Size = 192)]
+internal struct PaddedSequence
+{
+    [FieldOffset(64)] // Padding before
+    public long Value;
+    // 64 + 8 = 72. Padded to 192 guarantees the pointer sits isolated on its own silicon cache line.
+}
+
 /// <summary>
 /// A specialized, lock-free circular buffer designed for High-Frequency Trading.
-/// Derived from the LMAX Disruptor pattern. It allows a dedicated network polling thread to constantly 
+/// Derived from the LMAX Disruptor pattern. It allows a dedicated network polling thread to constantly
 /// enqueue incoming ticks directly into a strategy thread without yielding to kernel mutexes or locks.
 /// </summary>
 public sealed class HftRingBuffer<T> where T : class
 {
     private readonly T[] _entries;
     private readonly int _mask;
-
-    // Cache line padding via StructLayout to completely prevent False Sharing between CPU cores.
-    // L1 Cache lines are typically 64 bytes on modern x64 architecture.
-    [StructLayout(LayoutKind.Explicit, Size = 192)]
-    private struct PaddedSequence
-    {
-        [FieldOffset(64)] // Padding before
-        public long Value;
-        // 64 + 8 = 72. Padded to 192 guarantees the pointer sits isolated on its own silicon cache line.
-    }
 
     private PaddedSequence _head;
     private PaddedSequence _tail;
