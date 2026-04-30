@@ -1,0 +1,24 @@
+01_Services/QuantEngine.Worker/FundingHybridExecutor.cs
+  994a9e37d0902156 768,815-817,836-837,973-977,997-1014,1023-1034,1042,1053-1054,1101-1104,1213-1220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.17",
+  "base_commit_sha": "4004f676d3191685e5e5418f517204012036bad5",
+  "prompts": {
+    "994a9e37d0902156": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b53b664-d5d7-4d2a-8b01-f9b7a9ed63f0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "messages": [],
+      "total_additions": 57,
+      "total_deletions": 17,
+      "accepted_lines": 57,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/d1d120f362407005d3d63ef497b2b671bfec194d298b9e2c0ce6865f41cc48eb"
+    }
+  }
+}
