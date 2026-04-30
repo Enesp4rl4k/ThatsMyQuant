@@ -34,6 +34,8 @@ public sealed class TelegramCommandHostedService : BackgroundService
     private readonly string _chatId;
     private long _lastOffset;
 
+    private readonly bool _enableReadBot;
+
     public TelegramCommandHostedService(
         ILogger<TelegramCommandHostedService> logger,
         IServiceProvider sp,
@@ -45,6 +47,11 @@ public sealed class TelegramCommandHostedService : BackgroundService
         _portfolio  = portfolio;
         _botToken   = cfg["Telegram:BotToken"] ?? string.Empty;
         _chatId     = cfg["Telegram:ChatId"]   ?? string.Empty;
+        // Honor Telegram:EnableReadBot — when false, the long-poll loop never starts.
+        // Multiple bot pollers competing for the same token causes Telegram to return
+        // HTTP 409 every cycle, spamming the log with hundreds of error entries per
+        // hour. The send/notify path keeps working (TelegramRealtimeAlerter is independent).
+        _enableReadBot = !bool.TryParse(cfg["Telegram:EnableReadBot"], out var e) || e;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -52,6 +59,12 @@ public sealed class TelegramCommandHostedService : BackgroundService
         if (string.IsNullOrWhiteSpace(_botToken) || string.IsNullOrWhiteSpace(_chatId))
         {
             _logger.LogWarning("TelegramCommandHostedService disabled — BotToken or ChatId missing.");
+            return;
+        }
+
+        if (!_enableReadBot)
+        {
+            _logger.LogInformation("TelegramCommandHostedService disabled — Telegram:EnableReadBot=false (one-way send still works).");
             return;
         }
 
