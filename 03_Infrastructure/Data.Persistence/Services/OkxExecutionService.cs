@@ -784,7 +784,13 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     {
         try
         {
-            var fallbackClientId = $"{ExecutionOrderIdentity.EnsureClientOrderId(original)}M";
+            // OKX clOrdId hard limit: 32 chars. Original Guid-based id is exactly 32, so the
+            // legacy "+M" suffix overflows to 33 → sCode 51000 "Parameter clOrdId error" →
+            // every market fallback silently rejected. Truncate to 31 first, then suffix.
+            // 2026-04-30: this was the root cause of the "OKX-rejects-everything" symptom
+            // surfaced by the phantom-open guard.
+            var baseClientId = ExecutionOrderIdentity.EnsureClientOrderId(original);
+            var fallbackClientId = (baseClientId.Length > 31 ? baseClientId.Substring(0, 31) : baseClientId) + "M";
             var body = JsonSerializer.Serialize(new
             {
                 instId = okxSymbol,
@@ -819,8 +825,24 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             using var doc = JsonDocument.Parse(json);
             if (doc.RootElement.GetProperty("code").GetString() != "0")
             {
-                _logger.LogError("OKX market fallback rejected: {Msg}",
-                    doc.RootElement.TryGetProperty("msg", out var m) ? m.GetString() : "<no msg>");
+                // OKX puts the actionable detail in data[0].sCode / sMsg even when the root
+                // code is the generic "1 - All operations failed". Surface both so we can
+                // distinguish "51008 insufficient margin" from "51010 leverage too high"
+                // from "51121 lot size error" — log-only triage from a single field is impossible.
+                var rootMsg = doc.RootElement.TryGetProperty("msg", out var m) ? m.GetString() : "<no msg>";
+                string detail = "<no detail>";
+                try
+                {
+                    if (doc.RootElement.TryGetProperty("data", out var d) && d.GetArrayLength() > 0)
+                    {
+                        var d0 = d[0];
+                        var sc = d0.TryGetProperty("sCode", out var sce) ? sce.GetString() : "";
+                        var sm = d0.TryGetProperty("sMsg", out var sme) ? sme.GetString() : "";
+                        detail = $"sCode={sc} sMsg={sm}";
+                    }
+                }
+                catch { }
+                _logger.LogError("OKX market fallback rejected: {Msg} | {Detail} | body={Body}", rootMsg, detail, json);
                 // Fallback REJECTED — order definitely not placed. Outcome=Live (no fill,
                 // nothing to reconcile from the fallback attempt itself).
                 return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
