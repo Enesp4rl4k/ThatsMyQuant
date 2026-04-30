@@ -14,6 +14,10 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- No UserSecretsId — credentials come from OKX__* env vars injected by
+         Run-HarvestFees.ps1 (DPAPI-decrypted at launch). Avoids stale Execution.Worker
+         user-secrets that may carry prod keys and conflict with demo flag. -->
+    <UserSecretsId></UserSecretsId>
   </PropertyGroup>
 
 </Project>

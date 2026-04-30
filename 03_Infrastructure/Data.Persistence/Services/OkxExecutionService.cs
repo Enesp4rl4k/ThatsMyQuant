@@ -1507,6 +1507,114 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
     }
 
+    /// <summary>
+    /// Pages through OKX <c>/api/v5/trade/fills-history</c> (up to last 3 months) and
+    /// returns every fill in [<paramref name="sinceUtc"/>, <paramref name="untilUtc"/>].
+    /// Each <see cref="ExchangeFillSnapshot"/> carries the venue-reported FeePaid in quote
+    /// currency — the canonical "real fee" used for fee-harvest post-mortems and the
+    /// permanent <c>RealFeePaid</c> field on closed paper positions.
+    /// </summary>
+    public async Task<IReadOnlyList<ExchangeFillSnapshot>> GetFillsHistoryAsync(
+        DateTime sinceUtc,
+        DateTime untilUtc,
+        string? instType = null,
+        CancellationToken cancellationToken = default)
+    {
+        var resolvedInstType = !string.IsNullOrWhiteSpace(instType)
+            ? instType!.ToUpperInvariant()
+            : (IsSwapMode ? "SWAP" : "SPOT");
+        var sinceMs = new DateTimeOffset(DateTime.SpecifyKind(sinceUtc, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+        var untilMs = new DateTimeOffset(DateTime.SpecifyKind(untilUtc, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+
+        var results = new List<ExchangeFillSnapshot>(256);
+        string? afterCursor = null;
+        const int hardPageCap = 50; // safety: 50 × 100 = 5000 fills max per call
+
+        for (var page = 0; page < hardPageCap; page++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var path = $"/api/v5/trade/fills-history?instType={resolvedInstType}&limit=100&begin={sinceMs}&end={untilMs}";
+            if (!string.IsNullOrEmpty(afterCursor)) path += $"&after={afterCursor}";
+
+            var ts = GetIsoTimestamp();
+            var sig = ComputeSignature(ts, "GET", path, string.Empty);
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{path}");
+            req.Headers.Add("OK-ACCESS-KEY", ApiKey);
+            req.Headers.Add("OK-ACCESS-SIGN", sig);
+            req.Headers.Add("OK-ACCESS-TIMESTAMP", ts);
+            req.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+            if (IsDemoMode) req.Headers.Add("x-simulated-trading", "1");
+
+            HttpResponseMessage resp;
+            try { resp = await _httpClient.SendAsync(req, cancellationToken).ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "OKX fills-history page {Page} HTTP failed.", page);
+                break;
+            }
+            if (!resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                _logger.LogWarning("OKX fills-history page {Page} HTTP {Status} body={Body}", page, (int)resp.StatusCode, body);
+                break;
+            }
+
+            var json = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            var code = doc.RootElement.TryGetProperty("code", out var c) ? c.GetString() : null;
+            if (code != "0")
+            {
+                var msg = doc.RootElement.TryGetProperty("msg", out var m) ? m.GetString() : "unknown";
+                _logger.LogWarning("OKX fills-history error code={Code} msg={Msg}", code, msg);
+                break;
+            }
+            if (!doc.RootElement.TryGetProperty("data", out var data) || data.GetArrayLength() == 0)
+                break;
+
+            string? lastBillId = null;
+            foreach (var f in data.EnumerateArray())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var instId = f.TryGetProperty("instId", out var iv) ? iv.GetString() ?? "" : "";
+                var fillSide = f.TryGetProperty("side", out var sv) ? sv.GetString() ?? "" : "";
+                var fillQty = ParseDecimal(f, "fillSz");
+                var fillPx = ParseDecimal(f, "fillPx");
+                var fillFee = ParseDecimal(f, "fee"); // OKX returns negative when paid (out-of-pocket)
+                var tsMs = f.TryGetProperty("ts", out var tsEl) && long.TryParse(tsEl.GetString(), out var t) ? t : 0L;
+                lastBillId = f.TryGetProperty("billId", out var bId) ? bId.GetString() : lastBillId;
+
+                // Decontract qty for swaps (mirrors GetLastFillAsync logic).
+                decimal qtyBase = fillQty;
+                if (resolvedInstType == "SWAP")
+                {
+                    try
+                    {
+                        var spec = await GetContractSpecAsync(instId, cancellationToken).ConfigureAwait(false);
+                        if (spec.CtVal > 0m) qtyBase = fillQty * spec.CtVal;
+                    }
+                    catch { /* keep raw */ }
+                }
+
+                // Normalize back to internal symbol format (BTC-USDT-SWAP → BTCUSDT).
+                var internalSym = instId.Replace("-SWAP", "", StringComparison.OrdinalIgnoreCase).Replace("-", "");
+
+                results.Add(new ExchangeFillSnapshot(
+                    Symbol: internalSym,
+                    FillSide: fillSide,
+                    Quantity: qtyBase,
+                    Price: fillPx,
+                    FeePaid: Math.Abs(fillFee),
+                    FillTimeUtc: DateTimeOffset.FromUnixTimeMilliseconds(tsMs).UtcDateTime));
+            }
+
+            // OKX paginates by billId — pass smallest billId of returned page as `after` to fetch older rows.
+            if (string.IsNullOrEmpty(lastBillId) || data.GetArrayLength() < 100) break;
+            afterCursor = lastBillId;
+        }
+
+        return results;
+    }
+
     public void Dispose()
     {
         _hmac?.Dispose();
