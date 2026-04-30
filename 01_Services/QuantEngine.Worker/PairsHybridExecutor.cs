@@ -468,6 +468,7 @@ public sealed class PairsHybridExecutor : BackgroundService
             _mode, pair.Key, pair.SymbolY, exitSideY, existing.QtyA, existing.EntryPriceA, sig.PriceA,
             pair.SymbolX, exitSideX, existing.QtyB, existing.EntryPriceB, sig.PriceB, grossPnL, fees, netPnL, sig.Reasoning);
 
+        decimal? realFeePaidTotal = null;
         if (_mode == HybridMode.Live && exchange is not null)
         {
             try { await PlaceLeg(exchange, pair.SymbolY, exitSideY, existing.QtyA, sig.PriceA, $"{clientOrderId}_Y", reduceOnly: true).ConfigureAwait(false); }
@@ -475,6 +476,25 @@ public sealed class PairsHybridExecutor : BackgroundService
 
             try { await PlaceLeg(exchange, pair.SymbolX, exitSideX, existing.QtyB, sig.PriceB, $"{clientOrderId}_X", reduceOnly: true).ConfigureAwait(false); }
             catch (Exception ex) { _logger.LogError(ex, "PAIR_HYBRID CLOSE {Pair} leg-X FAILED", pair.Key); }
+
+            // Capture venue-reported fees on both legs (× 2 for entry+exit round-trip approximation).
+            // Falls back to the estimate already in `fees` if the fill API doesn't return data.
+            try
+            {
+                if (exchange is IExchangePositionReader reader)
+                {
+                    var fillY = await reader.GetLastFillAsync(pair.SymbolY, ct).ConfigureAwait(false);
+                    var fillX = await reader.GetLastFillAsync(pair.SymbolX, ct).ConfigureAwait(false);
+                    decimal feeY = fillY?.FeePaid ?? 0m;
+                    decimal feeX = fillX?.FeePaid ?? 0m;
+                    if (feeY > 0m || feeX > 0m)
+                    {
+                        realFeePaidTotal = (feeY + feeX) * 2m; // double for entry-leg approximation
+                        netPnL = grossPnL - realFeePaidTotal.Value;
+                    }
+                }
+            }
+            catch (Exception ex) { _logger.LogWarning(ex, "PAIR_HYBRID CLOSE {Pair} fill-fee capture failed; using estimate.", pair.Key); }
 
             _logger.LogWarning("PAIR_HYBRID CLOSE attempted both legs. Reconcile via OKX position reader to verify.");
         }
@@ -495,7 +515,8 @@ public sealed class PairsHybridExecutor : BackgroundService
             StrategyTag = _strategyTag,
             RegimeTag = "PairsMeanReversion",
             ExecutionMode = _mode == HybridMode.Live ? "OKX_DEMO" : "PAPER_DRYRUN",
-            PromotionStage = "Paper"
+            PromotionStage = "Paper",
+            RealFeePaid = realFeePaidTotal
         };
         lock (_portfolio)
         {

@@ -68,15 +68,43 @@ function Format-LogLine {
         $level = if ($j.'@l') { $j.'@l' } else { 'Info' }
         $tStr = if ($j.'@t') { $j.'@t'.Substring(11, 8) } else { (Get-Date -Format HH:mm:ss) }
 
-        # Render structured fields inline
-        $extras = ($j.PSObject.Properties | Where-Object { $_.Name -notin @('@t','@l','@m','@mt','@i','@x','@r','@tr','@sp','SourceContext','EventId','Service') } | ForEach-Object {
+        # Build a name→value lookup for structured fields (and skip Serilog metadata).
+        $skipNames = @('@t','@l','@m','@mt','@i','@x','@r','@tr','@sp','SourceContext','EventId','Service')
+        $fieldMap = @{}
+        foreach ($p in $j.PSObject.Properties) {
+            if ($skipNames -contains $p.Name) { continue }
+            $fieldMap[$p.Name] = $p.Value
+        }
+
+        # Render the template by substituting {Name} / {Name:format} placeholders with
+        # the structured value from $fieldMap. Falls back to the template token only when
+        # the field is genuinely missing — avoids the dumb-? replacement that hid real
+        # values like Symbol/Price/Qty in trade lines.
+        $cleanMsg = [regex]::Replace($msg, '\{(@?\w+)(?::([^}]+))?\}', {
+            param($m)
+            $name = $m.Groups[1].Value.TrimStart('@')
+            $fmt  = $m.Groups[2].Value
+            if (-not $fieldMap.ContainsKey($name)) { return "{$name}" }
+            $v = $fieldMap[$name]
+            if ($null -eq $v) { return '(null)' }
+            if ($fmt) {
+                try {
+                    if ($v -is [decimal] -or $v -is [double] -or $v -is [int] -or $v -is [long]) {
+                        return ([decimal]$v).ToString($fmt, [System.Globalization.CultureInfo]::InvariantCulture)
+                    }
+                    return ([string]::Format([System.Globalization.CultureInfo]::InvariantCulture, "{0:$fmt}", $v))
+                } catch { return [string]$v }
+            }
+            return [string]$v
+        })
+
+        # Append any structured fields that weren't consumed by template placeholders.
+        $usedNames = [regex]::Matches($msg, '\{(@?\w+)') | ForEach-Object { $_.Groups[1].Value.TrimStart('@') } | Sort-Object -Unique
+        $extras = ($fieldMap.GetEnumerator() | Where-Object { $_.Key -notin $usedNames } | ForEach-Object {
             $val = $_.Value
             if ($val -is [decimal] -or $val -is [double]) { $val = '{0:F4}' -f $val }
-            "$($_.Name)=$val"
+            "$($_.Key)=$val"
         }) -join ' '
-
-        # Truncate template placeholders if real values rendered separately
-        $cleanMsg = $msg -replace '\{[^}]+\}', '?'
         if ($extras) { $cleanMsg = "$cleanMsg [$extras]" }
         if ($cleanMsg.Length -gt 220) { $cleanMsg = $cleanMsg.Substring(0, 220) + '...' }
 

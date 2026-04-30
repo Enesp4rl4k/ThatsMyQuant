@@ -247,7 +247,10 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 // silently filled as taker — protects the maker rebate edge.
                 ordType = _execOptions.PostOnlyMode ? "post_only" : "limit",
                 clOrdId = clientOrderId,
-                px = signal.Price.ToString("F8"),
+                // CRITICAL: InvariantCulture — without it Turkish/etc. locales emit "55,57"
+                // for the decimal separator and OKX rejects with sCode=51000 "Parameter px
+                // error". Same applies to sz (already invariant on line 206).
+                px = signal.Price.ToString("F8", System.Globalization.CultureInfo.InvariantCulture),
                 sz = szStr,
                 posSide,
                 reduceOnly = reduceOnlyField,
@@ -746,7 +749,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 side = original.Side == TradeSide.Buy ? "buy" : "sell",
                 ordType = "market",
                 clOrdId = fallbackClientId,
-                sz = remainingQty.ToString("F8"),
+                sz = remainingQty.ToString("F8", System.Globalization.CultureInfo.InvariantCulture),
                 posSide,
                 reduceOnly = reduceOnlyField
             });
