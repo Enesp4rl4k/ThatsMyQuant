@@ -152,7 +152,7 @@ public sealed class FundingAlphaBacktestRunner
             }
 
             // --- Entry logic (if flat) ---
-            if (open is null && funding != 0m)
+            if (open is null && funding != 0m && !IsSettlementBar(bar.Timestamp, config))
             {
                 TradeSide? side = null;
                 bool fromFlip = false;
@@ -288,7 +288,7 @@ public sealed class FundingAlphaBacktestRunner
                 ? new FundingLiveSignal(FundingLiveSignalKind.WouldClose, openPos.Side, openPos.Qty, lastBarLive.Close, lastFunding, exitReason)
                 : new FundingLiveSignal(FundingLiveSignalKind.HoldOpen, openPos.Side, openPos.Qty, openPos.EntryPrice, openPos.FundingAtEntry, "Holding");
         }
-        else if (lastFunding != 0m && Math.Abs(lastFunding) >= config.EntryThreshold)
+        else if (lastFunding != 0m && Math.Abs(lastFunding) >= config.EntryThreshold && !IsSettlementBar(lastBarLive.Timestamp, config))
         {
             var newSide = lastFunding >= config.EntryThreshold ? TradeSide.Sell : TradeSide.Buy;
             var excess = (double)(Math.Abs(lastFunding) - config.EntryThreshold);
@@ -353,6 +353,22 @@ public sealed class FundingAlphaBacktestRunner
             liveSignal);
     }
 
+    /// <summary>
+    /// True when the bar timestamp falls within the configured settlement-skip window
+    /// after an OKX funding settlement boundary (00:00 / 08:00 / 16:00 UTC). Used to
+    /// gate entries (NOT exits) — see FundingAlphaConfig.SkipSettlementBars rationale.
+    /// </summary>
+    public static bool IsSettlementBar(DateTime barTimestampUtc, FundingAlphaConfig config)
+    {
+        if (!config.SkipSettlementBars) return false;
+        if (config.SettlementSkipMinutes <= 0) return false;
+        // Settlement at hours 0, 8, 16 UTC. Skip when bar timestamp is within
+        // SettlementSkipMinutes after any settlement hour.
+        var ts = barTimestampUtc.ToUniversalTime();
+        if (ts.Hour % 8 != 0) return false;
+        return ts.Minute < config.SettlementSkipMinutes;
+    }
+
     private static double ComputeSharpe(IReadOnlyList<FundingAlphaTrade> trades, decimal startingCapital)
     {
         if (trades.Count < 2 || startingCapital <= 0m) return 0.0;
@@ -413,7 +429,21 @@ public sealed record FundingAlphaConfig(
     int FlipMaxAgeBars = 1,
     // Position size on flip-only signals as a fraction of BaseSizeFraction.
     // Smaller than threshold-based entries since this is event-driven, lower conviction.
-    decimal FlipSizeMultiplier = 0.5m);
+    decimal FlipSizeMultiplier = 0.5m,
+
+    // --- Funding settlement bar mask (2026-04-30 audit) ---
+    // OKX perpetual funding settles at fixed UTC times: 00:00, 08:00, 16:00. The bar
+    // containing each settlement boundary tends to (a) carry a wider spread because
+    // makers temporarily pull quotes around the funding payment, (b) show artificially
+    // low volume in the first few minutes post-settle, and (c) have a discontinuous
+    // funding rate (a fresh cycle just started). Backtests using the mark price treat
+    // these bars as normal — live execution gets the real spread + worse fill.
+    //
+    // When true (default), entries are SKIPPED on bars whose timestamp falls in the
+    // first SettlementSkipMinutes minutes after a settlement boundary. Exits are NOT
+    // skipped — closing fast on a stop is more important than fee optimization.
+    bool SkipSettlementBars = true,
+    int SettlementSkipMinutes = 30);
 
 public sealed record FundingAlphaTrade(
     TradeSide Side,
