@@ -19,6 +19,17 @@ public interface IExchangePositionReader
     /// </summary>
     Task<ExchangeFillSnapshot?> GetLastFillAsync(string symbol, CancellationToken cancellationToken = default)
         => Task.FromResult<ExchangeFillSnapshot?>(null);
+
+    /// <summary>
+    /// Returns historical fills (paged, up to 3 months back per OKX) for fee-harvest /
+    /// post-mortem analysis. Implementations that don't support history should return empty.
+    /// </summary>
+    Task<IReadOnlyList<ExchangeFillSnapshot>> GetFillsHistoryAsync(
+        DateTime sinceUtc,
+        DateTime untilUtc,
+        string? instType = null,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<ExchangeFillSnapshot>>(Array.Empty<ExchangeFillSnapshot>());
 }
 
 /// <summary>

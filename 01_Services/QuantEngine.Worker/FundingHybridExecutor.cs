@@ -145,7 +145,16 @@ public sealed class FundingHybridExecutor : BackgroundService
                 var grossPnl = existing.Side == TradeSide.Buy
                     ? (exitPrice - existing.EntryPrice) * exitQty
                     : (existing.EntryPrice - exitPrice) * exitQty;
-                var costEstimate = exitPrice * exitQty * _config.RoundTripCostRate;
+                // Cost: prefer real venue-reported fee from the exit fill (doubled to approximate
+                // entry+exit round-trip — fills-history harvest 2026-04-30 showed legs are
+                // symmetric on OKX VIP-0 demo). Fall back to the configured rate when the fill
+                // API didn't return a fee value.
+                decimal realRoundTripFee = fill?.FeePaid > 0m
+                    ? fill.FeePaid * 2m
+                    : 0m;
+                var costEstimate = realRoundTripFee > 0m
+                    ? realRoundTripFee
+                    : exitPrice * exitQty * _config.RoundTripCostRate;
                 var netPnl = grossPnl - costEstimate;
                 var pnlPct = existing.EntryPrice > 0m ? (netPnl / (existing.EntryPrice * exitQty)) * 100m : 0m;
 
@@ -172,6 +181,7 @@ public sealed class FundingHybridExecutor : BackgroundService
                     ExecutionMode = "OKX_DEMO",
                     PromotionStage = "Paper",
                     NetFunding = existing.EntryFunding,
+                    RealFeePaid = realRoundTripFee > 0m ? realRoundTripFee : null,
                 };
                 lock (_portfolio)
                 {

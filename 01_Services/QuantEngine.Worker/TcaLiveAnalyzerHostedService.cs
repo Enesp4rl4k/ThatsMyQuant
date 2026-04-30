@@ -88,13 +88,17 @@ public sealed class TcaLiveAnalyzerHostedService : BackgroundService
             recent = _portfolio.ClosedPositions.Skip(skip).ToList();
         }
 
-        // Project to BacktestTradeResult; estimate fees from exit-notional × assumed rate (closed
-        // positions don't carry an explicit fee field — runner-derived RealizedPnL is already net).
+        // Project to BacktestTradeResult. Prefer the real venue-reported fee captured on
+        // the position (RealFeePaid, populated by hybrid executors via GetLastFillAsync on
+        // close) and only fall back to `exitPx × qty × _assumedFeeRate` when the position
+        // is a pure-simulation that never touched a real venue. Mixing the two on the same
+        // window would double-count fees and inflate leakage — the 2026-04-30 fee-harvest
+        // showed the assumed 28bp rate over-stated reality by 2.8×.
         var trades = recent.Select(p =>
         {
             var exitPx = p.CurrentPrice > 0 ? p.CurrentPrice : p.EntryPrice;
             var qty = p.Quantity > 0 ? p.Quantity : p.OpenedQuantity;
-            var feeEst = exitPx * qty * _assumedFeeRate;
+            var feeEst = p.RealFeePaid ?? (exitPx * qty * _assumedFeeRate);
             return new BacktestTradeResult
             {
                 EntryTime = p.EntryTime,

@@ -82,6 +82,15 @@ public class PaperPosition
     /// <summary>True when entry was filled as a passive maker limit (no spread/slippage, maker fee).</summary>
     public bool IsMakerEntry { get; set; }
 
+    /// <summary>
+    /// Sum of real fees paid to the venue (entry fill + exit fill), in quote currency.
+    /// Populated when the position was executed against a real venue and the executor
+    /// queried <see cref="IExchangePositionReader.GetLastFillAsync"/> on close. Null
+    /// when the position is pure-simulation or the venue didn't return fill data.
+    /// TCA / leakage analysis MUST prefer this over any assumed fee rate.
+    /// </summary>
+    public decimal? RealFeePaid { get; set; }
+
     public decimal MarketValue => Side == TradeSide.Buy
         ? Quantity * CurrentPrice
         : -(Quantity * CurrentPrice);

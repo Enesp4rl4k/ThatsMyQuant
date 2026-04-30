@@ -12,6 +12,12 @@ using Microsoft.Extensions.Options;
 using System.Text.Json;
 
 var builder = Host.CreateApplicationBuilder(args);
+// Load Worker's appsettings.Paper.json so OKX:IsDemoMode + ConnectionStrings carry over.
+// Credentials come from env vars (OKX__ApiKey etc.) injected by Run-HarvestFees.ps1.
+var paperPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "QuantEngine.Worker", "appsettings.Paper.json");
+if (File.Exists(paperPath))
+    Microsoft.Extensions.Configuration.JsonConfigurationExtensions
+        .AddJsonFile(builder.Configuration, paperPath, optional: true, reloadOnChange: false);
 builder.Services.AddThatsMyQuantApplication();
 builder.Services.AddThatsMyQuantInfrastructure(builder.Configuration);
 builder.Services.AddTransient<ISignalValidator, MarketHoursValidator>();
@@ -77,6 +83,10 @@ switch (command)
 
     case "pairsablation":
         await RunPairsAblationAsync(host.Services, args);
+        break;
+
+    case "harvest-fees":
+        await RunHarvestFeesAsync(host.Services, args);
         break;
 
     case "help":
@@ -1578,6 +1588,153 @@ static async Task RunEdgeSweepAsync(IServiceProvider services, string[] args)
     Console.WriteLine("NEXT STEP: review candidates JSON, pick winners, manually edit:");
     Console.WriteLine("  - Funding:AllocationCsv  (in appsettings.Paper.json)");
     Console.WriteLine("  - Strategy:PairsTrading:AllowedPairsCsv");
+}
+
+static async Task RunHarvestFeesAsync(IServiceProvider services, string[] args)
+{
+    // Pulls real OKX fills for [since, until], joins with closed paper positions by
+    // (symbol, exit-time within window), and reports real-vs-assumed fee per trade.
+    // Replaces the 28bp `Tca:AssumedRoundTripFeeRate` guess with measured ground truth.
+    var sinceArg = args.FirstOrDefault(a => a.StartsWith("--since=", StringComparison.OrdinalIgnoreCase));
+    var untilArg = args.FirstOrDefault(a => a.StartsWith("--until=", StringComparison.OrdinalIgnoreCase));
+    var portfolioArg = args.FirstOrDefault(a => a.StartsWith("--portfolio=", StringComparison.OrdinalIgnoreCase));
+    var outArg = args.FirstOrDefault(a => a.StartsWith("--out=", StringComparison.OrdinalIgnoreCase));
+
+    DateTime since = sinceArg is null
+        ? DateTime.UtcNow.AddDays(-7)
+        : DateTime.Parse(sinceArg.Substring("--since=".Length), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal);
+    DateTime until = untilArg is null
+        ? DateTime.UtcNow
+        : DateTime.Parse(untilArg.Substring("--until=".Length), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal);
+    string portfolioPath = portfolioArg is null
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "paper_portfolio.json")
+        : portfolioArg.Substring("--portfolio=".Length);
+    string outPath = outArg is null
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", $"real_fees_report_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv")
+        : outArg.Substring("--out=".Length);
+
+    Console.WriteLine($"[harvest-fees] window: {since:u} → {until:u}");
+    Console.WriteLine($"[harvest-fees] portfolio: {portfolioPath}");
+
+    // Manually wire OkxExecutionService — CLI doesn't register IExchangeService.
+    var http = services.GetRequiredService<System.Net.Http.IHttpClientFactory>().CreateClient();
+    var cfg = services.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
+    var okxLogger = services.GetRequiredService<ILogger<ThatsMyQuant.Infrastructure.Services.OkxExecutionService>>();
+    var portfolioStub = services.GetRequiredService<ThatsMyQuant.Contracts.Interfaces.ISharedPortfolioStateManager>();
+    var okx = new ThatsMyQuant.Infrastructure.Services.OkxExecutionService(
+        okxLogger, http, cfg, portfolioStub, apiVault: null, operationalTelemetry: null, streamingService: null);
+
+    var apiKey = cfg["OKX:ApiKey"] ?? "";
+    var pass = cfg["OKX:Passphrase"] ?? "";
+    var secret = cfg["OKX:SecretKey"] ?? "";
+    Console.WriteLine($"[harvest-fees] OKX:IsDemoMode = {Microsoft.Extensions.Configuration.ConfigurationBinder.GetValue<bool>(cfg, "OKX:IsDemoMode")}");
+    Console.WriteLine($"[harvest-fees] OKX:ApiKey       len={apiKey.Length}");
+    Console.WriteLine($"[harvest-fees] OKX:Passphrase   len={pass.Length}");
+    Console.WriteLine($"[harvest-fees] OKX:SecretKey    len={secret.Length}");
+    Console.WriteLine("[harvest-fees] calling OKX /api/v5/trade/fills-history (SWAP)...");
+    var fills = await okx.GetFillsHistoryAsync(since, until, "SWAP", CancellationToken.None);
+    Console.WriteLine($"[harvest-fees] fetched {fills.Count} fills");
+
+    if (fills.Count == 0)
+    {
+        Console.WriteLine("[harvest-fees] no fills returned — check API key permissions / time window / IsDemoMode flag.");
+        return;
+    }
+
+    // Group fills by symbol; each closing fill should pair with an opening fill of opposite side.
+    // For first-pass we just dump per-fill rows + per-symbol aggregate.
+    var bySymbol = fills
+        .GroupBy(f => f.Symbol)
+        .OrderBy(g => g.Key)
+        .ToList();
+
+    Console.WriteLine();
+    Console.WriteLine("=== Per-symbol real-fee summary ===");
+    Console.WriteLine($"{"Symbol",-12} {"Fills",5} {"GrossNotional",16} {"TotalFee",10} {"FeeBpsAvg",10}");
+    decimal totalNotional = 0m, totalFee = 0m;
+    foreach (var g in bySymbol)
+    {
+        decimal symNotional = 0m, symFee = 0m;
+        foreach (var f in g) { symNotional += f.Quantity * f.Price; symFee += f.FeePaid; }
+        var bps = symNotional > 0 ? (symFee / symNotional) * 10_000m : 0m;
+        Console.WriteLine($"{g.Key,-12} {g.Count(),5} {symNotional,16:N2} {symFee,10:N4} {bps,10:N2}");
+        totalNotional += symNotional;
+        totalFee += symFee;
+    }
+    var totalBps = totalNotional > 0 ? (totalFee / totalNotional) * 10_000m : 0m;
+    Console.WriteLine(new string('-', 65));
+    Console.WriteLine($"{"TOTAL",-12} {fills.Count,5} {totalNotional,16:N2} {totalFee,10:N4} {totalBps,10:N2} bps per LEG");
+    Console.WriteLine($"     → implied round-trip fee = {totalBps * 2m,10:N2} bps");
+    Console.WriteLine($"     vs Tca:AssumedRoundTripFeeRate = 28.00 bps");
+    Console.WriteLine();
+
+    // Try to match against paper portfolio closed trades.
+    if (System.IO.File.Exists(portfolioPath))
+    {
+        try
+        {
+            var json = System.IO.File.ReadAllText(portfolioPath);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("ClosedPositions", out var closed))
+            {
+                Console.WriteLine("=== Per-trade match (closed paper positions × OKX fills) ===");
+                Console.WriteLine($"{"Symbol",-10} {"Side",4} {"EntryPx",10} {"ExitPx",10} {"Qty",10} {"PnL",9} {"AssumedFee",11} {"RealFeeMatched",15} {"Match"}");
+
+                using var sw = new StreamWriter(outPath);
+                sw.WriteLine("Symbol,Side,EntryTime,ExitTime,EntryPx,ExitPx,Qty,RealizedPnL,AssumedFee28bp,MatchedFills,RealFeeSum,DeltaFee");
+
+                int matched = 0, unmatched = 0;
+                decimal sumAssumed = 0m, sumReal = 0m;
+                foreach (var t in closed.EnumerateArray())
+                {
+                    var sym = t.GetProperty("Symbol").GetString() ?? "";
+                    var side = t.GetProperty("Side").GetInt32();
+                    var entryPx = t.GetProperty("EntryPrice").GetDecimal();
+                    var exitPx = t.GetProperty("CurrentPrice").GetDecimal();
+                    var qty = t.GetProperty("Quantity").GetDecimal();
+                    var pnl = t.GetProperty("RealizedPnL").GetDecimal();
+                    var entryT = DateTime.Parse(t.GetProperty("EntryTime").GetString()!, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal);
+                    var exitT = DateTime.Parse(t.GetProperty("ExitTime").GetString()!, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal);
+
+                    var notionalEntry = entryPx * qty;
+                    var notionalExit = exitPx * qty;
+                    var assumedFee = (notionalEntry + notionalExit) * 0.0014m; // 14bp per leg ≈ 28bp round-trip
+
+                    // Match fills: same symbol, time within ±5 min of entry OR exit
+                    var matches = fills.Where(f => f.Symbol == sym &&
+                        ((f.FillTimeUtc >= entryT.AddMinutes(-5) && f.FillTimeUtc <= entryT.AddMinutes(5)) ||
+                         (f.FillTimeUtc >= exitT.AddMinutes(-5)  && f.FillTimeUtc <= exitT.AddMinutes(5)))).ToList();
+                    var realFee = matches.Sum(m => m.FeePaid);
+
+                    if (matches.Count > 0) { matched++; sumReal += realFee; sumAssumed += assumedFee; }
+                    else unmatched++;
+
+                    Console.WriteLine($"{sym,-10} {(side==0?"LONG":"SHORT"),4} {entryPx,10:F4} {exitPx,10:F4} {qty,10:F2} {pnl,9:F3} {assumedFee,11:F4} {realFee,15:F4} {matches.Count}");
+                    sw.WriteLine($"{sym},{(side==0?"LONG":"SHORT")},{entryT:o},{exitT:o},{entryPx},{exitPx},{qty},{pnl},{assumedFee:F6},{matches.Count},{realFee:F6},{(realFee-assumedFee):F6}");
+                }
+                Console.WriteLine();
+                Console.WriteLine($"=== Summary ({matched} matched, {unmatched} unmatched) ===");
+                Console.WriteLine($"  Sum assumed fee (28bp model): {sumAssumed:F4}");
+                Console.WriteLine($"  Sum real fee (OKX fills):     {sumReal:F4}");
+                if (sumAssumed > 0)
+                {
+                    var ratio = sumReal / sumAssumed;
+                    Console.WriteLine($"  Ratio real/assumed:           {ratio:F3}x");
+                    Console.WriteLine($"  → calibrated round-trip rate: {28m * ratio:F2} bps (vs current 28bp assumption)");
+                }
+                Console.WriteLine();
+                Console.WriteLine($"CSV written: {outPath}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[harvest-fees] portfolio match failed: {ex.Message}");
+        }
+    }
+    else
+    {
+        Console.WriteLine($"[harvest-fees] portfolio file not found: {portfolioPath} (skipping per-trade match)");
+    }
 }
 
 public sealed record StrictReadinessCell(
