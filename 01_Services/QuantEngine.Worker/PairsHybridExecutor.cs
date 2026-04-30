@@ -410,6 +410,42 @@ public sealed class PairsHybridExecutor : BackgroundService
                 return;
             }
 
+            // Phantom-open guard (mirror of FundingHybridExecutor 2026-04-30 fix). Legs can
+            // come back as not-actually-filled even without throwing — post_only rejected,
+            // market fallback rejected, fill poll Unknown. If EITHER leg returned without
+            // a real fill, we have an imbalanced or fully-flat pair on the venue. Rollback
+            // anything that DID fill, then refuse to record state.
+            var legYFilled = legYTrade is not null && legYTrade.Quantity > 0m && legYTrade.Status == TradeStatus.Executed;
+            var legXFilled = legXTrade is not null && legXTrade.Quantity > 0m && legXTrade.Status == TradeStatus.Executed;
+            if (!legYFilled || !legXFilled)
+            {
+                _logger.LogError(
+                    "PAIR_HYBRID OPEN FAILED {Pair} — legY filled={LY} legX filled={LX}. NO state recorded.",
+                    pair.Key, legYFilled, legXFilled);
+                if (legYFilled && !legXFilled)
+                {
+                    try
+                    {
+                        var rollbackSideY = sideY == TradeSide.Buy ? TradeSide.Sell : TradeSide.Buy;
+                        await PlaceLeg(exchange, pair.SymbolY, rollbackSideY, legYTrade!.Quantity, sig.PriceA, $"{clientOrderId}_Y_ROLLBACK_PHANTOM").ConfigureAwait(false);
+                        _logger.LogWarning("PAIR_HYBRID phantom-open rollback OK {Pair}: closed leg-Y after leg-X non-fill.", pair.Key);
+                    }
+                    catch (Exception ex) { _logger.LogCritical(ex, "PAIR_HYBRID phantom-open rollback FAILED {Pair} — manual cleanup needed", pair.Key); }
+                }
+                else if (legXFilled && !legYFilled)
+                {
+                    try
+                    {
+                        var rollbackSideX = sideX == TradeSide.Buy ? TradeSide.Sell : TradeSide.Buy;
+                        await PlaceLeg(exchange, pair.SymbolX, rollbackSideX, legXTrade!.Quantity, sig.PriceB, $"{clientOrderId}_X_ROLLBACK_PHANTOM").ConfigureAwait(false);
+                        _logger.LogWarning("PAIR_HYBRID phantom-open rollback OK {Pair}: closed leg-X after leg-Y non-fill.", pair.Key);
+                    }
+                    catch (Exception ex) { _logger.LogCritical(ex, "PAIR_HYBRID phantom-open rollback FAILED {Pair} — manual cleanup needed", pair.Key); }
+                }
+                _notionalGuard?.Release($"Pairs:{_tierName}", pair.Key);
+                return;
+            }
+
             _logger.LogWarning("PAIR_HYBRID OPEN OK {Pair} legY={IdY} legX={IdX}", pair.Key, legYTrade?.Id, legXTrade?.Id);
         }
 

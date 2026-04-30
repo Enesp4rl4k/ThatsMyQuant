@@ -63,6 +63,11 @@ public sealed class FundingAlphaBacktestRunner
         decimal peakEquity = startingCapital;
         decimal maxDrawdown = 0m;
 
+        // Resolve effective thresholds once (per-symbol override or default fallback).
+        // Backtest and live executor share the same helper so behavior cannot drift.
+        var effEntry = GetEffectiveEntryThreshold(symbol, config);
+        var effExit  = GetEffectiveExitThreshold(symbol, config);
+
         OpenPosition? open = null;
         int fundingObservations = 0;
         int entrySignals = 0;
@@ -90,7 +95,7 @@ public sealed class FundingAlphaBacktestRunner
                 decimal exitPrice = bar.Close;
 
                 // (a) Funding normalized (thesis played out).
-                if (funding != 0m && Math.Abs(funding) < config.ExitThreshold)
+                if (funding != 0m && Math.Abs(funding) < effExit)
                 { exit = true; exitReason = "FundingNormalized"; }
 
                 // (b) Take profit
@@ -158,12 +163,12 @@ public sealed class FundingAlphaBacktestRunner
                 bool fromFlip = false;
                 decimal sizeFractionBase;
 
-                if (funding >= config.EntryThreshold)
+                if (funding >= effEntry)
                 {
                     side = TradeSide.Sell;
                     sizeFractionBase = config.BaseSizeFraction;
                 }
-                else if (funding <= -config.EntryThreshold)
+                else if (funding <= -effEntry)
                 {
                     side = TradeSide.Buy;
                     sizeFractionBase = config.BaseSizeFraction;
@@ -212,8 +217,8 @@ public sealed class FundingAlphaBacktestRunner
                     else
                     {
                         // Threshold-based: classic strength scaling.
-                        var excess = (double)(Math.Abs(funding) - config.EntryThreshold);
-                        var rawMult = 1.0 + config.StrengthScale * excess / (double)config.EntryThreshold;
+                        var excess = (double)(Math.Abs(funding) - effEntry);
+                        var rawMult = 1.0 + config.StrengthScale * excess / (double)effEntry;
                         var strengthMult = (decimal)Math.Min(rawMult, (double)config.MaxStrengthMult);
                         sizeFraction = Math.Min(
                             sizeFractionBase * strengthMult,
@@ -266,7 +271,7 @@ public sealed class FundingAlphaBacktestRunner
             // Re-evaluate exit conditions on latest bar.
             bool exit = false;
             string exitReason = "";
-            if (lastFunding != 0m && Math.Abs(lastFunding) < config.ExitThreshold) { exit = true; exitReason = "FundingNormalized"; }
+            if (lastFunding != 0m && Math.Abs(lastFunding) < effExit) { exit = true; exitReason = "FundingNormalized"; }
             if (!exit)
             {
                 var movePct = openPos.Side == TradeSide.Buy
@@ -288,11 +293,11 @@ public sealed class FundingAlphaBacktestRunner
                 ? new FundingLiveSignal(FundingLiveSignalKind.WouldClose, openPos.Side, openPos.Qty, lastBarLive.Close, lastFunding, exitReason)
                 : new FundingLiveSignal(FundingLiveSignalKind.HoldOpen, openPos.Side, openPos.Qty, openPos.EntryPrice, openPos.FundingAtEntry, "Holding");
         }
-        else if (lastFunding != 0m && Math.Abs(lastFunding) >= config.EntryThreshold && !IsSettlementBar(lastBarLive.Timestamp, config))
+        else if (lastFunding != 0m && Math.Abs(lastFunding) >= effEntry && !IsSettlementBar(lastBarLive.Timestamp, config))
         {
-            var newSide = lastFunding >= config.EntryThreshold ? TradeSide.Sell : TradeSide.Buy;
-            var excess = (double)(Math.Abs(lastFunding) - config.EntryThreshold);
-            var rawMult = 1.0 + config.StrengthScale * excess / (double)config.EntryThreshold;
+            var newSide = lastFunding >= effEntry ? TradeSide.Sell : TradeSide.Buy;
+            var excess = (double)(Math.Abs(lastFunding) - effEntry);
+            var rawMult = 1.0 + config.StrengthScale * excess / (double)effEntry;
             var strengthMult = (decimal)Math.Min(rawMult, (double)config.MaxStrengthMult);
             var sizeFraction = Math.Min(config.BaseSizeFraction * strengthMult, config.MaxSizeFraction);
             var lev = Math.Min(config.Leverage, config.MaxLeverage);
@@ -300,7 +305,7 @@ public sealed class FundingAlphaBacktestRunner
             var qty = lastBarLive.Close > 0 ? notional / lastBarLive.Close : 0m;
             liveSignal = qty > 0m
                 ? new FundingLiveSignal(FundingLiveSignalKind.WouldOpenNew, newSide, qty, lastBarLive.Close, lastFunding,
-                    $"Funding {lastFunding:F5} {(lastFunding >= 0 ? ">=":"<=")} threshold {config.EntryThreshold:F5}")
+                    $"Funding {lastFunding:F5} {(lastFunding >= 0 ? ">=":"<=")} threshold {effEntry:F5}")
                 : FundingLiveSignal.None;
         }
         else
@@ -351,6 +356,36 @@ public sealed class FundingAlphaBacktestRunner
             fundingObservations, entrySignals, avgFunding, (double)maxAbsFunding,
             trades,
             liveSignal);
+    }
+
+    /// <summary>
+    /// Returns the effective entry threshold for a symbol — per-symbol override if set,
+    /// otherwise the global default. Single source of truth used by both backtest and
+    /// live executor, so override / default behavior cannot drift between them.
+    /// </summary>
+    public static decimal GetEffectiveEntryThreshold(string symbol, FundingAlphaConfig config)
+    {
+        if (!string.IsNullOrEmpty(symbol)
+            && config.PerSymbolEntryThreshold is { } d
+            && d.TryGetValue(symbol, out var v)
+            && v > 0m)
+        {
+            return v;
+        }
+        return config.EntryThreshold;
+    }
+
+    /// <summary>Same idea for the exit (funding-normalized) threshold.</summary>
+    public static decimal GetEffectiveExitThreshold(string symbol, FundingAlphaConfig config)
+    {
+        if (!string.IsNullOrEmpty(symbol)
+            && config.PerSymbolExitThreshold is { } d
+            && d.TryGetValue(symbol, out var v)
+            && v > 0m)
+        {
+            return v;
+        }
+        return config.ExitThreshold;
     }
 
     /// <summary>
@@ -430,6 +465,19 @@ public sealed record FundingAlphaConfig(
     // Position size on flip-only signals as a fraction of BaseSizeFraction.
     // Smaller than threshold-based entries since this is event-driven, lower conviction.
     decimal FlipSizeMultiplier = 0.5m,
+
+    // --- Per-symbol threshold override (2026-04-30 audit) ---
+    // The default EntryThreshold (1bp) was calibrated against LTC's funding distribution.
+    // In current calm-funding regimes, smaller-cap symbols (DOGE seen with 0 trades over
+    // 6 days at 1bp) need a tighter threshold to fire. Without per-symbol override,
+    // operators must lower the global threshold for everyone — re-introducing noise
+    // entries on the larger symbols. This dictionary lets each symbol opt into a
+    // tighter (or looser) threshold; missing keys fall back to EntryThreshold.
+    // Format: "DOGEUSDT:0.00005,LTCUSDT:0.00010". Multiplier-based (e.g. 0.5x for half)
+    // would risk silent magnitude drift across config edits — explicit absolute values
+    // are auditable. Future Tier 1: regime-adaptive auto-scaling replaces this.
+    System.Collections.Generic.Dictionary<string, decimal>? PerSymbolEntryThreshold = null,
+    System.Collections.Generic.Dictionary<string, decimal>? PerSymbolExitThreshold = null,
 
     // --- Funding settlement bar mask (2026-04-30 audit) ---
     // OKX perpetual funding settles at fixed UTC times: 00:00, 08:00, 16:00. The bar

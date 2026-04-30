@@ -771,6 +771,37 @@ public sealed class FundingHybridExecutor : BackgroundService
             return;
         }
 
+        // Liquidation-distance safety: at the chosen leverage, the adverse price move
+        // that triggers exchange liquidation is approximately (1/L − maintMarginRate).
+        // A correctly-set stop-loss must fire BEFORE that liquidation point — and with
+        // enough buffer to absorb slippage / settlement gaps. We require the liquidation
+        // buffer to be at least 2× the stop-loss distance (industry-standard "2× SL"
+        // rule), refusing the entry otherwise. At default Lev=1.0 this is trivially
+        // satisfied; the gate matters when Tier 1 raises leverage.
+        var effLev = Math.Max(1m, Math.Min(_config.Leverage, _config.MaxLeverage));
+        // OKX swap-perp maintenance margin rate is ~0.5% across major USDT-margined
+        // pairs (Tier 1 maint = 0.005). Read from config when explicitly tuned, else
+        // use the conservative default. Higher tiers / smaller positions get lower
+        // rates so 0.5% is a SAFE upper bound for the buffer calc.
+        var maintMarginRate = decimal.TryParse(_configuration["Paper:Leverage:MaintenanceMarginRate"],
+            System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture,
+            out var m) && m > 0m ? m : 0.005m;
+        var liqDistance = (1m / effLev) - maintMarginRate;
+        const decimal MinLiqBufferMultiplier = 2.0m;
+        if (_config.StopLossPct > 0m && liqDistance < _config.StopLossPct * MinLiqBufferMultiplier)
+        {
+            _logger.LogError(
+                "FundingHybrid[{Tier}] {Symbol} entry BLOCKED: liquidation buffer {LiqDist:P2} < {Mult}× SL {SL:P2} at leverage {Lev}x. Reduce leverage or tighten SL.",
+                _tierName, symbol, liqDistance, MinLiqBufferMultiplier, _config.StopLossPct, effLev);
+            _ = _alerter?.SendAsync($"liq_buffer_{symbol}", AlertSeverity.Critical,
+                $"Liquidation Buffer Insufficient [{_tierName}]",
+                $"`{symbol}` entry refused: at {effLev}x leverage liquidation distance is {liqDistance:P2}, " +
+                $"only {(liqDistance / _config.StopLossPct):F2}× the {_config.StopLossPct:P2} stop-loss (minimum 2.0×). " +
+                $"Either reduce Funding:Leverage or tighten Funding:StopLossPct.",
+                CancellationToken.None);
+            return;
+        }
+
         var clientOrderId = $"FH_{symbol}_{DateTime.UtcNow:yyyyMMddHHmmss}";
         var notional = sig.Qty * sig.ReferencePrice;
         var basis = _portfolio.InitialBalance > 0m ? _portfolio.InitialBalance : 100_000m;
@@ -838,14 +869,35 @@ public sealed class FundingHybridExecutor : BackgroundService
                 signal.Metadata["StopLossPx"]   = slPx.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
                 signal.Metadata["TakeProfitPx"] = tpPx.ToString("G", System.Globalization.CultureInfo.InvariantCulture);
                 var trade = await exchange.ExecuteOrderAsync(signal).ConfigureAwait(false);
-                if (trade is not null && trade.Quantity > 0m)
+
+                // PHANTOM-OPEN GUARD (2026-04-30): if trade is null, has zero quantity,
+                // or status is Pending/Rejected, the position was NOT actually opened on
+                // OKX (post_only rejected + market fallback rejected, exchange-side reject,
+                // poll outcome Unknown, etc). Without this guard the executor previously
+                // logged "OPEN OK" with the IDEAL qty as a fallback default, persisted
+                // state, and dispatched a Telegram OPENED notification — phantom open.
+                // Operator sees Telegram says open, OKX says flat, reconciliation goes
+                // into infinite RECONCILE GHOST loop, state file becomes corrupt.
+                var actuallyFilled = trade is not null
+                    && trade.Quantity > 0m
+                    && trade.Status == TradeStatus.Executed;
+                if (!actuallyFilled)
                 {
-                    storedQty = trade.Quantity;          // Base-asset units (OkxExecutionService converts contracts→base for Trade.Quantity? actually no — it's contracts. Reconciliation uses base via GetOpenPositions which we already converted. Keep storedQty = signal.Quantity rounded to ctVal*lotSz at SDK layer would be ideal but for now use trade.Quantity which equals contracts.)
-                    if (trade.EntryPrice > 0m) storedEntryPrice = trade.EntryPrice;
+                    _logger.LogError(
+                        "FUND_HYBRID OPEN FAILED {Symbol} — venue did not fill (trade={HasTrade} qty={Qty} status={Status}). NO state recorded, NO Telegram open notice.",
+                        symbol, trade is not null, trade?.Quantity ?? 0m, trade?.Status);
+                    _ = _alerter?.SendAsync($"open_phantom_{symbol}", AlertSeverity.Warning,
+                        $"Open Failed [{_tierName}] — `{symbol}`",
+                        $"Order rejected or unfilled (likely post_only + market fallback both rejected, or fill-status unknown). Reconcile will sync; no phantom state recorded.",
+                        CancellationToken.None);
+                    _notionalGuard?.Release($"Funding:{_tierName}", symbol);
+                    return;
                 }
-                // Real fee from the venue-side fill — feeds the round-trip RealFeePaid calc on close.
-                if (trade is not null && trade.TotalFeesPaid > 0m) storedEntryFee = trade.TotalFeesPaid;
-                _logger.LogWarning("FUND_HYBRID OPEN OK {Symbol} TradeId={TradeId} fillPx={Px:F4} qty={Qty:F6} entryFee=${Fee:F4}", symbol, trade?.Id, trade?.EntryPrice ?? 0m, trade?.Quantity ?? 0m, storedEntryFee);
+
+                storedQty = trade!.Quantity;
+                if (trade.EntryPrice > 0m) storedEntryPrice = trade.EntryPrice;
+                if (trade.TotalFeesPaid > 0m) storedEntryFee = trade.TotalFeesPaid;
+                _logger.LogWarning("FUND_HYBRID OPEN OK {Symbol} TradeId={TradeId} fillPx={Px:F4} qty={Qty:F6} entryFee=${Fee:F4}", symbol, trade.Id, trade.EntryPrice, trade.Quantity, storedEntryFee);
             }
             catch (Exception ex)
             {
