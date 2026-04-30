@@ -89,6 +89,10 @@ switch (command)
         await RunHarvestFeesAsync(host.Services, args);
         break;
 
+    case "analyze-edge":
+        await RunAnalyzeEdgeAsync(args);
+        break;
+
     case "help":
     default:
         PrintUsage();
@@ -1588,6 +1592,94 @@ static async Task RunEdgeSweepAsync(IServiceProvider services, string[] args)
     Console.WriteLine("NEXT STEP: review candidates JSON, pick winners, manually edit:");
     Console.WriteLine("  - Funding:AllocationCsv  (in appsettings.Paper.json)");
     Console.WriteLine("  - Strategy:PairsTrading:AllowedPairsCsv");
+}
+
+static async Task RunAnalyzeEdgeAsync(string[] args)
+{
+    // Reads paper_portfolio.json and reports per-symbol statistical significance:
+    // - t-statistic vs zero
+    // - bootstrapped Sharpe 95% CI (per-trade)
+    // - Bonferroni-corrected required |t| for the universe size
+    // - Deflated Sharpe Ratio probability (Bailey & López de Prado 2014) — adjusts
+    //   for both the multiple-comparison family and the higher moments of the
+    //   return distribution.
+    var portfolioArg = args.FirstOrDefault(a => a.StartsWith("--portfolio=", StringComparison.OrdinalIgnoreCase));
+    var feeBpsArg    = args.FirstOrDefault(a => a.StartsWith("--fee-bps-leg=", StringComparison.OrdinalIgnoreCase));
+    string portfolioPath = portfolioArg is null
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "paper_portfolio.json")
+        : portfolioArg.Substring("--portfolio=".Length);
+    decimal feeBpsPerLeg = feeBpsArg is null ? 5m : decimal.Parse(feeBpsArg.Substring("--fee-bps-leg=".Length), System.Globalization.CultureInfo.InvariantCulture);
+
+    if (!File.Exists(portfolioPath))
+    {
+        Console.WriteLine($"[analyze-edge] portfolio file not found: {portfolioPath}");
+        return;
+    }
+    var json = await File.ReadAllTextAsync(portfolioPath);
+    using var doc = System.Text.Json.JsonDocument.Parse(json);
+    if (!doc.RootElement.TryGetProperty("ClosedPositions", out var closed)) { Console.WriteLine("No closed positions."); return; }
+
+    var bySymbol = new Dictionary<string, List<(double Net, double Gross, decimal? RealFee)>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var t in closed.EnumerateArray())
+    {
+        var sym = t.GetProperty("Symbol").GetString() ?? "";
+        var entry = t.GetProperty("EntryPrice").GetDecimal();
+        var exit = t.GetProperty("CurrentPrice").GetDecimal();
+        var qty = t.GetProperty("Quantity").GetDecimal();
+        var side = t.GetProperty("Side").GetInt32();
+        if (entry == 0) continue;
+        var grossD = side == 0 ? (exit - entry) * qty : (entry - exit) * qty;
+        decimal? rfp = null;
+        if (t.TryGetProperty("RealFeePaid", out var rfpEl) && rfpEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+            rfp = rfpEl.GetDecimal();
+        var assumedFee = (entry + exit) * qty * (feeBpsPerLeg / 10_000m);
+        var feeApplied = rfp ?? assumedFee;
+        var net = grossD - feeApplied;
+        if (!bySymbol.ContainsKey(sym)) bySymbol[sym] = new();
+        bySymbol[sym].Add(((double)net, (double)grossD, rfp));
+    }
+
+    var symCount = bySymbol.Count;
+    var requiredAbsT = ThatsMyQuant.Application.Strategy.StatisticalSignificance.BonferroniRequiredAbsT(symCount, 0.05);
+
+    Console.WriteLine($"=== Per-symbol edge significance (universe size N={symCount}, Bonferroni |t|>{requiredAbsT:F2} required) ===");
+    Console.WriteLine($"{"Symbol",-10} {"N",4} {"Net$",8} {"Mean$",8} {"t-stat",7} {"SR/trd",7} {"95%CI low",10} {"95%CI hi",10} {"DSR p>0",8} {"Verdict"}");
+    foreach (var kv in bySymbol.OrderBy(k => k.Key, StringComparer.Ordinal))
+    {
+        var nets = kv.Value.Select(v => v.Net).ToList();
+        if (nets.Count < 2) { Console.WriteLine($"{kv.Key,-10} {nets.Count,4}  (insufficient sample)"); continue; }
+        var total = nets.Sum();
+        var mean = nets.Average();
+        var t = ThatsMyQuant.Application.Strategy.StatisticalSignificance.TStatisticVsZero(nets);
+        var sr = ThatsMyQuant.Application.Strategy.StatisticalSignificance.SharpePerTrade(nets);
+        var (lo, hi, _) = ThatsMyQuant.Application.Strategy.StatisticalSignificance.BootstrapSharpeCI(nets, iterations: 5000);
+        var dsr = ThatsMyQuant.Application.Strategy.StatisticalSignificance.DeflatedSharpeRatioProbability(nets, symCount, sr);
+        string verdict;
+        if (Math.Abs(t) >= requiredAbsT) verdict = "BONFERRONI-PASS";
+        else if (Math.Abs(t) >= 1.96) verdict = "raw-95-only";
+        else verdict = "noise";
+        Console.WriteLine($"{kv.Key,-10} {nets.Count,4} {total,8:F3} {mean,8:F4} {t,7:F2} {sr,7:F3} {lo,10:F3} {hi,10:F3} {dsr,8:F3} {verdict}");
+    }
+
+    // Aggregate: pooled across symbols (treats every trade as one observation).
+    var allNets = bySymbol.SelectMany(kv => kv.Value.Select(v => v.Net)).ToList();
+    if (allNets.Count >= 2)
+    {
+        var t = ThatsMyQuant.Application.Strategy.StatisticalSignificance.TStatisticVsZero(allNets);
+        var sr = ThatsMyQuant.Application.Strategy.StatisticalSignificance.SharpePerTrade(allNets);
+        var (lo, hi, _) = ThatsMyQuant.Application.Strategy.StatisticalSignificance.BootstrapSharpeCI(allNets, iterations: 5000);
+        var dsr = ThatsMyQuant.Application.Strategy.StatisticalSignificance.DeflatedSharpeRatioProbability(allNets, 1, sr);
+        Console.WriteLine();
+        Console.WriteLine($"=== Pooled portfolio (all {allNets.Count} trades) ===");
+        Console.WriteLine($"  Total net: ${allNets.Sum():F3}, Mean: ${allNets.Average():F4}");
+        Console.WriteLine($"  t-stat vs 0: {t:F2}, per-trade Sharpe: {sr:F3}");
+        Console.WriteLine($"  Bootstrapped 95% Sharpe CI: [{lo:F3}, {hi:F3}]");
+        Console.WriteLine($"  DSR probability of true Sharpe > 0: {dsr:F3}");
+        if (Math.Abs(t) < 1.96) Console.WriteLine("  [WEAK] Pooled t-stat below 95% — sample too small to claim edge.");
+        else if (dsr < 0.5) Console.WriteLine("  [WEAK] DSR < 0.5 — Sharpe likely inflated by noise/multiplicity.");
+        else if (dsr >= 0.95) Console.WriteLine("  [STRONG] DSR >= 0.95 — high confidence true Sharpe > 0.");
+        else Console.WriteLine($"  [BORDERLINE] DSR = {dsr:F3} — more data needed for a firm verdict.");
+    }
 }
 
 static async Task RunHarvestFeesAsync(IServiceProvider services, string[] args)
