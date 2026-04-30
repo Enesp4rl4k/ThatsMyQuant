@@ -1,0 +1,38 @@
+06_Contracts/Interfaces/IExchangePositionReader.cs
+  994a9e37d0902156 22-32
+03_Infrastructure/Data.Persistence/Services/OkxExecutionService.cs
+  994a9e37d0902156 1510-1617
+01_Services/CLI.Tool/ThatsMyQuant.CLI/ThatsMyQuant.CLI.csproj
+  994a9e37d0902156 17-20
+06_Contracts/Models/PaperPortfolio.cs
+  994a9e37d0902156 85-93
+01_Services/QuantEngine.Worker/FundingHybridExecutor.cs
+  994a9e37d0902156 148-157,184
+Run-HarvestFees.ps1
+  994a9e37d0902156 1-51
+01_Services/CLI.Tool/ThatsMyQuant.CLI/Program.cs
+  994a9e37d0902156 15-20,88-91,1593-1738
+01_Services/QuantEngine.Worker/TcaLiveAnalyzerHostedService.cs
+  994a9e37d0902156 91-96,101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.17",
+  "base_commit_sha": "5228c91286ff69daa1a81feae4ce4fcbcffe3d6a",
+  "prompts": {
+    "994a9e37d0902156": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b53b664-d5d7-4d2a-8b01-f9b7a9ed63f0",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "messages": [],
+      "total_additions": 2012,
+      "total_deletions": 1658,
+      "accepted_lines": 1979,
+      "overriden_lines": 0,
+      "messages_url": "https://usegitai.com/cas/771d94646f46e8d6b4afb831d4393b892b56d3d396223977d91e46c45ab62e17"
+    }
+  }
+}
