@@ -1,0 +1,33 @@
+01_Services/QuantEngine.Worker/Program.cs
+  994a9e37d0902156 319-322,340,351,377,389
+01_Services/QuantEngine.Worker/FundingHybridExecutor.cs
+  994a9e37d0902156 274,302,307,793-810
+.gitignore
+  994a9e37d0902156 102-107
+01_Services/QuantEngine.Worker/PairsHybridExecutor.cs
+  994a9e37d0902156 57,69,74,366-380
+01_Services/QuantEngine.Worker/DrawdownLadderGate.cs
+  994a9e37d0902156 4
+docs/PRE_REGISTERED_HYPOTHESIS_funding_long.md
+  994a9e37d0902156 1-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.17",
+  "base_commit_sha": "286fb858a9134f5a3d3ad57148731a72cc619d9f",
+  "prompts": {
+    "994a9e37d0902156": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b53b664-d5d7-4d2a-8b01-f9b7a9ed63f0",
+        "model": "unknown"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "messages": [],
+      "total_additions": 2562,
+      "total_deletions": 2161,
+      "accepted_lines": 2562,
+      "overriden_lines": 0
+    }
+  }
+}
