@@ -69,6 +69,58 @@ public sealed class FormalPromotionGate
         return Finalise("PaperToLive", failures, passes);
     }
 
+    /// <summary>
+    /// Statistical-rigor overlay: even when the basic gate clears, a strategy is only
+    /// admitted to the next stage if its trade-level PnL passes (a) Bonferroni correction
+    /// for the universe size we searched over, and (b) bootstrapped Sharpe lower-CI
+    /// bound > 0, and (c) Deflated Sharpe Ratio probability ≥ 0.95.
+    ///
+    /// This is the missing gate identified in the 2026-04-30 audit — apparent edge on
+    /// 30 trades has ~40% false-positive rate (Arnott et al. 2016) without
+    /// multiplicity correction. Call this AFTER EvaluateBacktestToPaper / EvaluatePaperToLive
+    /// returns Approved; if the rigor overlay fails, demote back to a warning state and
+    /// require more trades before re-evaluating.
+    /// </summary>
+    /// <param name="stage">"BacktestToPaper" / "PaperToLive" — used in logging only.</param>
+    /// <param name="tradePnls">Per-trade NetPnl in USD (or any consistent unit).</param>
+    /// <param name="universeSize">Number of strategies/symbols you search across (Bonferroni N).</param>
+    /// <param name="thresholds">Default 95% Sharpe lower-CI > 0 and DSR ≥ 0.95.</param>
+    public PromotionDecision EvaluateStatisticalRigor(
+        string stage,
+        IReadOnlyList<decimal> tradePnls,
+        int universeSize,
+        StatisticalRigorThresholds? thresholds = null)
+    {
+        var t = thresholds ?? StatisticalRigorThresholds.Default;
+        var failures = new List<string>();
+        var passes = new List<string>();
+
+        if (tradePnls.Count < 2)
+        {
+            failures.Add($"Sample too small for statistical rigor (N={tradePnls.Count} < 2)");
+            return Finalise($"{stage}+Rigor", failures, passes);
+        }
+
+        var pnls = tradePnls.Select(x => (double)x).ToList();
+        var tStat = StatisticalSignificance.TStatisticVsZero(pnls);
+        var sharpe = StatisticalSignificance.SharpePerTrade(pnls);
+        var (ciLow, ciHigh, _) = StatisticalSignificance.BootstrapSharpeCI(pnls);
+        var dsr = StatisticalSignificance.DeflatedSharpeRatioProbability(pnls, universeSize, sharpe);
+        var bonfRequired = StatisticalSignificance.BonferroniRequiredAbsT(universeSize);
+
+        Check(Math.Abs(tStat) >= bonfRequired,
+            $"|t-stat| {Math.Abs(tStat):F2} ≥ Bonferroni {bonfRequired:F2} (N={universeSize})",
+            failures, passes);
+        Check(ciLow > t.MinSharpeCiLowerBound,
+            $"Sharpe 95% CI lower bound {ciLow:F2} > {t.MinSharpeCiLowerBound:F2}",
+            failures, passes);
+        Check(dsr >= t.MinDeflatedSharpeProbability,
+            $"DeflatedSharpe P(SR>0) {dsr:F3} ≥ {t.MinDeflatedSharpeProbability:F2}",
+            failures, passes);
+
+        return Finalise($"{stage}+Rigor", failures, passes);
+    }
+
     private static void Check(bool condition, string desc, List<string> failures, List<string> passes)
     {
         if (condition) passes.Add(desc); else failures.Add(desc);
@@ -128,3 +180,21 @@ public sealed record PromotionDecision(
     bool Approved,
     List<string> PassedCriteria,
     List<string> FailedCriteria);
+
+/// <summary>
+/// Defaults for the statistical-rigor overlay. CI-lower > 0 and DSR ≥ 0.95 are
+/// industry-standard "Bailey & López de Prado" gates. Loosen with caution.
+/// </summary>
+public sealed record StatisticalRigorThresholds(
+    double MinSharpeCiLowerBound,
+    double MinDeflatedSharpeProbability)
+{
+    public static StatisticalRigorThresholds Default => new(
+        MinSharpeCiLowerBound: 0.0,
+        MinDeflatedSharpeProbability: 0.95);
+
+    /// <summary>Looser overlay for early-stage discovery (DSR ≥ 0.80, CI ≥ -0.1).</summary>
+    public static StatisticalRigorThresholds Discovery => new(
+        MinSharpeCiLowerBound: -0.1,
+        MinDeflatedSharpeProbability: 0.80);
+}

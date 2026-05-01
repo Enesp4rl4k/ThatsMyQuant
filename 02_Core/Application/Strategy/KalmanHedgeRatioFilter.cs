@@ -87,4 +87,39 @@ public sealed class KalmanHedgeRatioFilter
         _beta = beta;
         _betaVariance = Math.Max(1e-9, variance);
     }
+
+    /// <summary>
+    /// Snapshot of the current posterior — used by callers that persist the filter
+    /// across worker restarts (warm-load). Without this, every restart rolls the
+    /// posterior back to the seed β + a wide initialVariance, producing 1-2 hours
+    /// of stale-β trading while the filter re-converges. The snapshot is a
+    /// 32-byte struct so persistence is cheap.
+    /// </summary>
+    public KalmanPosteriorSnapshot Snapshot() => new(_beta, _betaVariance, _processVariance, _observationVariance);
+
+    /// <summary>
+    /// Restore from a previously-snapshot'd posterior. Skips when the snapshot is
+    /// degenerate (NaN / non-finite / non-positive variance) so a corrupted state
+    /// file silently falls back to the cold-start seed instead of poisoning trading.
+    /// </summary>
+    public bool TryRestore(KalmanPosteriorSnapshot snapshot)
+    {
+        if (!double.IsFinite(snapshot.Beta) || !double.IsFinite(snapshot.BetaVariance) || snapshot.BetaVariance <= 0)
+            return false;
+        _beta = snapshot.Beta;
+        _betaVariance = snapshot.BetaVariance;
+        if (double.IsFinite(snapshot.ObservationVariance) && snapshot.ObservationVariance > 0)
+            _observationVariance = snapshot.ObservationVariance;
+        return true;
+    }
 }
+
+/// <summary>
+/// Persistable Kalman state. Serializable as JSON via System.Text.Json.
+/// ProcessVariance is informational (filter constructor sets the operative one).
+/// </summary>
+public readonly record struct KalmanPosteriorSnapshot(
+    double Beta,
+    double BetaVariance,
+    double ProcessVariance,
+    double ObservationVariance);
