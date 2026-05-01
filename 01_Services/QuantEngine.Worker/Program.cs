@@ -331,6 +331,13 @@ switch (runMode)
         // future Telegram /candidates command). Persisted to disk so worker restart preserves
         // candidate registry. No live-trading impact until B+ runners are wired (deferred).
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.CandidatePool>();
+        // StrategySampleStore — per-strategy ML sample collection (JSONL per StrategyTag).
+        // Decoupled from the legacy 5-tensor ModelTrainingPipeline so funding+pairs samples
+        // accumulate WITHOUT contaminating the directional model. FundingHybridExecutor +
+        // PairsHybridExecutor write into this on close. First model train (post-Tier-A)
+        // consumes from here. See ML_TRAINING_CALENDAR_2026_05_01.md for cadence.
+        builder.Services.AddSingleton<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore,
+            ThatsMyQuant.Application.MachineLearning.StrategySampleStore>();
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>();
         builder.Services.AddHostedService<ExchangeBalanceSyncHostedService>();
         builder.Services.AddHostedService<PaperTradingHostedService>();
@@ -349,7 +356,8 @@ switch (runMode)
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
             drawdownLadder: sp.GetService<DrawdownLadderGate>(),
-            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>(),
+            mlSampleStore: sp.GetService<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore>()));
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new PairsHybridExecutor(
             sp.GetRequiredService<ILogger<PairsHybridExecutor>>(),
             sp,
@@ -360,7 +368,8 @@ switch (runMode)
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
             drawdownLadder: sp.GetService<DrawdownLadderGate>(),
-            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>(),
+            mlSampleStore: sp.GetService<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore>()));
         // Funding execution path:
         //   - When Funding:HybridMode=off → legacy FundingAlphaPaperHostedService mirrors closed
         //     backtest trades into PaperPortfolio (local sim only, no OKX orders).
@@ -386,7 +395,8 @@ switch (runMode)
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
             drawdownLadder: sp.GetService<DrawdownLadderGate>(),
-            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>(),
+            mlSampleStore: sp.GetService<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore>()));
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new FundingHybridExecutor(
             sp.GetRequiredService<ILogger<FundingHybridExecutor>>(),
             sp,
@@ -398,7 +408,8 @@ switch (runMode)
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
             drawdownLadder: sp.GetService<DrawdownLadderGate>(),
-            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
+            persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>(),
+            mlSampleStore: sp.GetService<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore>()));
         builder.Services.AddHostedService<HybridReconciliationHostedService>();
         builder.Services.AddHostedService<DailyTelegramDigestHostedService>();
         // TelegramCommandHostedService — two-way bot: long-polls /status /pnl /positions /help.

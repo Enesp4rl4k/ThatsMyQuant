@@ -56,6 +56,7 @@ public sealed class PairsHybridExecutor : BackgroundService
     private readonly NotionalExposureGuard? _notionalGuard;
     private readonly DrawdownLadderGate? _drawdownLadder;
     private readonly PaperPortfolioPersistenceService? _persistence;
+    private readonly ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? _mlSampleStore;
 
     public PairsHybridExecutor(
         ILogger<PairsHybridExecutor> logger,
@@ -67,12 +68,14 @@ public sealed class PairsHybridExecutor : BackgroundService
         GlobalCircuitBreaker? globalBreaker = null,
         NotionalExposureGuard? notionalGuard = null,
         DrawdownLadderGate? drawdownLadder = null,
-        PaperPortfolioPersistenceService? persistence = null)
+        PaperPortfolioPersistenceService? persistence = null,
+        ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? mlSampleStore = null)
     {
         _globalBreaker = globalBreaker;
         _notionalGuard = notionalGuard;
         _drawdownLadder = drawdownLadder;
         _persistence = persistence;
+        _mlSampleStore = mlSampleStore;
         _logger = logger;
         _serviceProvider = serviceProvider;
         _configuration = configuration;
@@ -594,6 +597,31 @@ public sealed class PairsHybridExecutor : BackgroundService
             _portfolio.AppendEquity(_portfolio.TotalEquity);
         }
         _persistence?.RequestWrite(_portfolio);
+
+        // ML sample collection (per-strategy JSONL store) — best-effort, never throws.
+        if (_mlSampleStore is not null)
+        {
+            try
+            {
+                var features = ThatsMyQuant.Application.MachineLearning.PairsFeatureExtractor.Extract(position);
+                _mlSampleStore.Append(new ThatsMyQuant.Application.MachineLearning.StrategySample
+                {
+                    StrategyTag = position.StrategyTag ?? _strategyTag,
+                    Symbol = position.Symbol,
+                    Features = features,
+                    Label = position.RealizedPnL > 0,
+                    NetPnl = position.RealizedPnL,
+                    RealFeePaid = position.RealFeePaid,
+                    RealSlippagePaid = position.RealSlippagePaid,
+                    EntryTimeUtc = position.EntryTime,
+                    ExitTimeUtc = position.ExitTime ?? DateTime.UtcNow,
+                    ExitReason = position.ExitReason ?? "",
+                    ExecutionMode = position.ExecutionMode ?? "",
+                    FeatureSchemaVersion = 1
+                });
+            }
+            catch (Exception ex) { _logger.LogDebug(ex, "MlSample append failed for {Pair}", pair.Key); }
+        }
 
         // Daily PnL accounting + circuit breaker.
         _dailyRealizedPnL += netPnL;
