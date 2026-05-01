@@ -1,0 +1,33 @@
+02_Core/Application/MachineLearning/FundingFeatureExtractor.cs
+  994a9e37d0902156 1-87
+01_Services/QuantEngine.Worker/PairsHybridExecutor.cs
+  994a9e37d0902156 59,71-72,78,601-625
+02_Core/Application/MachineLearning/StrategySampleStore.cs
+  994a9e37d0902156 1-187
+01_Services/QuantEngine.Worker/Program.cs
+  994a9e37d0902156 334-340,359-360,371-372,398-399,411-412
+01_Services/QuantEngine.Worker/FundingHybridExecutor.cs
+  994a9e37d0902156 201,277,305-306,312,1215,1363-1397
+02_Core/Application/MachineLearning/PairsFeatureExtractor.cs
+  994a9e37d0902156 1-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.17",
+  "base_commit_sha": "8b6ac08450bd999660ec8bcdc1778c3a9245847e",
+  "prompts": {
+    "994a9e37d0902156": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b53b664-d5d7-4d2a-8b01-f9b7a9ed63f0",
+        "model": "unknown"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "messages": [],
+      "total_additions": 2645,
+      "total_deletions": 2205,
+      "accepted_lines": 2643,
+      "overriden_lines": 0
+    }
+  }
+}
