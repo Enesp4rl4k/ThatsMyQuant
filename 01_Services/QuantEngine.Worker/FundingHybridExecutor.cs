@@ -198,6 +198,7 @@ public sealed class FundingHybridExecutor : BackgroundService
                     _portfolio.AppendEquity(_portfolio.TotalEquity);
                 }
                 _persistence?.RequestWrite(_portfolio);
+                RecordMlSample(ghostClosed);
 
                 var note = new PositionClosedNotification(
                     Symbol: symbol,
@@ -273,6 +274,7 @@ public sealed class FundingHybridExecutor : BackgroundService
     private readonly NotionalExposureGuard? _notionalGuard;
     private readonly DrawdownLadderGate? _drawdownLadder;
     private readonly PaperPortfolioPersistenceService? _persistence;
+    private readonly ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? _mlSampleStore;
 
     // Symbol-level circuit breaker (2026-04-27).
     // The tier-wide breaker only trips at ~$30 daily loss; one chronically losing
@@ -300,12 +302,14 @@ public sealed class FundingHybridExecutor : BackgroundService
         GlobalCircuitBreaker? globalBreaker = null,
         NotionalExposureGuard? notionalGuard = null,
         DrawdownLadderGate? drawdownLadder = null,
-        PaperPortfolioPersistenceService? persistence = null)
+        PaperPortfolioPersistenceService? persistence = null,
+        ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? mlSampleStore = null)
     {
         _globalBreaker = globalBreaker;
         _notionalGuard = notionalGuard;
         _drawdownLadder = drawdownLadder;
         _persistence = persistence;
+        _mlSampleStore = mlSampleStore;
         _logger = logger;
         _serviceProvider = serviceProvider;
         _configuration = configuration;
@@ -1208,6 +1212,7 @@ public sealed class FundingHybridExecutor : BackgroundService
             _portfolio.AppendEquity(_portfolio.TotalEquity);
         }
         _persistence?.RequestWrite(_portfolio);
+        RecordMlSample(position);
 
         // Daily PnL accounting + circuit breaker check.
         _dailyRealizedPnL += netPnl;
@@ -1353,6 +1358,41 @@ public sealed class FundingHybridExecutor : BackgroundService
             }
         }
         return dict.Count == 0 ? null : dict;
+    }
+
+    /// <summary>
+    /// Records a closed-position ML sample to the strategy-specific JSONL store.
+    /// Best-effort: never throws. Run on every close path (normal exit + ghost-cleanup).
+    /// Disabled when _mlSampleStore is null (DI not registered, e.g. unit tests).
+    /// </summary>
+    private void RecordMlSample(PaperPosition closed)
+    {
+        if (_mlSampleStore is null) return;
+        try
+        {
+            var features = ThatsMyQuant.Application.MachineLearning.FundingFeatureExtractor
+                .Extract(closed, (double)_config.EntryThreshold);
+            var sample = new ThatsMyQuant.Application.MachineLearning.StrategySample
+            {
+                StrategyTag = closed.StrategyTag ?? _strategyTag,
+                Symbol = closed.Symbol,
+                Features = features,
+                Label = closed.RealizedPnL > 0,
+                NetPnl = closed.RealizedPnL,
+                RealFeePaid = closed.RealFeePaid,
+                RealSlippagePaid = closed.RealSlippagePaid,
+                EntryTimeUtc = closed.EntryTime,
+                ExitTimeUtc = closed.ExitTime ?? DateTime.UtcNow,
+                ExitReason = closed.ExitReason ?? "",
+                ExecutionMode = closed.ExecutionMode ?? "",
+                FeatureSchemaVersion = 1
+            };
+            _mlSampleStore.Append(sample);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "RecordMlSample failed for {Symbol} (non-blocking)", closed.Symbol);
+        }
     }
 
     private static decimal ParseDecimal(string? raw, decimal fallback)
