@@ -24,6 +24,37 @@ public static class StatisticalSignificance
     /// or the sample is too small. NOT annualized — annualization is the caller's job because
     /// the effective trades-per-year depends on strategy cadence.
     /// </summary>
+    /// <summary>
+    /// Minimum standard deviation (in PnL units) treated as "non-degenerate" — below
+    /// this the sample is considered all-identical (phantom artifacts, fee-only trades,
+    /// etc.) and statistics return 0 instead of producing infinite or absurd values.
+    /// 2026-05-01 fix: guards against the false-Bonferroni-PASS verdict observed when
+    /// every trade had identical $-0.0064 cost-only PnL → stdev ≈ 1e-17 → t-stat 1e4+.
+    /// </summary>
+    public const double MinDegenerateStdev = 1e-6;
+
+    /// <summary>
+    /// Coefficient-of-variation floor: if stdev/|mean| &lt; this, the sample is too
+    /// uniform to produce meaningful inferential statistics (every trade nearly
+    /// identical → likely all phantom cost-only or fee-only artifacts). Returns 0
+    /// instead of an absurd t-statistic that would falsely register as significant.
+    /// 2026-05-01: needed because absolute MinDegenerateStdev was insufficient when
+    /// trades clustered tightly around a non-zero mean (e.g. all $-0.0064 cost trades
+    /// produced stdev ~1e-5 — above the absolute floor but giving t = -1828).
+    /// </summary>
+    public const double MinCoefficientOfVariation = 0.01;
+
+    /// <summary>True when the sample is statistically degenerate (all trades nearly
+    /// identical). Both absolute stdev floor AND coefficient-of-variation floor must
+    /// be cleared for the sample to be considered non-degenerate.</summary>
+    private static bool IsDegenerate(double mean, double stdev)
+    {
+        if (stdev < MinDegenerateStdev) return true;
+        var absMean = Math.Abs(mean);
+        if (absMean > 1e-9 && stdev / absMean < MinCoefficientOfVariation) return true;
+        return false;
+    }
+
     public static double SharpePerTrade(IReadOnlyList<double> tradePnls)
     {
         if (tradePnls is null || tradePnls.Count < 2) return 0.0;
@@ -37,7 +68,7 @@ public static class StatisticalSignificance
             sumSq += d * d;
         }
         var stdev = Math.Sqrt(sumSq / (tradePnls.Count - 1));
-        return stdev <= 0 ? 0.0 : mean / stdev;
+        return IsDegenerate(mean, stdev) ? 0.0 : mean / stdev;
     }
 
     /// <summary>
@@ -53,7 +84,7 @@ public static class StatisticalSignificance
         double sumSq = 0.0;
         foreach (var v in tradePnls) { var d = v - mean; sumSq += d * d; }
         var stdev = Math.Sqrt(sumSq / (tradePnls.Count - 1));
-        if (stdev <= 0) return 0.0;
+        if (IsDegenerate(mean, stdev)) return 0.0;
         var stderr = stdev / Math.Sqrt(tradePnls.Count);
         return mean / stderr;
     }
