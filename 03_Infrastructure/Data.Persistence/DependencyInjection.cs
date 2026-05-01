@@ -98,6 +98,10 @@ public static class DependencyInjection
         // Real-cost providers — replace hardcoded BacktestCostModel defaults with OKX live data.
         services.AddSingleton<ISymbolCostProfileProvider, OkxSymbolCostProfileProvider>();
         services.AddSingleton<IFundingRateProvider, OkxFundingRateProvider>();
+        // Historical spread reader: timestamp-aware lookup over the spread_snapshots.csv
+        // produced by OkxSymbolCostProfileProvider. Backtests can use this to apply real
+        // historical spread per bar instead of the legacy "today's spread × all history".
+        services.AddSingleton<HistoricalSpreadReader>();
 
         // Real execution cost snapshot cache: fee + live spread with HTTP fallback.
         // Uses a lightweight static fee provider wrapped over config (no API keys) so

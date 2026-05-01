@@ -355,6 +355,12 @@ public sealed class FundingHybridExecutor : BackgroundService
             }
         }
 
+        // Per-symbol threshold overrides — read from config "PerSymbolEntryThresholdCsv"
+        // (and Exit equivalent), format "DOGEUSDT:0.00005,XRPUSDT:0.00007". Empty / missing
+        // → null dictionary → GetEffectiveEntryThreshold falls back to global default.
+        Dictionary<string, decimal>? perSymEntry = ParseSymbolThresholdCsv(Cfg("PerSymbolEntryThresholdCsv"));
+        Dictionary<string, decimal>? perSymExit  = ParseSymbolThresholdCsv(Cfg("PerSymbolExitThresholdCsv"));
+
         _config = new FundingAlphaConfig(
             EntryThreshold: ParseDecimal(Cfg("EntryThresholdRate"), 0.0001m),
             ExitThreshold: ParseDecimal(Cfg("ExitThresholdRate"), 0.00005m),
@@ -363,10 +369,20 @@ public sealed class FundingHybridExecutor : BackgroundService
             MaxHoldingBars: int.TryParse(Cfg("MaxHoldingBars"), out var mh) && mh > 0 ? mh : 16,
             BaseSizeFraction: ParseDecimal(Cfg("BaseSizeFraction"), 0.05m),
             MaxSizeFraction: ParseDecimal(Cfg("MaxSizeFraction"), 0.15m),
-            // 2026-04-28: now config-driven so paper/live can truth-tell real OKX
-            // fees (~28bp post-maker entry + taker exit). Default 8bp was optimistic
-            // and made the simulated PnL look stronger than live would actually be.
-            RoundTripCostRate: ParseDecimal(Cfg("RoundTripCostRate"), 0.0008m));
+            // 2026-04-30: real OKX fee = 10bp roundtrip (measured). Config Paper.json
+            // already sets RoundTripCostRate=0.0010 so this default rarely applies.
+            RoundTripCostRate: ParseDecimal(Cfg("RoundTripCostRate"), 0.0008m),
+            PerSymbolEntryThreshold: perSymEntry,
+            PerSymbolExitThreshold: perSymExit);
+
+        if (perSymEntry is { Count: > 0 } || perSymExit is { Count: > 0 })
+        {
+            _logger.LogInformation(
+                "FundingHybrid[{Tier}] per-symbol thresholds active. Entry overrides=[{Entry}] Exit overrides=[{Exit}]",
+                _tierName,
+                perSymEntry is null ? "" : string.Join(",", perSymEntry.Select(kv => $"{kv.Key}={kv.Value:F5}")),
+                perSymExit is null ? "" : string.Join(",", perSymExit.Select(kv => $"{kv.Key}={kv.Value:F5}")));
+        }
 
         var stateDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant");
         Directory.CreateDirectory(stateDir);
@@ -1269,6 +1285,27 @@ public sealed class FundingHybridExecutor : BackgroundService
         {
             _logger.LogWarning(ex, "FundingHybridExecutor: state save failed.");
         }
+    }
+
+    /// <summary>
+    /// Parses "SYMBOL:rate,SYMBOL:rate" → dict, or null when input is empty/blank.
+    /// Used by FundingAlphaConfig.PerSymbolEntryThreshold / PerSymbolExitThreshold so
+    /// operator can tighten DOGE to 0.5bp while LTC stays at 1bp without re-introducing
+    /// noise on the larger symbol.
+    /// </summary>
+    private static Dictionary<string, decimal>? ParseSymbolThresholdCsv(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return null;
+        var dict = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var parts = entry.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 && decimal.TryParse(parts[1], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) && v > 0m)
+            {
+                dict[parts[0]] = v;
+            }
+        }
+        return dict.Count == 0 ? null : dict;
     }
 
     private static decimal ParseDecimal(string? raw, decimal fallback)
