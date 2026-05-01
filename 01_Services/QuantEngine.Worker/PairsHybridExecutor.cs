@@ -573,7 +573,7 @@ public sealed class PairsHybridExecutor : BackgroundService
             _portfolio.ClosedPositions.Add(position);
             _portfolio.Cash += netPnL;
             _portfolio.DailyPnL += netPnL;
-            _portfolio.EquityCurve.Add(_portfolio.TotalEquity);
+            _portfolio.AppendEquity(_portfolio.TotalEquity);
         }
         _persistence?.RequestWrite(_portfolio);
 

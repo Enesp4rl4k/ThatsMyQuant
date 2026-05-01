@@ -296,7 +296,7 @@ public sealed class PairsTradingPaperHostedService : BackgroundService
             _portfolio.ClosedPositions.Add(position);
             _portfolio.Cash += trade.PnL;
             _portfolio.DailyPnL += trade.PnL;
-            _portfolio.EquityCurve.Add(_portfolio.TotalEquity);
+            _portfolio.AppendEquity(_portfolio.TotalEquity);
         }
 
         _logger.LogInformation(

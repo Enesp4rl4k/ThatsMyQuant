@@ -171,7 +171,7 @@ public sealed class PaperTradingHostedService : BackgroundService
             paperService.Portfolio.InitialBalance = account.Balance;
             paperService.Portfolio.Cash = account.Balance;
             paperService.Portfolio.EquityCurve.Clear();
-            paperService.Portfolio.EquityCurve.Add(paperService.Portfolio.TotalEquity);
+            paperService.Portfolio.AppendEquity(paperService.Portfolio.TotalEquity);
             _logger.LogWarning(
                 "Paper:SyncWithExchange — seeded from real {Provider} account {Id}: ${Balance:N2} (was ${Prev:N2}).",
                 account.Provider, account.Id, account.Balance, previousCash);

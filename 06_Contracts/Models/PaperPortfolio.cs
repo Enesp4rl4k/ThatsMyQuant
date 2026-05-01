@@ -19,6 +19,30 @@ public class PaperPortfolio
     public decimal DailyPnL { get; set; }
     public DateTime DailyPnLResetDate { get; set; } = DateTime.UtcNow.Date;
 
+    /// <summary>
+    /// Hard cap on EquityCurve length. One entry per closed trade across multiple
+    /// hosted services; over months of paper running (and especially when a strategy
+    /// fires more often than expected) this list grows unbounded and bloats the JSON
+    /// snapshot file. 10,000 entries covers 5+ years of typical trade frequency
+    /// (~5 trades/day on a multi-symbol portfolio) and stays under ~200 KB serialized.
+    /// </summary>
+    public const int EquityCurveMaxEntries = 10_000;
+
+    /// <summary>
+    /// Append a new equity reading and trim the oldest entries when the cap is
+    /// exceeded. Drop-oldest preserves the recent shape of the curve, which is what
+    /// the dashboard / drawdown analytics actually look at.
+    /// </summary>
+    public void AppendEquity(decimal equity)
+    {
+        EquityCurve.Add(equity);
+        if (EquityCurve.Count > EquityCurveMaxEntries)
+        {
+            var excess = EquityCurve.Count - EquityCurveMaxEntries;
+            EquityCurve.RemoveRange(0, excess);
+        }
+    }
+
     public decimal TotalEquity => Cash + OpenPositions.Sum(p => p.IsLeveragedPaperPosition ? p.UnrealizedPnL : p.MarketValue);
     public decimal TotalPnL => TotalEquity - InitialBalance;
     public double TotalPnLPercent => InitialBalance > 0 ? (double)(TotalPnL / InitialBalance * 100) : 0;
