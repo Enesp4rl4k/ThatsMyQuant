@@ -932,6 +932,7 @@ public sealed class FundingHybridExecutor : BackgroundService
             EntryFunding: sig.CurrentFunding,
             EntryTimeUtc: nowUtc,
             ClientOrderId: clientOrderId,
+            EntryMarkPrice: sig.ReferencePrice,
             ExecutionMode: _mode == HybridMode.Live ? "OKX_DEMO" : "PAPER_DRYRUN",
             EntryRealFee: storedEntryFee);
 
@@ -1127,10 +1128,32 @@ public sealed class FundingHybridExecutor : BackgroundService
             ?? (actualExitPrice * existing.Qty * _config.RoundTripCostRate);
         var netPnl = pnl - costApplied;
 
+        // 2026-05-01 slippage instrumentation: decompose execution cost into Fee bucket
+        // (already captured) + Slippage bucket (mark-vs-fill diff). Sign convention:
+        // POSITIVE slippage = money lost to market impact (worse than mark price).
+        //   Long entry buy : fill > mark  → slip = (fill - mark) × qty > 0 (paid up)
+        //   Long exit sell : fill < mark  → slip = (mark - fill) × qty > 0 (sold down)
+        //   Short entry sell: fill < mark → slip = (mark - fill) × qty > 0
+        //   Short exit buy : fill > mark  → slip = (fill - mark) × qty > 0
+        // Null when mark prices weren't captured (e.g. legacy positions).
+        decimal? realSlippage = null;
+        var entryMark = existing.EntryMarkPrice;
+        var exitMark  = sig.ReferencePrice;
+        if (entryMark > 0m && exitMark > 0m && _mode == HybridMode.Live)
+        {
+            decimal entrySlip = existing.Side == TradeSide.Buy
+                ? (existing.EntryPrice - entryMark) * existing.Qty
+                : (entryMark - existing.EntryPrice) * existing.Qty;
+            decimal exitSlip = existing.Side == TradeSide.Buy
+                ? (exitMark - actualExitPrice) * existing.Qty
+                : (actualExitPrice - exitMark) * existing.Qty;
+            realSlippage = entrySlip + exitSlip;
+        }
+
         _logger.LogWarning(
-            "[{Mode}] FUND_HYBRID CLOSE {Symbol} {Side}->{OppSide} qty={Qty:F6} entry={Entry:F4} exit={Exit:F4} gross=${G:F4} cost=${C:F4} net=${N:F4} costSrc={Src} reason={R}",
+            "[{Mode}] FUND_HYBRID CLOSE {Symbol} {Side}->{OppSide} qty={Qty:F6} entry={Entry:F4} exit={Exit:F4} gross=${G:F4} fee=${F:F4} slip=${S:F4} net=${N:F4} costSrc={Src} reason={R}",
             _mode, symbol, existing.Side, oppositeSide, existing.Qty, existing.EntryPrice, actualExitPrice,
-            pnl, costApplied, netPnl, realRoundTripFee.HasValue ? "MEASURED" : "ESTIMATED", sig.Reasoning);
+            pnl, costApplied, realSlippage ?? 0m, netPnl, realRoundTripFee.HasValue ? "MEASURED" : "ESTIMATED", sig.Reasoning);
 
         // Mirror to PaperPortfolio (canonical record of the trade lifecycle).
         var position = new PaperPosition
@@ -1150,7 +1173,10 @@ public sealed class FundingHybridExecutor : BackgroundService
             ExecutionMode = _mode == HybridMode.Live ? "OKX_DEMO" : "PAPER_DRYRUN",
             PromotionStage = "Paper",
             NetFunding = existing.EntryFunding,
-            RealFeePaid = realRoundTripFee
+            RealFeePaid = realRoundTripFee,
+            RealSlippagePaid = realSlippage,
+            EntryMarkPrice = entryMark > 0m ? entryMark : null,
+            ExitMarkPrice = exitMark > 0m ? exitMark : null
         };
         lock (_portfolio)
         {
@@ -1337,7 +1363,13 @@ public sealed class FundingHybridExecutor : BackgroundService
         // into PaperPosition.RealFeePaid so TCA / ShadowAudit / promotion-gate all see
         // measured cost instead of the assumed RoundTripCostRate. Default 0 = unknown
         // (dry-run mode or back-compat state files).
-        decimal EntryRealFee = 0m);
+        decimal EntryRealFee = 0m,
+        // 2026-05-01: capture mark price used for the entry decision (sig.ReferencePrice
+        // — typically the last candle close or top-of-book mid). Compared against the
+        // actual venue fill price, the difference IS the entry-leg slippage in quote
+        // currency. Stored alongside the actual EntryPrice so close-time slippage
+        // computation works without re-fetching market data.
+        decimal EntryMarkPrice = 0m);
 
     private enum HybridMode { Off, DryRun, Live }
 }
