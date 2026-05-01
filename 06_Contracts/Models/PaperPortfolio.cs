@@ -115,6 +115,32 @@ public class PaperPosition
     /// </summary>
     public decimal? RealFeePaid { get; set; }
 
+    /// <summary>
+    /// Slippage paid as quote-currency cost: (mark_price - actual_fill_price) × qty,
+    /// signed so that "fill worse than mark" is positive (= money lost to slippage).
+    /// Sums entry-leg + exit-leg slippage. Null when the executor didn't observe the
+    /// mark price at fill time (pure simulation, or mark price unavailable).
+    ///
+    /// Decomposing leakage into Fee + Slippage + Funding lets TCA / promotion gate
+    /// distinguish "venue is expensive" (fee) from "we hit the book at bad prices"
+    /// (slippage = strategy's market-impact problem) from "funding accrual against
+    /// us" (rate management). The 28→10 bp fee fix was a Fee-bucket lesson; this
+    /// field unblocks the Slippage-bucket version of the same audit.
+    /// </summary>
+    public decimal? RealSlippagePaid { get; set; }
+
+    /// <summary>
+    /// Reference mark price observed at entry (mid-of-book or candle close,
+    /// whichever the executor used as decision price). Stored alongside the
+    /// actual filled <see cref="EntryPrice"/> so TCA can compute slippage
+    /// retroactively even on positions where <see cref="RealSlippagePaid"/>
+    /// wasn't populated at close time. Null when not captured.
+    /// </summary>
+    public decimal? EntryMarkPrice { get; set; }
+
+    /// <summary>Same idea for exit leg.</summary>
+    public decimal? ExitMarkPrice { get; set; }
+
     public decimal MarketValue => Side == TradeSide.Buy
         ? Quantity * CurrentPrice
         : -(Quantity * CurrentPrice);

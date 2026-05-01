@@ -25,4 +25,13 @@ public interface ISymbolCostProfileProvider
     /// fallback was configured — callers should then stick with BacktestCostModel defaults.
     /// </summary>
     Task<SymbolCostProfile?> GetAsync(string symbol, CancellationToken ct = default);
+
+    /// <summary>
+    /// Fetch a cost profile calibrated for a SPECIFIC historical timestamp. Allows backtests
+    /// to use the spread that prevailed around <paramref name="atUtc"/> instead of the
+    /// (legacy) "today's spread × all of history" approximation. Implementations that lack
+    /// historical data fall back to <see cref="GetAsync"/> semantics.
+    /// </summary>
+    Task<SymbolCostProfile?> GetAsAtAsync(string symbol, DateTime atUtc, CancellationToken ct = default)
+        => GetAsync(symbol, ct);
 }
