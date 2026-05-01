@@ -99,3 +99,9 @@ paper_portfolio.json
 telegram_settings.json
 exchange_credentials.dpapi
 exchange_settings.json
+
+# WPF temp build artifacts (Visual Studio autogen, see archeology audit 2026-05-01)
+**/*_wpftmp.csproj
+
+# Worktrees (claude-code agents) — ephemeral, never commit
+.claude/worktrees/

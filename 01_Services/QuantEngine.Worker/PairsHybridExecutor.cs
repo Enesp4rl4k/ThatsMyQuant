@@ -54,6 +54,7 @@ public sealed class PairsHybridExecutor : BackgroundService
 
     private readonly GlobalCircuitBreaker? _globalBreaker;
     private readonly NotionalExposureGuard? _notionalGuard;
+    private readonly DrawdownLadderGate? _drawdownLadder;
     private readonly PaperPortfolioPersistenceService? _persistence;
 
     public PairsHybridExecutor(
@@ -65,10 +66,12 @@ public sealed class PairsHybridExecutor : BackgroundService
         string tierName = "",
         GlobalCircuitBreaker? globalBreaker = null,
         NotionalExposureGuard? notionalGuard = null,
+        DrawdownLadderGate? drawdownLadder = null,
         PaperPortfolioPersistenceService? persistence = null)
     {
         _globalBreaker = globalBreaker;
         _notionalGuard = notionalGuard;
+        _drawdownLadder = drawdownLadder;
         _persistence = persistence;
         _logger = logger;
         _serviceProvider = serviceProvider;
@@ -358,6 +361,21 @@ public sealed class PairsHybridExecutor : BackgroundService
                 "PairsHybrid[{Tier}] {Pair} entry BLOCKED: at least one leg orphan-halted (Y={Y} X={X}).",
                 _tierName, pair.Key, pair.SymbolY, pair.SymbolX);
             return;
+        }
+
+        // Drawdown ladder kill-switch (2026-05-01 risk playbook). Same gate as Funding tier.
+        if (_drawdownLadder is not null)
+        {
+            _drawdownLadder.Initialize(
+                _portfolio.InitialBalance > 0m ? _portfolio.InitialBalance : 5_000m,
+                _portfolio.TotalEquity);
+            if (!_drawdownLadder.CanOpenEntry(_portfolio.TotalEquity, out var reason))
+            {
+                _logger.LogWarning(
+                    "PairsHybrid[{Tier}] {Pair} entry BLOCKED by DrawdownLadder: {Reason}",
+                    _tierName, pair.Key, reason);
+                return;
+            }
         }
 
         // LongSpread = Long Y, Short X.    ShortSpread = Short Y, Long X.
