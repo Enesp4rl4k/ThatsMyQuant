@@ -1697,11 +1697,25 @@ static void AnalyzeStrategyBucket(Dictionary<string, List<(double Net, double Gr
         var sr = ThatsMyQuant.Application.Strategy.StatisticalSignificance.SharpePerTrade(nets);
         var (lo, hi, _) = ThatsMyQuant.Application.Strategy.StatisticalSignificance.BootstrapSharpeCI(nets, iterations: 5000);
         var dsr = ThatsMyQuant.Application.Strategy.StatisticalSignificance.DeflatedSharpeRatioProbability(nets, symCount, sr);
+        // Verdict guards against (a) degenerate samples where stdev≈0 produced false
+        // PASS in earlier runs (now blocked by StatisticalSignificance.MinDegenerateStdev),
+        // and (b) tiny samples where any t-stat is statistically meaningless even if it
+        // crosses the threshold by chance. Bonferroni claim requires N ≥ 5 minimum.
         string verdict;
-        if (Math.Abs(t) >= requiredAbsT) verdict = "BONFERRONI-PASS";
+        bool insufficient = nets.Count < 5;
+        if (insufficient) verdict = "INSUFFICIENT-N";
+        else if (Math.Abs(t) >= requiredAbsT) verdict = "BONFERRONI-PASS";
         else if (Math.Abs(t) >= 1.96) verdict = "raw-95-only";
         else verdict = "noise";
-        Console.WriteLine($"{kv.Key,-10} {nets.Count,4} {total,8:F3} {mean,8:F4} {t,7:F2} {sr,7:F3} {lo,10:F3} {hi,10:F3} {dsr,8:F3} {verdict}");
+        // For N<5, print "—" placeholder for t-stat / Sharpe / CI / DSR — these
+        // numbers exist mathematically but are statistically meaningless at small n
+        // and previously displayed as absurd magnitudes (e.g. t = -11057). The pooled
+        // section below still shows them so operators see SOMETHING, but per-symbol
+        // breakdowns at N<5 are clearly marked as not-yet-decidable.
+        if (insufficient)
+            Console.WriteLine($"{kv.Key,-10} {nets.Count,4} {total,8:F3} {mean,8:F4}     —      —          —          —        —    {verdict}");
+        else
+            Console.WriteLine($"{kv.Key,-10} {nets.Count,4} {total,8:F3} {mean,8:F4} {t,7:F2} {sr,7:F3} {lo,10:F3} {hi,10:F3} {dsr,8:F3} {verdict}");
     }
 
     // Aggregate: pooled across symbols (treats every trade as one observation).
