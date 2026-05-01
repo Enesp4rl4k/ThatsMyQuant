@@ -320,6 +320,17 @@ switch (runMode)
         // psychology guard. -3% basis → 24h freeze, -6% → 72h, -10% → manual reset.
         // Existing positions still managed; only NEW entries blocked.
         builder.Services.AddSingleton<DrawdownLadderGate>();
+        // DailyBackupHostedService — daily snapshot of SQLite + state files to a rotating
+        // backup folder. Disk failure / corruption mid-trade is the single risk that can
+        // zero account history overnight (Risk #5 from 2026-05-01 playbook). Postgres flip
+        // is "ready" but un-deployed; until then this is the canonical safety net.
+        builder.Services.AddHostedService<DailyBackupHostedService>();
+        // CandidatePool — Tier B+ foundation. EdgeLab discovers candidates, this service
+        // holds the registry of currently-running parallel paper validations. Singleton:
+        // multiple components consult/update the pool (CLI commands, future GenericStrategyRunner,
+        // future Telegram /candidates command). Persisted to disk so worker restart preserves
+        // candidate registry. No live-trading impact until B+ runners are wired (deferred).
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.CandidatePool>();
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>();
         builder.Services.AddHostedService<ExchangeBalanceSyncHostedService>();
         builder.Services.AddHostedService<PaperTradingHostedService>();
