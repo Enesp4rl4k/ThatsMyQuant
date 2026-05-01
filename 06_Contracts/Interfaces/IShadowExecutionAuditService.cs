@@ -25,11 +25,26 @@ public sealed record ShadowAuditOptions
     /// <summary>Fallback notional when a trade's PnL/PnLPercent can't infer it.</summary>
     public decimal AssumedNotionalPerTrade { get; init; } = 1_000m;
 
-    /// <summary>Extra commission added on top of the impact model. OKX taker spot = 8 bps.</summary>
-    public decimal AdditionalCommissionBps { get; init; } = 8m;
+    /// <summary>
+    /// Extra commission added on top of the impact model. 2026-05-01: dropped to 0 by
+    /// default. Trade.PnL on a paper-or-live close already reflects net-of-fees PnL
+    /// (post-T0.3 commit 4004f67: RealFeePaid is captured from venue and applied to
+    /// netPnl by the executor). Adding 8 bps here on top double-counted fees ~3× on
+    /// the 2026-05-01 ShadowAudit run that flagged 137% aggregate leakage — the
+    /// alert was an artifact of the cost model mismatch, not real edge erosion.
+    /// Operators who want to test "what if fees were higher" can pass an explicit
+    /// override; the default no longer assumes the trade PnL is gross.
+    /// </summary>
+    public decimal AdditionalCommissionBps { get; init; } = 0m;
 
-    /// <summary>Half-spread paid on each leg in addition to impact.</summary>
-    public decimal AdditionalSpreadBps { get; init; } = 3m;
+    /// <summary>
+    /// Half-spread on each leg in addition to impact. 2026-05-01: dropped to 0 by
+    /// default for the same reason as AdditionalCommissionBps — the trade fill price
+    /// was the actual venue fill (Trade.EntryPrice / ExitPrice), so the spread was
+    /// already paid in those numbers. Square-root market-impact model still simulates
+    /// what the fill WOULD have been at larger size, which is the audit's real value.
+    /// </summary>
+    public decimal AdditionalSpreadBps { get; init; } = 0m;
 
     /// <summary>Bars summed around an entry to approximate daily volume (24 on a 1h tf).</summary>
     public int VolumeWindowBarsForDailyVolume { get; init; } = 24;
