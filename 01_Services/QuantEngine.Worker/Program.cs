@@ -168,6 +168,10 @@ builder.Services.AddScoped<ReconciliationAgent>();
 builder.Services.AddSingleton<IOperatorAlertPublisher, DbOperatorAlertPublisher>();
 // Phase 13 — heartbeat for the System Health page in the dashboard
 builder.Services.AddHostedService<ServiceHeartbeatHostedService>();
+// 2026-05-01 — operator-visible CMD heartbeat (single-line, every 60s, prefix [HB])
+// Different from ServiceHeartbeatHostedService (silent DB write for dashboard);
+// this one is for the human staring at the terminal: "is the bot ÇALIŞIYOR right now?"
+builder.Services.AddHostedService<WorkerHeartbeatConsoleHostedService>();
 
 var hasOkxCredentials =
     !string.IsNullOrWhiteSpace(builder.Configuration["OKX:ApiKey"]) &&
