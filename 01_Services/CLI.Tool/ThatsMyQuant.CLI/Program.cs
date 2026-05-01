@@ -1605,10 +1605,22 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
     //   return distribution.
     var portfolioArg = args.FirstOrDefault(a => a.StartsWith("--portfolio=", StringComparison.OrdinalIgnoreCase));
     var feeBpsArg    = args.FirstOrDefault(a => a.StartsWith("--fee-bps-leg=", StringComparison.OrdinalIgnoreCase));
+    var byStrategy   = args.Any(a => a.Equals("--by-strategy", StringComparison.OrdinalIgnoreCase));
+    var strategyFilter = args.FirstOrDefault(a => a.StartsWith("--strategy=", StringComparison.OrdinalIgnoreCase));
+    var sinceFilter  = args.FirstOrDefault(a => a.StartsWith("--since=", StringComparison.OrdinalIgnoreCase));
     string portfolioPath = portfolioArg is null
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "paper_portfolio.json")
         : portfolioArg.Substring("--portfolio=".Length);
     decimal feeBpsPerLeg = feeBpsArg is null ? 5m : decimal.Parse(feeBpsArg.Substring("--fee-bps-leg=".Length), System.Globalization.CultureInfo.InvariantCulture);
+    string? strategyTagFilter = strategyFilter is null ? null : strategyFilter.Substring("--strategy=".Length);
+    DateTime? sinceUtc = null;
+    if (sinceFilter is not null)
+    {
+        sinceUtc = DateTime.Parse(
+            sinceFilter.Substring("--since=".Length),
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal);
+    }
 
     if (!File.Exists(portfolioPath))
     {
@@ -1619,7 +1631,11 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
     using var doc = System.Text.Json.JsonDocument.Parse(json);
     if (!doc.RootElement.TryGetProperty("ClosedPositions", out var closed)) { Console.WriteLine("No closed positions."); return; }
 
-    var bySymbol = new Dictionary<string, List<(double Net, double Gross, decimal? RealFee)>>(StringComparer.OrdinalIgnoreCase);
+    // Per-strategy buckets (Bonferroni family is LOCAL to each strategy — funding and pairs
+    // each have their own pre-registered hypothesis with its own family m). Pooling across
+    // strategies inflates the family and is statistically wrong. The --by-strategy switch
+    // (or default when StrategyTag column is present) reports each strategy in isolation.
+    var bySymbolPerStrategy = new Dictionary<string, Dictionary<string, List<(double Net, double Gross, decimal? RealFee)>>>(StringComparer.OrdinalIgnoreCase);
     foreach (var t in closed.EnumerateArray())
     {
         var sym = t.GetProperty("Symbol").GetString() ?? "";
@@ -1628,6 +1644,14 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
         var qty = t.GetProperty("Quantity").GetDecimal();
         var side = t.GetProperty("Side").GetInt32();
         if (entry == 0) continue;
+        var strategy = t.TryGetProperty("StrategyTag", out var stEl) ? (stEl.GetString() ?? "Unknown") : "Unknown";
+        if (strategyTagFilter is not null && !string.Equals(strategy, strategyTagFilter, StringComparison.OrdinalIgnoreCase))
+            continue;
+        if (sinceUtc.HasValue && t.TryGetProperty("ExitTime", out var exitEl)
+            && DateTime.TryParse(exitEl.GetString(), System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var et)
+            && et < sinceUtc.Value)
+            continue;
         var grossD = side == 0 ? (exit - entry) * qty : (entry - exit) * qty;
         decimal? rfp = null;
         if (t.TryGetProperty("RealFeePaid", out var rfpEl) && rfpEl.ValueKind == System.Text.Json.JsonValueKind.Number)
@@ -1635,9 +1659,28 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
         var assumedFee = (entry + exit) * qty * (feeBpsPerLeg / 10_000m);
         var feeApplied = rfp ?? assumedFee;
         var net = grossD - feeApplied;
-        if (!bySymbol.ContainsKey(sym)) bySymbol[sym] = new();
-        bySymbol[sym].Add(((double)net, (double)grossD, rfp));
+
+        if (!bySymbolPerStrategy.TryGetValue(strategy, out var bySymBucket))
+        {
+            bySymBucket = new Dictionary<string, List<(double, double, decimal?)>>(StringComparer.OrdinalIgnoreCase);
+            bySymbolPerStrategy[strategy] = bySymBucket;
+        }
+        if (!bySymBucket.ContainsKey(sym)) bySymBucket[sym] = new();
+        bySymBucket[sym].Add(((double)net, (double)grossD, rfp));
     }
+
+    // Print one block per strategy (each is an INDEPENDENT pre-registered family).
+    foreach (var stratEntry in bySymbolPerStrategy.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+    {
+        Console.WriteLine();
+        Console.WriteLine($"╔══ Strategy: {stratEntry.Key} ══");
+        AnalyzeStrategyBucket(stratEntry.Value);
+    }
+    return;
+}
+
+static void AnalyzeStrategyBucket(Dictionary<string, List<(double Net, double Gross, decimal? RealFee)>> bySymbol)
+{
 
     var symCount = bySymbol.Count;
     var requiredAbsT = ThatsMyQuant.Application.Strategy.StatisticalSignificance.BonferroniRequiredAbsT(symCount, 0.05);
