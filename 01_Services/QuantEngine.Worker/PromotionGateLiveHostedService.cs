@@ -107,8 +107,28 @@ public sealed class PromotionGateLiveHostedService : BackgroundService
         var gate = scope.ServiceProvider.GetRequiredService<FormalPromotionGate>();
         var decision = gate.EvaluatePaperToLive(paperResult, paperResult);
 
+        // Statistical-rigor overlay (2026-04-30 audit + 2026-05-01 gate-wiring).
+        // Even when the basic Paper→Live gate clears, require Bonferroni-corrected
+        // significance + bootstrap CI lower bound > 0 + Deflated Sharpe Ratio ≥ 0.95.
+        // Universe size = number of distinct symbols traded in the window (Bonferroni
+        // family m). Gate is OVERLAID — basic decision can pass while rigor fails;
+        // operator sees both verdicts and decides whether to override (rigor failure
+        // means the apparent edge could be sampling noise / multi-comparison artifact).
+        PromotionDecision? rigorDecision = null;
+        if (decision.Approved && recent.Count >= 2)
+        {
+            var perTradePnls = recent
+                .Select(p => p.RealizedPnL)
+                .ToList();
+            var universeSize = recent.Select(p => p.Symbol).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            rigorDecision = gate.EvaluateStatisticalRigor("PaperToLive", perTradePnls, Math.Max(1, universeSize));
+        }
+
         var verdictLine = decision.Approved
-            ? $"APPROVED for live: passed {decision.PassedCriteria.Count}/{decision.PassedCriteria.Count + decision.FailedCriteria.Count} criteria."
+            ? (rigorDecision?.Approved == false
+                ? $"BASIC GATE PASSED but RIGOR FAILED: {string.Join(" ; ", rigorDecision.FailedCriteria)} — sample insufficient for Bonferroni / DSR clear; promotion held."
+                : $"APPROVED for live: passed {decision.PassedCriteria.Count}/{decision.PassedCriteria.Count + decision.FailedCriteria.Count} criteria"
+                  + (rigorDecision is not null ? $" + rigor pass ({rigorDecision.PassedCriteria.Count} stats checks)" : ""))
             : $"REJECTED for live: {decision.FailedCriteria.Count} criteria failed → {string.Join(" ; ", decision.FailedCriteria)}";
 
         _logger.LogWarning(

@@ -108,6 +108,37 @@ public class PairsTradingEngine : INotificationHandler<Signal>, IPairDiagnostics
     {
     }
 
+    /// <summary>
+    /// Snapshot the Kalman posterior (β + variance + R) for cross-restart persistence.
+    /// Returns null when no Kalman is active (cold start / OLS-only mode). The snapshot
+    /// is a 32-byte value type, cheap to serialise. Pair caller (PairsHybridExecutor)
+    /// writes it to its tier state JSON on shutdown and restores via TryRestoreKalman
+    /// at startup — preventing the 1-2 hour stale-β trading window after a restart.
+    /// </summary>
+    public KalmanPosteriorSnapshot? SnapshotKalman()
+        => _kalman?.Snapshot();
+
+    /// <summary>
+    /// Restore a previously-persisted Kalman posterior. Skips silently when the
+    /// snapshot is degenerate (NaN / non-finite) — letting the cold-start OLS seed
+    /// rebuild instead of poisoning trading with corrupted state.
+    /// </summary>
+    public bool TryRestoreKalman(KalmanPosteriorSnapshot snapshot)
+    {
+        if (_kalman is null)
+        {
+            // First-time restore: seed a Kalman with the persisted posterior values.
+            // Process variance comes from options; observation variance from the snapshot.
+            _kalman = new KalmanHedgeRatioFilter(
+                initialBeta: snapshot.Beta,
+                initialVariance: Math.Max(1e-9, snapshot.BetaVariance),
+                processVariance: _options.KalmanProcessVariance,
+                observationVariance: Math.Max(1e-9, snapshot.ObservationVariance));
+            return true;
+        }
+        return _kalman.TryRestore(snapshot);
+    }
+
     /// <summary>Current pair diagnostics. Safe to read from any thread — snapshot is a
     /// value-copy at call time.</summary>
     public PairDiagnosticSnapshot GetDiagnostics() => new(
