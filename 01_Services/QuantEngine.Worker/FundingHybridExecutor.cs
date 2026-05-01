@@ -271,6 +271,7 @@ public sealed class FundingHybridExecutor : BackgroundService
 
     private readonly GlobalCircuitBreaker? _globalBreaker;
     private readonly NotionalExposureGuard? _notionalGuard;
+    private readonly DrawdownLadderGate? _drawdownLadder;
     private readonly PaperPortfolioPersistenceService? _persistence;
 
     // Symbol-level circuit breaker (2026-04-27).
@@ -298,10 +299,12 @@ public sealed class FundingHybridExecutor : BackgroundService
         string tierName = "",
         GlobalCircuitBreaker? globalBreaker = null,
         NotionalExposureGuard? notionalGuard = null,
+        DrawdownLadderGate? drawdownLadder = null,
         PaperPortfolioPersistenceService? persistence = null)
     {
         _globalBreaker = globalBreaker;
         _notionalGuard = notionalGuard;
+        _drawdownLadder = drawdownLadder;
         _persistence = persistence;
         _logger = logger;
         _serviceProvider = serviceProvider;
@@ -785,6 +788,24 @@ public sealed class FundingHybridExecutor : BackgroundService
                 "FundingHybrid[{Tier}] {Symbol} entry SKIPPED: within settlement-skip window ({Min} min after a UTC funding boundary).",
                 _tierName, symbol, _config.SettlementSkipMinutes);
             return;
+        }
+
+        // Drawdown ladder kill-switch (2026-05-01 risk playbook). Operator-psychology guard:
+        // -3% basis → 24h freeze, -6% → 72h, -10% → manual reset required. Existing
+        // positions still managed normally; only NEW entries blocked. Pre-committed in code
+        // so a panicked operator cannot bypass with a one-off config tweak.
+        if (_drawdownLadder is not null)
+        {
+            _drawdownLadder.Initialize(
+                _portfolio.InitialBalance > 0m ? _portfolio.InitialBalance : 5_000m,
+                _portfolio.TotalEquity);
+            if (!_drawdownLadder.CanOpenEntry(_portfolio.TotalEquity, out var reason))
+            {
+                _logger.LogWarning(
+                    "FundingHybrid[{Tier}] {Symbol} entry BLOCKED by DrawdownLadder: {Reason}",
+                    _tierName, symbol, reason);
+                return;
+            }
         }
 
         // Liquidation-distance safety: at the chosen leverage, the adverse price move

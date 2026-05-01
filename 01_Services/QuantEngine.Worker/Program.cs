@@ -316,6 +316,10 @@ switch (runMode)
         // TryReserve before opening; aborts if would breach cap. Released on close.
         // Prevents cash overrun when many tiers fire simultaneously.
         builder.Services.AddSingleton<NotionalExposureGuard>();
+        // DrawdownLadderGate — tiered kill-switch from 2026-05-01 risk playbook. Operator-
+        // psychology guard. -3% basis → 24h freeze, -6% → 72h, -10% → manual reset.
+        // Existing positions still managed; only NEW entries blocked.
+        builder.Services.AddSingleton<DrawdownLadderGate>();
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>();
         builder.Services.AddHostedService<ExchangeBalanceSyncHostedService>();
         builder.Services.AddHostedService<PaperTradingHostedService>();
@@ -333,6 +337,7 @@ switch (runMode)
             tierName: "Long",
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            drawdownLadder: sp.GetService<DrawdownLadderGate>(),
             persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new PairsHybridExecutor(
             sp.GetRequiredService<ILogger<PairsHybridExecutor>>(),
@@ -343,6 +348,7 @@ switch (runMode)
             tierName: "Short",
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            drawdownLadder: sp.GetService<DrawdownLadderGate>(),
             persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
         // Funding execution path:
         //   - When Funding:HybridMode=off → legacy FundingAlphaPaperHostedService mirrors closed
@@ -368,6 +374,7 @@ switch (runMode)
             tierName: "Long",
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            drawdownLadder: sp.GetService<DrawdownLadderGate>(),
             persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new FundingHybridExecutor(
             sp.GetRequiredService<ILogger<FundingHybridExecutor>>(),
@@ -379,6 +386,7 @@ switch (runMode)
             tierName: "Short",
             globalBreaker: sp.GetService<GlobalCircuitBreaker>(),
             notionalGuard: sp.GetService<NotionalExposureGuard>(),
+            drawdownLadder: sp.GetService<DrawdownLadderGate>(),
             persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>()));
         builder.Services.AddHostedService<HybridReconciliationHostedService>();
         builder.Services.AddHostedService<DailyTelegramDigestHostedService>();
