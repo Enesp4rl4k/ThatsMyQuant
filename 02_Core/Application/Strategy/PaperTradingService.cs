@@ -346,7 +346,7 @@ public class PaperTradingService
         Portfolio.DailyPnL += exitPnl;
         Portfolio.ClosedPositions.Add(position);
         Portfolio.OpenPositions.Remove(position);
-        Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
+        Portfolio.AppendEquity(Portfolio.TotalEquity);
 
         await (_promotionService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
         await (_exitPolicyLearningService?.RecordPaperState(Portfolio.ClosedPositions) ?? Task.CompletedTask);
@@ -448,7 +448,7 @@ public class PaperTradingService
                 Portfolio.Cash -= closeNotional;
         }
         Portfolio.DailyPnL += partialPnl;
-        Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
+        Portfolio.AppendEquity(Portfolio.TotalEquity);
 
         _logger.LogInformation("PAPER PARTIAL EXIT: {Symbol} Qty={Qty} PnL=${PnL:N2} ({Reason})",
             position.Symbol, exitQuantity, partialPnl, action.Reason);
@@ -643,7 +643,7 @@ public class PaperTradingService
                 Portfolio.Cash += openNotional;
         }
         Portfolio.OpenPositions.Add(newPosition);
-        Portfolio.EquityCurve.Add(Portfolio.TotalEquity);
+        Portfolio.AppendEquity(Portfolio.TotalEquity);
 
         _logger.LogInformation("PAPER TRADE: {Side} {Qty} {Symbol} @ ${Price:F2} | SL=${SL:F2} TP=${TP:F2}",
             decision.Side, quantity, symbol, currentPrice, decision.StopLoss, decision.TakeProfit);

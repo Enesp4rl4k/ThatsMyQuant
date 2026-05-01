@@ -412,8 +412,18 @@ public sealed class FundingAlphaBacktestRunner
         double variance = returns.Sum(r => (r - mean) * (r - mean)) / (returns.Length - 1);
         double std = Math.Sqrt(variance);
         if (std < 1e-12) return 0.0;
-        // Trade-level Sharpe annualized assuming ~3 funding cycles/day (8h) ≈ 1095/year.
-        return (mean / std) * Math.Sqrt(1095.0);
+        // 2026-04-30 audit fix: was hardcoded √1095 (assumes 3 funding cycles/day × 365).
+        // Real entry-trigger rate is far lower (50-150 trades/year on funding alpha when
+        // threshold ≥1bp), so the constant inflated reported Sharpe by ~3-5×. Use the
+        // ACTUAL trade frequency observed in the sample. Fall back to √1095 only when
+        // the trade timestamps span < 1 day (insufficient horizon to estimate rate).
+        var firstEntry = trades.Min(t => t.EntryTimeUtc);
+        var lastExit = trades.Max(t => t.ExitTimeUtc);
+        var spanDays = (lastExit - firstEntry).TotalDays;
+        var tradesPerYear = spanDays >= 1.0
+            ? trades.Count / (spanDays / 365.0)
+            : 1095.0;
+        return (mean / std) * Math.Sqrt(tradesPerYear);
     }
 
     private sealed record OpenPosition(

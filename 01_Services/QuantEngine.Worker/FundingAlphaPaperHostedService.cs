@@ -256,7 +256,7 @@ public sealed class FundingAlphaPaperHostedService : BackgroundService
             _portfolio.ClosedPositions.Add(position);
             _portfolio.Cash += trade.NetPnl;
             _portfolio.DailyPnL += trade.NetPnl;
-            _portfolio.EquityCurve.Add(_portfolio.TotalEquity);
+            _portfolio.AppendEquity(_portfolio.TotalEquity);
         }
 
         _logger.LogInformation(

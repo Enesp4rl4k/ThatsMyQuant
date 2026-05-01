@@ -195,7 +195,7 @@ public sealed class FundingHybridExecutor : BackgroundService
                     _portfolio.ClosedPositions.Add(ghostClosed);
                     _portfolio.Cash += netPnl;
                     _portfolio.DailyPnL += netPnl;
-                    _portfolio.EquityCurve.Add(_portfolio.TotalEquity);
+                    _portfolio.AppendEquity(_portfolio.TotalEquity);
                 }
                 _persistence?.RequestWrite(_portfolio);
 
@@ -1142,7 +1142,7 @@ public sealed class FundingHybridExecutor : BackgroundService
             _portfolio.ClosedPositions.Add(position);
             _portfolio.Cash += netPnl;
             _portfolio.DailyPnL += netPnl;
-            _portfolio.EquityCurve.Add(_portfolio.TotalEquity);
+            _portfolio.AppendEquity(_portfolio.TotalEquity);
         }
         _persistence?.RequestWrite(_portfolio);
 
