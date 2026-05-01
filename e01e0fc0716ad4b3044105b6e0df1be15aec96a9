@@ -1,0 +1,25 @@
+01_Services/CLI.Tool/ThatsMyQuant.CLI/Program.cs
+  994a9e37d0902156 1608-1610,1615-1623,1634-1638,1647-1654,1662-1677,1679-1683
+docs/PRE_REGISTERED_HYPOTHESIS_pairs_long.md
+  994a9e37d0902156 1-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.17",
+  "base_commit_sha": "e01e0fc0716ad4b3044105b6e0df1be15aec96a9",
+  "prompts": {
+    "994a9e37d0902156": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9b53b664-d5d7-4d2a-8b01-f9b7a9ed63f0",
+        "model": "unknown"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "messages": [],
+      "total_additions": 2028,
+      "total_deletions": 1852,
+      "accepted_lines": 2028,
+      "overriden_lines": 0
+    }
+  }
+}
