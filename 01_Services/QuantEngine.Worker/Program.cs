@@ -266,9 +266,32 @@ else if (isBinanceMode && hasBinanceCredentials)
 }
 else
 {
-    builder.Services.AddSingleton<IExchangeService>(sp => 
+    // 2026-05-01 fail-fast guard: in paper/live mode, falling through to Mock+Chaos is ALWAYS
+    // an operator/launcher bug — credentials weren't injected (e.g. raw `Start-Process exe`
+    // bypassed Launch-PaperTrade-Clean.ps1, which is what decrypts the DPAPI blob and pushes
+    // OKX__ApiKey/SecretKey/Passphrase into the env). Silent fallback to Mock means hours of
+    // "why no fills" debugging while the bot pretends to scan but every order is fake.
+    // Refuse to start so the mistake surfaces in the first second, not after a heartbeat tick.
+    var tmqModeGuard = (Environment.GetEnvironmentVariable("TMQ_MODE") ?? string.Empty).ToLowerInvariant();
+    var allowMockOverride = string.Equals(
+        Environment.GetEnvironmentVariable("TMQ_ALLOW_MOCK_FALLBACK"),
+        "true", StringComparison.OrdinalIgnoreCase);
+    if ((tmqModeGuard == "paper" || tmqModeGuard == "live") && !isMockMode && !allowMockOverride)
     {
-        var inner = new MockBrokerService(sp.GetRequiredService<ILogger<MockBrokerService>>()); 
+        var msg =
+            $"REFUSING TO START: TMQ_MODE={tmqModeGuard} but no real-exchange credentials were resolved " +
+            $"(ExchangeMode={selectedExchangeMode}, OKX_Creds={hasOkxCredentials}, Binance_Creds={hasBinanceCredentials}). " +
+            "Falling back to Mock+Chaos in paper mode silently corrupts edge validation. " +
+            "Fix: launch via Launch-PaperTrade-Clean.ps1 (decrypts DPAPI blob, exports OKX__ApiKey/SecretKey/Passphrase). " +
+            "If you genuinely want Mock for a unit-test-style smoke run, set TMQ_EXCHANGE_MODE=Mock or TMQ_ALLOW_MOCK_FALLBACK=true.";
+        Log.Fatal(msg);
+        Console.Error.WriteLine("[FATAL] " + msg);
+        Environment.Exit(78); // EX_CONFIG (sysexits.h) — config error, not transient
+    }
+
+    builder.Services.AddSingleton<IExchangeService>(sp =>
+    {
+        var inner = new MockBrokerService(sp.GetRequiredService<ILogger<MockBrokerService>>());
         return new ChaosExchangeDecorator(inner, sp.GetRequiredService<ILogger<ChaosExchangeDecorator>>());
     });
 
