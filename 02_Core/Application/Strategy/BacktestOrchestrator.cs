@@ -494,7 +494,36 @@ public sealed class BacktestOrchestrator
             if (_mcBootstrap is not null && result.Trades.Count >= 20)
                 bootstrapReport = _mcBootstrap.Analyse(result, iterations: 1000, randomSeed: 42);
             if (_promotionGate is not null)
+            {
                 promotionDecision = _promotionGate.EvaluateBacktestToPaper(result);
+
+                // Statistical-rigor overlay (2026-05-01 wire — already exists in
+                // FormalPromotionGate, now consumed at backtest stage too). Even when the
+                // basic gate APPROVES, require Bonferroni-corrected significance + bootstrap
+                // CI lower>0 + DSR≥0.95 against the symbol universe. Without this, a single
+                // 50-trade backtest with Sharpe 1.5 sails through despite the underlying
+                // family-wise alpha being uncorrected. Universe size = number of distinct
+                // symbols in the trades; fall back to 1 for single-symbol backtests.
+                if (promotionDecision.Approved && result.Trades.Count >= 5)
+                {
+                    var perTradePnls = result.Trades.Select(t => (decimal)t.PnL).ToList();
+                    var universeSize = result.Trades.Select(t => result.Symbol).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+                    var rigor = _promotionGate.EvaluateStatisticalRigor("BacktestToPaper", perTradePnls, Math.Max(1, universeSize));
+                    if (!rigor.Approved)
+                    {
+                        var failed = new List<string>(promotionDecision.FailedCriteria);
+                        failed.AddRange(rigor.FailedCriteria.Select(f => $"Rigor: {f}"));
+                        promotionDecision = promotionDecision with
+                        {
+                            Approved = false,
+                            FailedCriteria = failed
+                        };
+                        _logger.LogWarning(
+                            "Promotion withdrawn by statistical rigor overlay for {Symbol}: {Rigor}",
+                            result.Symbol, string.Join(" ; ", rigor.FailedCriteria));
+                    }
+                }
+            }
             if (_shadowAudit is not null && result.Trades.Count > 0)
             {
                 shadowAuditReport = _shadowAudit.Audit(result, candles);

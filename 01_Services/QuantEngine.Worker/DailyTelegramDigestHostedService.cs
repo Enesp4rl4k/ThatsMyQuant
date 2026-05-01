@@ -185,6 +185,43 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
             }
             sb.AppendLine();
 
+            // ── Bonferroni progress widget (2026-05-01 risk playbook) ──
+            // Per pre-registered hypothesis, where ARE we vs the stopping rule? Operator
+            // discipline lever: this shows "how many trades to verdict" instead of leaving
+            // the operator guessing and tempted to peek at intermediate stats.
+            sb.AppendLine("*Bonferroni-Test Progress*");
+            // Funding hypothesis: m=7, N_target=200, required |t|≥2.69
+            var fundingTrades = closed.Where(p => p.StrategyTag != null && p.StrategyTag.StartsWith("FundingAlpha", StringComparison.OrdinalIgnoreCase)
+                                                  && p.RealFeePaid.HasValue).ToList();
+            // Pairs hypothesis: m=3, N_target=50, required |t|≥2.39
+            var pairsTrades = closed.Where(p => p.StrategyTag != null && p.StrategyTag.StartsWith("PairsTrading", StringComparison.OrdinalIgnoreCase)
+                                                && p.RealFeePaid.HasValue).ToList();
+            sb.AppendLine($"  Funding:  N={fundingTrades.Count,3}/200  ({(fundingTrades.Count * 100.0 / 200):F0}%)  required |t|≥2.69");
+            sb.AppendLine($"  Pairs:    N={pairsTrades.Count,3}/50   ({(pairsTrades.Count * 100.0 / 50):F0}%)   required |t|≥2.39");
+            // ETA estimate: average trades/day from current sample window
+            if (fundingTrades.Count >= 2)
+            {
+                var span = (fundingTrades.Max(p => p.ExitTime ?? DateTime.UtcNow) - fundingTrades.Min(p => p.EntryTime)).TotalDays;
+                if (span >= 0.5)
+                {
+                    var rate = fundingTrades.Count / span;
+                    var remain = (200 - fundingTrades.Count) / Math.Max(0.1, rate);
+                    sb.AppendLine($"  Funding ETA: ~{remain:F0} days at current {rate:F2} trades/day");
+                }
+            }
+            if (pairsTrades.Count >= 2)
+            {
+                var span = (pairsTrades.Max(p => p.ExitTime ?? DateTime.UtcNow) - pairsTrades.Min(p => p.EntryTime)).TotalDays;
+                if (span >= 0.5)
+                {
+                    var rate = pairsTrades.Count / span;
+                    var remain = (50 - pairsTrades.Count) / Math.Max(0.1, rate);
+                    sb.AppendLine($"  Pairs ETA:   ~{remain:F0} days at current {rate:F2} trades/day");
+                }
+            }
+            sb.AppendLine($"  _NO MID-TEST DECISIONS — wait for stopping rule._");
+            sb.AppendLine();
+
             // ── Per-Symbol breakdown (which INSTRUMENT carried each edge) ──
             sb.AppendLine("*Per-Symbol Breakdown*");
             var bySymbol = closed.GroupBy(p => string.IsNullOrWhiteSpace(p.Symbol) ? "?" : p.Symbol);
