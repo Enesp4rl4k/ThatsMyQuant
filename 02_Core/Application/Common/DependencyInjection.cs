@@ -86,7 +86,13 @@ public static class DependencyInjection
         services.AddSingleton<HeartbeatMonitor>();
         services.AddHostedService<HeartbeatWatchdogHostedService>();
         services.AddHostedService<ReconciliationHostedService>();
-        services.AddHostedService<ThatsMyQuant.Application.Alerts.TelegramReadBotHostedService>();
+        // 2026-05-01: TelegramReadBotHostedService removed — duplicate of QuantEngine.Worker's
+        // TelegramCommandHostedService. AddThatsMyQuantApplication() is called from 5 hosts
+        // (CLI, ExecutionWorker, Listener.Api, QuantWorker, Dashboard); registering a long-poll
+        // bot here multiplied getUpdates pollers by ~5, producing the HTTP 409 conflict storm
+        // (Telegram allows only one poller per bot token). The Worker-tier
+        // TelegramCommandHostedService is the canonical bot — it covers /status /pnl /positions
+        // /help PLUS /digest (on-demand digest trigger). Single registration, single poller.
         services.AddSingleton<ThatsMyQuant.Application.Observability.IExchangeHealthProvider, ThatsMyQuant.Application.Observability.ExchangeHealthProvider>();
         services.AddHostedService<ThatsMyQuant.Application.Observability.ExchangeHealthProbeHostedService>();
         services.AddSingleton<MultiTimeframeConfluenceService>();
