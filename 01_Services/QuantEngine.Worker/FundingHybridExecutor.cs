@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Application.Diagnostics;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Application.Strategy.ProMode;
 using ThatsMyQuant.Contracts.Enums;
@@ -275,6 +276,7 @@ public sealed class FundingHybridExecutor : BackgroundService
     private readonly DrawdownLadderGate? _drawdownLadder;
     private readonly PaperPortfolioPersistenceService? _persistence;
     private readonly ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? _mlSampleStore;
+    private readonly ThatsMyQuant.Application.Risk.PortfolioRiskBlockState? _portfolioRiskBlock;
 
     // Symbol-level circuit breaker (2026-04-27).
     // The tier-wide breaker only trips at ~$30 daily loss; one chronically losing
@@ -291,6 +293,11 @@ public sealed class FundingHybridExecutor : BackgroundService
     private int _symbolMaxConsecutiveLosses;     // e.g. 3
     private decimal _symbolMaxDailyLossPctBasis; // e.g. 0.005 = 0.5% basis
 
+    // Optional: present iff Signal Diagnostics module is wired in DI. Operator-facing
+    // observability only — never gates trade decisions. Fire-and-forget; publish failures
+    // are caught at debug level and must NOT break the executor's main loop.
+    private readonly ISignalDiagnosticsRegistry? _diagnostics;
+
     public FundingHybridExecutor(
         ILogger<FundingHybridExecutor> logger,
         IServiceProvider serviceProvider,
@@ -303,13 +310,17 @@ public sealed class FundingHybridExecutor : BackgroundService
         NotionalExposureGuard? notionalGuard = null,
         DrawdownLadderGate? drawdownLadder = null,
         PaperPortfolioPersistenceService? persistence = null,
-        ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? mlSampleStore = null)
+        ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? mlSampleStore = null,
+        ThatsMyQuant.Application.Risk.PortfolioRiskBlockState? portfolioRiskBlock = null,
+        ISignalDiagnosticsRegistry? diagnostics = null)
     {
         _globalBreaker = globalBreaker;
         _notionalGuard = notionalGuard;
         _drawdownLadder = drawdownLadder;
         _persistence = persistence;
         _mlSampleStore = mlSampleStore;
+        _portfolioRiskBlock = portfolioRiskBlock;
+        _diagnostics = diagnostics;
         _logger = logger;
         _serviceProvider = serviceProvider;
         _configuration = configuration;
@@ -649,10 +660,19 @@ public sealed class FundingHybridExecutor : BackgroundService
             }
         }
 
+        // Effective threshold for diagnostics + per-symbol overrides match what the runner uses
+        // internally (FundingAlphaBacktestRunner.GetEffectiveEntryThreshold). Computed once here
+        // so the helper doesn't need to re-query config every publish.
+        var effThreshold = FundingAlphaBacktestRunner.GetEffectiveEntryThreshold(symbol, _config);
+        var hasOpenForDiag = _openPositions.ContainsKey(symbol);
+
         // Block new entries if circuit breaker tripped — but still allow exits to flatten.
         if (_circuitBreakerTripped && sig.Kind == FundingLiveSignalKind.WouldOpenNew)
         {
             _logger.LogWarning("FundingHybrid[{Tier}] {Symbol} entry suppressed: TIER circuit breaker tripped (dailyPnL={DPnL:F2})", _tierName, symbol, _dailyRealizedPnL);
+            PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                SignalDecision.SuppressedByCircuitBreakerTier,
+                $"TierCB dailyPnL={_dailyRealizedPnL:F2}");
             return;
         }
         // Global cross-tier circuit breaker — second line of defence.
@@ -660,6 +680,21 @@ public sealed class FundingHybridExecutor : BackgroundService
         {
             _logger.LogWarning("FundingHybrid[{Tier}] {Symbol} entry suppressed: GLOBAL circuit breaker tripped via {TripTier} (cumPnL={Pnl:F2})",
                 _tierName, symbol, _globalBreaker.TrippingTier, _globalBreaker.DailyRealizedPnl);
+            PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                SignalDecision.SuppressedByCircuitBreakerGlobal,
+                $"GlobalCB via {_globalBreaker.TrippingTier} cumPnL={_globalBreaker.DailyRealizedPnl:F2}");
+            return;
+        }
+        // 2026-05-07 (Sprint 3.2): PortfolioRiskLive enforcing — block new entries when
+        // VaR/CVaR snapshot has tripped. Existing positions can still close normally.
+        if (_portfolioRiskBlock is not null && _portfolioRiskBlock.BlockNewEntries && sig.Kind == FundingLiveSignalKind.WouldOpenNew)
+        {
+            _logger.LogWarning(
+                "FundingHybrid[{Tier}] {Symbol} entry suppressed: PORTFOLIO RISK BLOCK ({Reason}; trippedAt={Tripped:o})",
+                _tierName, symbol, _portfolioRiskBlock.Reason, _portfolioRiskBlock.TrippedAtUtc);
+            PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                SignalDecision.SuppressedByPortfolioRisk,
+                $"PortfolioRiskBlock: {_portfolioRiskBlock.Reason}");
             return;
         }
         // Symbol-level breaker (Fix 3) — block new entries for symbols that have
@@ -677,6 +712,9 @@ public sealed class FundingHybridExecutor : BackgroundService
         {
             _logger.LogWarning("FundingHybrid[{Tier}] {Symbol} entry suppressed: SYMBOL blacklisted today (consec losses={Cl} dailyPnL={Pnl:F2})",
                 _tierName, symbol, blacklistCl, blacklistPnl);
+            PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                SignalDecision.SuppressedByBlacklist,
+                $"SymbolBlacklist consecLosses={blacklistCl} dailyPnL={blacklistPnl:F2}");
             return;
         }
 
@@ -691,12 +729,21 @@ public sealed class FundingHybridExecutor : BackgroundService
                     _logger.LogInformation(
                         "FundingHybrid[{Tier}] {Sym} entry suppressed by macro pause ({Event}, T{Mins:+0;-0}m).",
                         _tierName, symbol, macroPause.EventName, macroPause.MinutesUntilEvent);
+                    PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                        SignalDecision.SuppressedByMacroPause,
+                        $"MacroPause:{macroPause.EventName} T{macroPause.MinutesUntilEvent:+0;-0}m");
                     break;
                 }
+                // Publish "Fired" intent here. HandleOpenAsync may republish with deeper
+                // SuppressedBy* (orphan halt, drawdown ladder kill) — last-write-wins.
+                PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                    SignalDecision.Fired, "WouldOpenNew → HandleOpen");
                 await HandleOpenAsync(symbol, sig, exchange, ct).ConfigureAwait(false);
                 break;
 
             case FundingLiveSignalKind.WouldClose when _openPositions.TryGetValue(symbol, out var existingForExit):
+                PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                    SignalDecision.Fired, "WouldClose → HandleClose");
                 await HandleCloseAsync(symbol, existingForExit, sig, exchange, ct).ConfigureAwait(false);
                 break;
 
@@ -755,15 +802,96 @@ public sealed class FundingHybridExecutor : BackgroundService
                     }
                 }
                 _logger.LogDebug("FundingHybrid {Symbol} holding open position (entry={Entry:F4})", symbol, sig.ReferencePrice);
+                PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                    SignalDecision.HoldOpen);
                 break;
 
             case FundingLiveSignalKind.None:
+                // Two flavours of None:
+                //   - "no signal" placeholder: |funding| below entry threshold (benign, common)
+                //     → BelowThreshold (helper auto-promotes to NearTrigger ≥80%)
+                //   - other reasoning: runner gate rejected (e.g. settlement-bar skip)
+                //     → SkippedByRunner with reason for operator visibility
+                if (!string.IsNullOrEmpty(sig.Reasoning)
+                    && !string.Equals(sig.Reasoning, "no signal", StringComparison.Ordinal))
+                {
+                    PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                        SignalDecision.SkippedByRunner, sig.Reasoning);
+                }
+                else
+                {
+                    PublishDiagnostic(symbol, sig, effThreshold, regime.Regime, hasOpenForDiag,
+                        SignalDecision.BelowThreshold);
+                }
                 break;
 
             default:
                 // WouldOpenNew but already open OR WouldClose but not in our state — log mismatch.
+                // No diagnostic publish: state is wrong, surfacing it as a "decision" would
+                // confuse the dashboard. The log warning is enough for ops debugging.
                 _logger.LogWarning("FundingHybrid {Symbol} state mismatch: signal={Kind} hasOpen={HasOpen}", symbol, sig.Kind, _openPositions.ContainsKey(symbol));
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Publishes a single per-iteration funding-signal snapshot to the diagnostics registry.
+    /// Funding semantics: <see cref="FundingLiveSignal.CurrentFunding"/> is the rate at the
+    /// latest bar (e.g. 0.00012 = 1.2bp). Threshold from <see cref="FundingAlphaBacktestRunner.GetEffectiveEntryThreshold"/>
+    /// — symmetric (long fires above +T, short below −T). Distance = |funding| / threshold × 100.
+    /// </summary>
+    /// <remarks>
+    /// Includes <paramref name="regime"/> in <see cref="SignalDiagnosticSnapshot.RegimeContext"/>
+    /// because funding-alpha sizing is regime-aware (Volatile = 1.0×, Trending = 0.8×,
+    /// Ranging = 0.5×, Unknown = 0.5×) and operators want to see why a fire was scaled down
+    /// even when the gate said "go".
+    /// </remarks>
+    private void PublishDiagnostic(
+        string symbol,
+        FundingLiveSignal sig,
+        decimal effectiveThreshold,
+        MarketRegime regime,
+        bool hasOpen,
+        SignalDecision decision,
+        string? reason = null)
+    {
+        if (_diagnostics is null) return;
+
+        try
+        {
+            var current = sig.CurrentFunding;
+            var distance = effectiveThreshold > 0m
+                ? Math.Abs(current) / effectiveThreshold * 100m
+                : 0m;
+
+            // Heads-up promotion: caller said "below threshold" but we're 80-99% close →
+            // upgrade to NearTrigger so the dashboard amber-flags it. Funding rates can spike
+            // intra-bar so this gives ops a few minutes of warning before a fire would land.
+            if (decision == SignalDecision.BelowThreshold && distance >= 80m && distance < 100m)
+                decision = SignalDecision.NearTrigger;
+
+            var snap = new SignalDiagnosticSnapshot(
+                UtcTimestamp: DateTime.UtcNow,
+                Tier: $"Funding:{(string.IsNullOrEmpty(_tierName) ? "Default" : _tierName)}",
+                StrategyTag: _strategyTag,
+                Key: symbol,
+                CurrentValue: current,
+                EntryThreshold: effectiveThreshold,
+                ExitThreshold: _config.ExitThreshold,
+                StopThreshold: null,
+                DistanceToTriggerPct: distance,
+                Decision: decision,
+                SkipOrSuppressReason: reason,
+                RegimeContext: regime.ToString(),
+                HasOpenPosition: hasOpen,
+                EstimatedNotionalIfFired: null);
+
+            _diagnostics.Publish(snap);
+        }
+        catch (Exception ex)
+        {
+            // Diagnostics is fire-and-forget — never break the executor's main loop.
+            _logger.LogDebug(ex, "Diagnostics publish failed for {Symbol}", symbol);
         }
     }
 
