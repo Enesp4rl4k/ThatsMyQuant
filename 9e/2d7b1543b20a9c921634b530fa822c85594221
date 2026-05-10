@@ -1,0 +1,27 @@
+01_Services/Listener.Api/Services/SignalDiagnosticsBroadcastService.cs
+  s_d24d549a5362a4::t_3eee8c9e343370 1-126
+01_Services/QuantEngine.Worker/EdgeLabSingleAssetHostedService.cs
+  s_d24d549a5362a4::t_d3c3b02ccfcc47 1-3,5-46,51-61,64-74,76-466,571-698
+  s_d24d549a5362a4::t_324e1dedd4c362 4
+  s_d24d549a5362a4::t_ee81b83a638978 467-543,545,548-570
+  s_d24d549a5362a4::t_16d9e7ff109b03 47-50,62-63,75
+  s_d24d549a5362a4::t_24a1b34ae6cdb6 544,546-547
+01_Services/Listener.Api/Hubs/SignalDiagnosticsHub.cs
+  s_d24d549a5362a4::t_837c22b23f6192 1-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "9e2d7b1543b20a9c921634b530fa822c85594221",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
