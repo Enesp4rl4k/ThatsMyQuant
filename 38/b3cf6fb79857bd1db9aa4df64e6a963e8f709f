@@ -1,0 +1,23 @@
+01_Services/QuantEngine.Worker/FundingHybridExecutor.cs
+  s_d24d549a5362a4::t_b89e51e05763cc 7
+  s_d24d549a5362a4::t_f25a298d289fe3 296-300,314-315,323
+  s_d24d549a5362a4::t_b196fdea2dc202 805-806,810-825,830-831,835-894
+  s_d24d549a5362a4::t_f79025573bca52 663-668,673-675,683-685,695-697,715-717,732-734,737-740,745-746
+  s_d24d549a5362a4::t_bd9b03df215627 279,313,322,686-694,895
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "38b3cf6fb79857bd1db9aa4df64e6a963e8f709f",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
