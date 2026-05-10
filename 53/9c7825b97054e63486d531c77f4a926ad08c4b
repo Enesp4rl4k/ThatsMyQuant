@@ -1,0 +1,25 @@
+01_Services/QuantEngine.Worker/Program.cs
+  s_d24d549a5362a4::t_f866c88846cc13 164-169
+  s_d24d549a5362a4::t_f6eb521900e563 281-285,290-291,420-547,614-636,646-671,673
+01_Services/Listener.Api/Endpoints/SignalDiagnosticsEndpoints.cs
+  s_d24d549a5362a4::t_0c53d53313f7ac 1-47
+01_Services/Listener.Api/Program.cs
+  s_d24d549a5362a4::t_c1e039cb9cf76a 296-307
+  s_d24d549a5362a4::t_9bb28f32afb442 455-456
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "539c7825b97054e63486d531c77f4a926ad08c4b",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
