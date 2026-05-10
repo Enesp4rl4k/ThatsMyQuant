@@ -1,0 +1,22 @@
+01_Services/QuantEngine.Worker/PairsHybridExecutor.cs
+  s_d24d549a5362a4::t_61837efe66ab40 335-337,345-347,362-364,367-371,376-377,383-384,401-402,404-410,419-482
+  s_d24d549a5362a4::t_e4049a2c98d1f3 7
+  s_d24d549a5362a4::t_3841797f5cdee1 61-64,77-78,85
+  s_d24d549a5362a4::t_896f9ee397a4b2 278-288,298-302,388-400,403,483-485
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "26f6b9406a8177c36b3c7e94bf83217dd71a3778",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
