@@ -1,0 +1,122 @@
+05_Tests/ThatsMyQuant.Tests/Diagnostics/SignalDiagnosticsRegistryTests.cs
+  s_d24d549a5362a4::t_dd19c050721e23 1-134
+03_Infrastructure/Data.Persistence/Diagnostics/SignalDiagnosticsRegistry.cs
+  s_d24d549a5362a4::t_9818fdf74ebf43 1-58
+02_Core/Application/Diagnostics/ISignalDiagnosticsRegistry.cs
+  s_d24d549a5362a4::t_2db67804e2d135 1-42
+02_Core/Application/Diagnostics/SignalDiagnosticSnapshot.cs
+  s_d24d549a5362a4::t_e96c7478746273 1-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "ca97d0e38c1a13fe9d01c20d01f44b01df1cbc42",
+  "prompts": {
+    "0c4472862d0c82a6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4c557265-e049-4d60-b634-20d35994b262",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 1086,
+      "total_deletions": 65,
+      "accepted_lines": 1004,
+      "overriden_lines": 0
+    },
+    "1c5cea520b4cc22d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ae1b351-6220-425f-a48d-8f494e6fd657",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 1792,
+      "total_deletions": 61,
+      "accepted_lines": 1729,
+      "overriden_lines": 0
+    },
+    "21ca651468c426eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1940766b-44c3-4866-bf36-7d4719f8483f",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 3770,
+      "total_deletions": 3332,
+      "accepted_lines": 1810,
+      "overriden_lines": 0
+    },
+    "48ea90f0050b2b9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63dc3350-f97a-4ec9-ae47-d3eba89a881a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 169,
+      "total_deletions": 96,
+      "accepted_lines": 96,
+      "overriden_lines": 0
+    },
+    "a7c789612b3130c4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "797bc02c-ad55-48e9-8ea8-6334f2256c22",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 8,
+      "total_deletions": 0,
+      "accepted_lines": 8,
+      "overriden_lines": 0
+    },
+    "b982dfae1502bc74": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "51c6adab-443e-4e9d-974c-4d14cab29ca5",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 4155,
+      "total_deletions": 1487,
+      "accepted_lines": 4107,
+      "overriden_lines": 0
+    },
+    "ccf56cf9f13035cc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "212b60b1-37fd-4e94-8d0b-480cc7e2fb5a",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 36,
+      "total_deletions": 0,
+      "accepted_lines": 36,
+      "overriden_lines": 0
+    },
+    "ede7571c49dea26d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "458190d9-a07c-4061-bf33-071b427f5db4",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 112,
+      "total_deletions": 0,
+      "accepted_lines": 112,
+      "overriden_lines": 0
+    }
+  },
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
