@@ -293,6 +293,18 @@ if (isOkxMode)
     builder.Services.AddHostedService(sp => sp.GetRequiredService<OkxOrderBookSubscriber>());
 }
 builder.Services.AddHostedService<PortfolioBroadcastWorker>();
+
+// Signal Diagnostics — registry is a singleton SHARED with the worker process.
+// In Listener.Api the registry will be populated by the worker (which writes via its
+// own DI singleton); since these are separate processes today, the in-memory registry
+// here will be EMPTY unless the broadcast service is co-hosted with executors.
+// For the current single-process bot, this is fine: ThatsMyQuant.Bot.exe hosts
+// BOTH executors and (transitively) the listener API in dev — see Worker Program.cs
+// where the registry is registered as singleton and shared across all hosted services.
+builder.Services.AddSingleton<ThatsMyQuant.Application.Diagnostics.ISignalDiagnosticsRegistry,
+    ThatsMyQuant.Infrastructure.Diagnostics.SignalDiagnosticsRegistry>();
+builder.Services.AddHostedService<SignalDiagnosticsBroadcastService>();
+
 builder.Services.AddSingleton<WritableSettingsStore>();
 builder.Services.AddHostedService<OperatorAlertBridgeWorker>();
 builder.Services.AddSingleton<ThatsMyQuant.Contracts.Interfaces.IOperatorAlertPublisher, MediatorOperatorAlertPublisher>();
@@ -440,5 +452,7 @@ app.MapPost("/webhook", async (Signal signal, HttpContext context, IMediator med
 });
 
 app.MapHub<MarketDataHub>("/market-hub");
+app.MapHub<SignalDiagnosticsHub>("/signal-diagnostics-hub");
+app.MapSignalDiagnosticsEndpoints();
 
 await app.RunAsync();
