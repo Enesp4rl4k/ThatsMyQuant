@@ -161,6 +161,12 @@ builder.Services.AddSingleton<SignalWriterChannel>();
 builder.Services.AddHostedService<QuantPersistenceWorker>();
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
+// Signal Diagnostics — singleton in-memory registry shared across all hybrid executors
+// (Funding/Pairs/EdgeLab) and the broadcast service. Read-only observability layer; never
+// gates trade decisions. Worker-scope only — Listener.Api's own registration in its
+// Program.cs is for the same DI shape but a separate process instance (when split).
+builder.Services.AddSingleton<ThatsMyQuant.Application.Diagnostics.ISignalDiagnosticsRegistry,
+    ThatsMyQuant.Infrastructure.Diagnostics.SignalDiagnosticsRegistry>();
 builder.Services.AddScoped<ITradeRepository, TradeRepository>();
 builder.Services.AddScoped<ReconciliationAgent>();
 // Cross-process operator alert publisher — INSERTs into OperatorAlertEvents,
@@ -272,11 +278,17 @@ else
     // OKX__ApiKey/SecretKey/Passphrase into the env). Silent fallback to Mock means hours of
     // "why no fills" debugging while the bot pretends to scan but every order is fake.
     // Refuse to start so the mistake surfaces in the first second, not after a heartbeat tick.
+    //
+    // 2026-05-07 hardening: empty TMQ_MODE also triggers the guard. Previously the bypass
+    // path (raw `dotnet run`) didn't set TMQ_MODE at all, so guard was skipped and worker
+    // ran 24h in Mock+Chaos before being noticed. Default-secure: empty TMQ_MODE is treated
+    // as paper (since this is the only sensible default for an operator-launched run).
     var tmqModeGuard = (Environment.GetEnvironmentVariable("TMQ_MODE") ?? string.Empty).ToLowerInvariant();
     var allowMockOverride = string.Equals(
         Environment.GetEnvironmentVariable("TMQ_ALLOW_MOCK_FALLBACK"),
         "true", StringComparison.OrdinalIgnoreCase);
-    if ((tmqModeGuard == "paper" || tmqModeGuard == "live") && !isMockMode && !allowMockOverride)
+    var isProtectedMode = tmqModeGuard == "paper" || tmqModeGuard == "live" || string.IsNullOrEmpty(tmqModeGuard);
+    if (isProtectedMode && !isMockMode && !allowMockOverride)
     {
         var msg =
             $"REFUSING TO START: TMQ_MODE={tmqModeGuard} but no real-exchange credentials were resolved " +
@@ -405,6 +417,134 @@ switch (runMode)
         //     (dry-run). The legacy mirror service stays registered but its config check skips
         //     execution when HybridMode != off.
         builder.Services.AddHostedService<FundingAlphaPaperHostedService>();
+        // EdgeLabSignalHostedService — consumes EdgeLab's signals/<strategy>/latest.json
+        // bridge file (Quantlab repo) and rebalances the OKX paper book to match
+        // target_weights. Contract: signals/README.md §"Bot Integration Contract".
+        // Disabled until EdgeLab:InputDir is configured and EdgeLab:Enabled=true.
+        builder.Services.Configure<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSignalOptions>(
+            builder.Configuration.GetSection(
+                ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSignalOptions.SectionName));
+        // Singleton — append-only JSONL store for dry-run intended orders. Daily digest
+        // reads this to render the "EdgeLab Dry-Run (last 24h)" section. Path defaults
+        // to %LocalAppData%\ThatsMyQuant\edgelab_dryrun_log.jsonl.
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabDryRunLedger>();
+        // Singleton — synthetic position book + JSONL hypothetical-PnL ledger.
+        // Synthetic portfolio: per-cycle EdgeLab-only positions, drives delta math
+        // (instead of zero baseline or contaminated OKX net) and persists across
+        // worker restarts. Reconciliation ledger: per-cycle hypothetical PnL row;
+        // promotion gate (future) reads it to evaluate live readiness.
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSyntheticPortfolio>();
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabReconciliationLedger>();
+        builder.Services.AddHostedService<EdgeLabSignalHostedService>();
+        // Additional EdgeLab strategies (dry-run only, never auto-promoted). Quantlab adds new
+        // signal streams under signals/<strategy>/; each one needs its own hosted-service instance
+        // with its OWN per-strategy ledger files so synthetic position / dry-run log / reconciliation
+        // paths don't fight each other (the singletons above are reserved for the canonical
+        // realized_vol_4h_xs_reverse strategy). Read EdgeLab:AdditionalStrategies from config —
+        // missing/empty array is a no-op so removing strategies is also safe.
+        // Promotion gate (per memory funding_universe_rebuild_2026_05_03): N≥30 trades + Sharpe≥0.5
+        // + DSR p>0.7 before flipping any to live.
+        // Periodic paper-shadow Sharpe / cumulative-PnL emitter for ALL EdgeLab strategies.
+        // Reads each strategy's reconciliation ledger every 6h (configurable) and logs one
+        // summary line per strategy — operator can grep `[paper-shadow]` to track real
+        // Sharpe converging vs. backtest figures, especially for the 2026-05-03 strategies
+        // whose reported Sharpes (5.27 / 7.68 / 3.13) need real-execution validation.
+        builder.Services.AddHostedService<EdgeLabPaperShadowMonitor>();
+        // EdgeLabRealizedPnLDumper — daily CSV dump of cycle-level realized PnL to
+        // Quantlab/data/realized_pnl/<strategy>/<date>.csv. Critical for the $2K
+        // capital cycle (master plan v2): realized vs backtest gap calibration.
+        // Quantlab side reads these files via scripts/sanity_realized_vs_backtest.py.
+        builder.Services.AddHostedService<EdgeLabRealizedPnLDumperHostedService>();
+        var additionalEdgeLabStrategies = builder.Configuration
+            .GetSection("EdgeLab:AdditionalStrategies").Get<string[]>() ?? Array.Empty<string>();
+        foreach (var strategyName in additionalEdgeLabStrategies)
+        {
+            var stratNameCaptured = strategyName;  // closure capture
+            builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+            {
+                var baseOpts = sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<
+                    ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSignalOptions>>().Value;
+                var perStratOpts = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSignalOptions
+                {
+                    Enabled = baseOpts.Enabled,
+                    InputDir = baseOpts.InputDir,
+                    Strategy = stratNameCaptured,
+                    Timeframe = baseOpts.Timeframe,
+                    PollIntervalSeconds = baseOpts.PollIntervalSeconds,
+                    MinDeltaUsd = baseOpts.MinDeltaUsd,
+                    OrderType = baseOpts.OrderType,
+                    HybridMode = "dry-run",  // forced — new candidates always start dry-run
+                };
+                var dataDir = System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ThatsMyQuant");
+                var dryRun = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabDryRunLedger(
+                    System.IO.Path.Combine(dataDir, $"edgelab_dryrun_log_{stratNameCaptured}.jsonl"));
+                var synth = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSyntheticPortfolio(
+                    System.IO.Path.Combine(dataDir, $"edgelab_synthetic_{stratNameCaptured}.json"));
+                var recon = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabReconciliationLedger(
+                    System.IO.Path.Combine(dataDir, $"edgelab_dryrun_pnl_{stratNameCaptured}.jsonl"));
+                return new EdgeLabSignalHostedService(
+                    sp.GetRequiredService<ILogger<EdgeLabSignalHostedService>>(),
+                    sp,
+                    Microsoft.Extensions.Options.Options.Create(perStratOpts),
+                    sp.GetRequiredService<ThatsMyQuant.Contracts.Models.PaperPortfolio>(),
+                    dryRun, synth, recon,
+                    sp.GetService<ThatsMyQuant.Contracts.Interfaces.IOperatorAlertPublisher>());
+            });
+        }
+
+        // EdgeLabSingleAsset — single-asset (directional) signal consumer added 2026-05-08
+        // for the $2K capital cycle (master plan: Quantlab/hypotheses/MASTER_PLAN_2K_2026_05_08.md).
+        // Reads same signals/<strategy>/latest.json contract but with metadata.strategy_kind ==
+        // "single_asset"; one hosted-service instance per entry in EdgeLabSingleAsset:Strategies.
+        // Defaults to disabled — operator opts in by setting Enabled=true and listing strategies.
+        // Order placement is currently scaffolded as dry-run-log only; live order wiring is a
+        // TODO inside EdgeLabSingleAssetHostedService.ApplyCycle (operator review required).
+        var singleAssetSection = builder.Configuration.GetSection(
+            ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions.SectionName);
+        var singleAssetOpts = singleAssetSection.Get<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions>()
+                              ?? new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions();
+        if (singleAssetOpts.Enabled && singleAssetOpts.Strategies != null)
+        {
+            // Per-strategy timeframe parsing — single-asset strategies may run on
+            // different cadences (1h for ada/funding_zscore variants, daily for
+            // unlock-event strategies). For now, use a fixed 1h fallback; operator
+            // can extend to per-strategy timeframe map in future.
+            var defaultTimeframe = TimeSpan.FromHours(1);
+            foreach (var saName in singleAssetOpts.Strategies)
+            {
+                var saNameCaptured = saName;
+                builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+                {
+                    var dataDir = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "ThatsMyQuant");
+                    var saDryRun = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabDryRunLedger(
+                        System.IO.Path.Combine(dataDir, $"edgelab_dryrun_log_{saNameCaptured}.jsonl"));
+                    var saSynth = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSyntheticPortfolio(
+                        System.IO.Path.Combine(dataDir, $"edgelab_synthetic_{saNameCaptured}.json"));
+                    var saRecon = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabReconciliationLedger(
+                        System.IO.Path.Combine(dataDir, $"edgelab_dryrun_pnl_{saNameCaptured}.jsonl"));
+                    // [Sprint 2 — 2026-05-10] Per-strategy override resolved at DI-registration
+                    // time so each hosted-service instance carries its own weight + promotion gate
+                    // independently. Falls back to equal-share defaults if the operator did not
+                    // configure an override for this strategy.
+                    var saOverride = singleAssetOpts.GetEffectiveOverride(saNameCaptured);
+                    return new EdgeLabSingleAssetHostedService(
+                        sp.GetRequiredService<ILogger<EdgeLabSingleAssetHostedService>>(),
+                        sp,
+                        singleAssetOpts,
+                        saNameCaptured,
+                        defaultTimeframe,
+                        sp.GetRequiredService<ThatsMyQuant.Contracts.Models.PaperPortfolio>(),
+                        saDryRun, saSynth, saRecon,
+                        sp.GetService<ThatsMyQuant.Contracts.Interfaces.IOperatorAlertPublisher>(),
+                        saOverride);
+                });
+            }
+        }
+
         // Barbell tier registrations:
         //   - Long  : conviction bucket (high threshold, big size, low lev, low frequency)
         //   - Short : scalp bucket (low threshold, small size, high lev, high frequency)
@@ -471,6 +611,29 @@ switch (runMode)
         // Real-time TCA — every 30min runs cost-leakage analysis on rolling closed-trade window.
         // Read-only; alerts when leakage > threshold (default 30%).
         builder.Services.AddHostedService<TcaLiveAnalyzerHostedService>();
+        // 2026-05-07 (Sprint 1.1): Funding-edge decay early-warning. Per-symbol rolling-N
+        // (funding_received / fees_paid) ratio. Alerts when ratio < 1.5 (carry edge eroding
+        // before Sharpe shows it). Premortem #1 detector. Read-only; downstream PromotionGate
+        // (Sprint 2 SPRT) consumes the state file as a hard veto on live promotion.
+        builder.Services.AddHostedService<FundingFeeRatioMonitorHostedService>();
+        // 2026-05-07 (Sprint 1.2): Demo→live execution drift early-warning. Pulls last 30d
+        // fills from OKX /trade/fills-history and computes maker/(maker+taker) using the
+        // execType field. Alerts when ratio < 0.75 (queue race lost, fees ~2x assumed).
+        // Premortem #4 detector.
+        builder.Services.AddHostedService<MakerFillRatioMonitorHostedService>();
+        // 2026-05-07 (Sprint 1.3): Diversification-myth detector. Pairwise Pearson correlation
+        // across daily-bucketed PnL of every active StrategyTag (rolling 60d). Off-diagonal
+        // > 0.4 = factor concentration disguised as diversification. Premortem #5 detector.
+        // Sprint 3.1 HRP allocator consumes the matrix as input weights.
+        builder.Services.AddHostedService<PairwiseCorrelationMonitorHostedService>();
+        // 2026-05-07 (Sprint 3.2): Convert PortfolioRiskLive from observational to enforcing.
+        // Singleton flag tripped when VaR/CVaR breach observed; executor pre-entry path
+        // refuses new positions until cleared by next snapshot.
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Risk.PortfolioRiskBlockState>();
+        // 2026-05-07 (Sprint 3.1 Phase 1): HRP allocator compute & log. Reads daily PnL
+        // covariance, runs Lopez de Prado 2016 HRP, persists weights to state file.
+        // Phase 2 (next sprint) wires weights into executor sizing.
+        builder.Services.AddHostedService<HrpAllocatorMonitorHostedService>();
         // Shadow execution audit — every 60min, re-prices closed trades through square-root impact
         // model + spread + commission and compares to paper PnL. Tells us if alpha is decaying
         // because EDGE is failing or EXECUTION is failing.
@@ -480,8 +643,34 @@ switch (runMode)
         builder.Services.AddHostedService<PortfolioRiskLiveHostedService>();
         // Daily 23:55 UTC paper→live promotion gate verdict (objective criteria, not gut feel).
         builder.Services.AddHostedService<PromotionGateLiveHostedService>();
+        // [Sprint 3 — 2026-05-10] Daily 23:30 UTC per-strategy realized-PnL digest.
+        // With 11 EdgeLab strategies + Sprint 2 attribution fix, the operator needs daily
+        // visibility on which edges are earning vs decaying.
+        builder.Services.AddHostedService<PerStrategyDigestHostedService>();
+        // [Sprint 4 — 2026-05-10] Markout snapshot service — every fill gets +1s/+10s/+60s/+300s
+        // mark-price snapshots for adverse-selection TCA. Singleton ledger so restart-safe append.
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.MarkoutLedger>(
+            _ => new ThatsMyQuant.Application.Strategy.EdgeLab.MarkoutLedger());
+        builder.Services.AddHostedService<MarkoutSnapshotHostedService>();
+        // [Sprint 5 — 2026-05-10] B1 partial: boot-time basis sanity check. ExchangeBalanceSync
+        // overwrites PaperPortfolio.Cash + InitialBalance with the real OKX demo balance after
+        // ~5s. The historical "$96K vs $5K" mismatch was a stale persistence snapshot from before
+        // the $2K-cycle pivot. We log the trio (config, OKX-demo-after-sync, runtime) once on
+        // first heartbeat so operator + future post-mortems can verify they agreed at boot.
+        builder.Services.AddHostedService<BasisSanityCheckHostedService>();
+
+        // [Sprint 6 — 2026-05-10] Quantlab integration contract: per-strategy realized-Sharpe
+        // kill switch. KillSwitchState is a singleton JSON-backed mutex; the hosted service
+        // re-evaluates hourly and on boot. EdgeLabSingleAssetHostedService reads multiplier
+        // every cycle and applies it to its sizing target.
+        builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabKillSwitchState>(
+            _ => new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabKillSwitchState());
+        // Register concrete + as IHostedService so EdgeLabSingleAssetHostedService can inject the
+        // concrete to push threshold updates without polluting the IHostedService interface.
+        builder.Services.AddSingleton<EdgeLabKillSwitchHostedService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<EdgeLabKillSwitchHostedService>());
         Log.Information(
-            "QuantEngine.Worker: TMQ_MODE=paper. Hosted services: ExchangeBalanceSync, PaperTrading (directional disabled), Pairs, FundingMirror+FundingHybrid, PairsDiscovery, TcaLiveAnalyzer, ShadowAuditLive, PortfolioRiskLive, PromotionGateLive, DailyTelegramDigest.");
+            "QuantEngine.Worker: TMQ_MODE=paper. Hosted services: ExchangeBalanceSync, PaperTrading (directional disabled), Pairs, FundingMirror+FundingHybrid, PairsDiscovery, TcaLiveAnalyzer, ShadowAuditLive, PortfolioRiskLive, PromotionGateLive, DailyTelegramDigest, PerStrategyDigest, MarkoutSnapshot.");
         break;
 
     case "live":
