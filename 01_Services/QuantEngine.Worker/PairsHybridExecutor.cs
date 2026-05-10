@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using ThatsMyQuant.Application.Diagnostics;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Enums;
 using ThatsMyQuant.Contracts.Interfaces;
@@ -57,6 +58,10 @@ public sealed class PairsHybridExecutor : BackgroundService
     private readonly DrawdownLadderGate? _drawdownLadder;
     private readonly PaperPortfolioPersistenceService? _persistence;
     private readonly ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? _mlSampleStore;
+    // Optional: present iff the Signal Diagnostics module is wired in DI. Operator-facing
+    // observability only — never gates trade decisions. Read-only path: Publish() is fire-and-forget,
+    // failure to publish must NOT break the executor's main loop.
+    private readonly ISignalDiagnosticsRegistry? _diagnostics;
 
     public PairsHybridExecutor(
         ILogger<PairsHybridExecutor> logger,
@@ -69,13 +74,15 @@ public sealed class PairsHybridExecutor : BackgroundService
         NotionalExposureGuard? notionalGuard = null,
         DrawdownLadderGate? drawdownLadder = null,
         PaperPortfolioPersistenceService? persistence = null,
-        ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? mlSampleStore = null)
+        ThatsMyQuant.Application.MachineLearning.IStrategySampleStore? mlSampleStore = null,
+        ISignalDiagnosticsRegistry? diagnostics = null)
     {
         _globalBreaker = globalBreaker;
         _notionalGuard = notionalGuard;
         _drawdownLadder = drawdownLadder;
         _persistence = persistence;
         _mlSampleStore = mlSampleStore;
+        _diagnostics = diagnostics;
         _logger = logger;
         _serviceProvider = serviceProvider;
         _configuration = configuration;
@@ -268,6 +275,17 @@ public sealed class PairsHybridExecutor : BackgroundService
         }
         capital = adjustedCapital;
 
+        // Pre-registered Z-thresholds from appsettings (Strategy:PairsTrading:{Tier}:Z*).
+        // Were silently ignored before 2026-05-02 — runner used its hardcoded defaults
+        // (entry=2.0, exit=0.5) instead of the doc'd Long=2.5/0.3 or Short=1.5/0.2 — i.e.
+        // every "live" pairs decision was made on the wrong gate. InvariantCulture parse
+        // because Turkish OS locale uses comma as decimal separator.
+        var ic = System.Globalization.CultureInfo.InvariantCulture;
+        var nsAny = System.Globalization.NumberStyles.Any;
+        double cfgEntryZ = double.TryParse(Cfg("ZScoreEntry"), nsAny, ic, out var eZ) ? eZ : 0.0;
+        double cfgExitZ  = double.TryParse(Cfg("ZScoreExit"),  nsAny, ic, out var xZ) ? xZ : 0.0;
+        double cfgStopZ  = double.TryParse(Cfg("ZScoreStop"),  nsAny, ic, out var sZ) ? sZ : 0.0;
+
         var pairOptions = new PairsTradingOptions
         {
             SymbolA = pair.SymbolY,
@@ -277,6 +295,11 @@ public sealed class PairsHybridExecutor : BackgroundService
             MinCorrelation = 0.30,
             MaxHedgeRatio = 15.00m,
             MinHedgeRatio = 0.10m,
+            // 0 means "fall back to runner default"; non-zero overrides — preserves the
+            // existing convention (PairsBacktestRunner: `entryZ = options > 0 ? options : 2.0`).
+            EntryZScoreThreshold = cfgEntryZ,
+            ExitZScoreThreshold = cfgExitZ,
+            StopLossZScoreThreshold = cfgStopZ,
             // Kalman-filtered β adapts the hedge ratio every bar instead of waiting for the
             // periodic OLS rebalance — better for crypto pairs where regime shifts fast.
             // Memory: 'pairs_phase2_2026_04_24' Kalman implementation already validated.
@@ -309,6 +332,9 @@ public sealed class PairsHybridExecutor : BackgroundService
         if (_circuitBreakerTripped && sig.Kind == PairsLiveSignalKind.WouldOpenNew)
         {
             _logger.LogWarning("PairsHybrid[{Tier}] {Pair} entry suppressed: TIER circuit breaker tripped (dailyPnL={DPnL:F2})", _tierName, pair.Key, _dailyRealizedPnL);
+            PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                SignalDecision.SuppressedByCircuitBreakerTier,
+                $"TierCB dailyPnL={_dailyRealizedPnL:F2}");
             return;
         }
         // Global cross-tier circuit breaker.
@@ -316,6 +342,9 @@ public sealed class PairsHybridExecutor : BackgroundService
         {
             _logger.LogWarning("PairsHybrid[{Tier}] {Pair} entry suppressed: GLOBAL circuit breaker tripped via {TripTier} (cumPnL={Pnl:F2})",
                 _tierName, pair.Key, _globalBreaker.TrippingTier, _globalBreaker.DailyRealizedPnl);
+            PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                SignalDecision.SuppressedByCircuitBreakerGlobal,
+                $"GlobalCB via {_globalBreaker.TrippingTier} cumPnL={_globalBreaker.DailyRealizedPnl:F2}");
             return;
         }
 
@@ -330,25 +359,127 @@ public sealed class PairsHybridExecutor : BackgroundService
                     _logger.LogInformation(
                         "PairsHybrid[{Tier}] {Pair} entry suppressed by macro pause ({Event}, T{Mins:+0;-0}m).",
                         _tierName, pair.Key, macroPause.EventName, macroPause.MinutesUntilEvent);
+                    PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                        SignalDecision.SuppressedByMacroPause,
+                        $"MacroPause:{macroPause.EventName} T{macroPause.MinutesUntilEvent:+0;-0}m");
                     break;
                 }
+                // We publish "Fired" intent here. HandleOpenAsync may republish with a more specific
+                // SuppressedBy* decision (orphan halt, drawdown ladder kill) — last-write-wins by
+                // timestamp in the registry, so the more accurate verdict overwrites this optimistic one.
+                PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                    SignalDecision.Fired, reason: "WouldOpenNew → HandleOpen");
                 await HandleOpenAsync(pair, sig, exchange, ct).ConfigureAwait(false);
                 break;
 
             case PairsLiveSignalKind.WouldClose when hasOpen:
+                PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                    SignalDecision.Fired, reason: "WouldClose → HandleClose");
                 await HandleCloseAsync(pair, _openPositions[pair.Key], sig, exchange, ct).ConfigureAwait(false);
                 break;
 
             case PairsLiveSignalKind.HoldOpen:
                 _logger.LogDebug("PairsHybrid {Pair} HOLDING (entry Z={Z:F2})", pair.Key, sig.EntryZScore);
+                PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                    SignalDecision.HoldOpen);
                 break;
 
             case PairsLiveSignalKind.None:
+                // When the runner declined to emit a live signal AND attached a reason,
+                // surface it so we can see WHICH gate is blocking entry. Especially useful
+                // for diagnosing "cointPassed=2/2 |z|=4.31 but no entry" mysteries — without
+                // this, the operator has no insight into velocity filter / regime gate /
+                // spread floor rejections. Skip "no signal" placeholder (the runner emits
+                // that when |z| is below entry threshold, which is normal, not a bug).
+                if (!hasOpen
+                    && !string.IsNullOrEmpty(sig.Reasoning)
+                    && !string.Equals(sig.Reasoning, "no signal", StringComparison.Ordinal))
+                {
+                    _logger.LogInformation(
+                        "PairsHybrid[{Tier}] {Pair} entry SKIPPED: {Reason}",
+                        _tierName, pair.Key, sig.Reasoning);
+                    PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                        SignalDecision.SkippedByRunner, sig.Reasoning);
+                }
+                else
+                {
+                    // The benign case — |z| below entry threshold. Distance% in the helper
+                    // promotes to NearTrigger when we're 80-99% of the way there.
+                    PublishDiagnostic(pair, sig, cfgEntryZ, cfgExitZ, cfgStopZ, hasOpen,
+                        SignalDecision.BelowThreshold);
+                }
                 break;
 
             default:
                 _logger.LogWarning("PairsHybrid {Pair} STATE MISMATCH signal={Kind} hasOpen={HasOpen}", pair.Key, sig.Kind, hasOpen);
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Publishes a single per-iteration snapshot to the diagnostics registry. Computes the
+    /// effective threshold (matching <c>PairsBacktestRunner</c>'s "0 → fall back to 2.0"
+    /// convention) and distance-to-trigger %. Promotes <see cref="SignalDecision.BelowThreshold"/>
+    /// to <see cref="SignalDecision.NearTrigger"/> when distance ≥ 80%.
+    /// </summary>
+    /// <remarks>
+    /// Fire-and-forget: any exception is logged at debug level and swallowed. Diagnostics must
+    /// never break the executor's main loop.
+    /// </remarks>
+    private void PublishDiagnostic(
+        PairConfig pair,
+        PairsLiveSignal sig,
+        double cfgEntryZ,
+        double cfgExitZ,
+        double cfgStopZ,
+        bool hasOpen,
+        SignalDecision decision,
+        string? reason = null)
+    {
+        if (_diagnostics is null) return;
+
+        try
+        {
+            // Effective threshold matches the PairsBacktestRunner convention
+            // (`entryZ = options > 0 ? options : 2.0`). Without this, an unset config
+            // would render the dashboard threshold as 0 and distance % as ∞.
+            var effectiveEntry = cfgEntryZ > 0.0 ? cfgEntryZ : 2.0;
+            var effectiveExit  = cfgExitZ  > 0.0 ? cfgExitZ  : 0.5;
+            decimal? effectiveStop = cfgStopZ > 0.0 ? (decimal)cfgStopZ : null;
+
+            var current = (decimal)sig.EntryZScore;
+            var threshold = (decimal)effectiveEntry;
+            var distance = threshold > 0m
+                ? Math.Abs(current) / threshold * 100m
+                : 0m;
+
+            // Heads-up promotion: caller said "below threshold" but we're 80-99% close →
+            // upgrade to NearTrigger so the dashboard amber-flags it.
+            if (decision == SignalDecision.BelowThreshold && distance >= 80m && distance < 100m)
+                decision = SignalDecision.NearTrigger;
+
+            var snap = new SignalDiagnosticSnapshot(
+                UtcTimestamp: DateTime.UtcNow,
+                Tier: $"Pairs:{(string.IsNullOrEmpty(_tierName) ? "Default" : _tierName)}",
+                StrategyTag: _strategyTag,
+                Key: pair.Key,
+                CurrentValue: current,
+                EntryThreshold: threshold,
+                ExitThreshold: (decimal)effectiveExit,
+                StopThreshold: effectiveStop,
+                DistanceToTriggerPct: distance,
+                Decision: decision,
+                SkipOrSuppressReason: reason,
+                RegimeContext: null, // pairs uses regime for sizing only, not signal direction
+                HasOpenPosition: hasOpen,
+                EstimatedNotionalIfFired: null);
+
+            _diagnostics.Publish(snap);
+        }
+        catch (Exception ex)
+        {
+            // Diagnostics is fire-and-forget — never break the executor's main loop.
+            _logger.LogDebug(ex, "Diagnostics publish failed for {Pair}", pair.Key);
         }
     }
 
