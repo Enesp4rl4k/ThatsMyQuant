@@ -5,6 +5,8 @@ import {
   type AnalyzeResponse,
 } from "@/api/backtestLab";
 import { EquityFanChart } from "@/components/backtestlab/EquityFanChart";
+import { RegressionDecompositionChart } from "@/components/backtestlab/RegressionDecompositionChart";
+import { EntropyTrajectoryChart } from "@/components/backtestlab/EntropyTrajectoryChart";
 
 /**
  * Backtest Lab — pure-math diagnostic views over an equity curve.
@@ -138,10 +140,20 @@ function ResultsPanel({ data }: { data: AnalyzeResponse }) {
         <EquityFanChart fan={monteCarloFan} />
       </section>
 
-      {/* Headline stats — regression + entropy summaries (full charts in G4) */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Regression decomposition: chart + headline stats side-by-side */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-lg border border-white/5 bg-[#0D1117]/60 backdrop-blur-xl p-4">
+          <h3 className="text-xs font-black uppercase tracking-[0.18em] text-muted-foreground/70 mb-3">
+            Linear regression decomposition
+          </h3>
+          <RegressionDecompositionChart
+            regression={regression}
+            realizedEquity={monteCarloFan.realizedEquity}
+            dates={monteCarloFan.dates}
+          />
+        </div>
         <StatCard
-          title="Linear regression decomposition"
+          title="OLS stats"
           rows={[
             ["Slope (USD/bar)", regression.slopeUsdPerBar.toFixed(4)],
             ["Intercept (USD)", regression.interceptUsd.toFixed(2)],
@@ -151,8 +163,18 @@ function ResultsPanel({ data }: { data: AnalyzeResponse }) {
           ]}
           hint={rSquaredHint(regression.rSquared)}
         />
+      </section>
+
+      {/* Entropy trajectory: chart + headline stats side-by-side */}
+      <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-lg border border-white/5 bg-[#0D1117]/60 backdrop-blur-xl p-4">
+          <h3 className="text-xs font-black uppercase tracking-[0.18em] text-muted-foreground/70 mb-3">
+            Shannon entropy trajectory
+          </h3>
+          <EntropyTrajectoryChart entropy={entropy} />
+        </div>
         <StatCard
-          title="Shannon entropy (rolling)"
+          title="Entropy stats"
           rows={[
             ["Window (bars)", String(entropy.windowBars)],
             ["Bins", String(entropy.bins)],
@@ -163,11 +185,20 @@ function ResultsPanel({ data }: { data: AnalyzeResponse }) {
               percentOfMax(lastDefined(entropy.entropy), entropy.maxEntropyNats),
             ],
           ]}
-          hint="Entropy drops before drawdown when an edge decays — watch the trajectory in G4."
+          hint={entropyHint(lastDefined(entropy.entropy), entropy.maxEntropyNats)}
         />
       </section>
     </div>
   );
+}
+
+function entropyHint(last: number | null, max: number): string {
+  if (last === null || max === 0) return "Window not yet full or degenerate input.";
+  const ratio = last / max;
+  if (ratio < 0.3) return "⚠ Returns concentrating — possible regime shift, drawdown often follows for mean-reversion strategies.";
+  if (ratio < 0.6) return "Below-normal entropy — distribution narrowing.";
+  if (ratio < 0.85) return "Healthy regime — distribution well-spread.";
+  return "Near maximum entropy — fat-tailed regime, higher noise-fitting risk.";
 }
 
 function StatCard({
