@@ -7,6 +7,7 @@ import {
 import { EquityFanChart } from "@/components/backtestlab/EquityFanChart";
 import { RegressionDecompositionChart } from "@/components/backtestlab/RegressionDecompositionChart";
 import { EntropyTrajectoryChart } from "@/components/backtestlab/EntropyTrajectoryChart";
+import { InterpretationPanel } from "@/components/backtestlab/InterpretationPanel";
 
 /**
  * Backtest Lab — pure-math diagnostic views over an equity curve.
@@ -188,6 +189,10 @@ function ResultsPanel({ data }: { data: AnalyzeResponse }) {
           hint={entropyHint(lastDefined(entropy.entropy), entropy.maxEntropyNats)}
         />
       </section>
+
+      {/* AI interpretation panel (G5). Operator opt-in via button so we don't
+          spend tokens on every analyze click. */}
+      <InterpretationPanel data={data} />
     </div>
   );
 }

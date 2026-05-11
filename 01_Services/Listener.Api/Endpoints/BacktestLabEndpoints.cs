@@ -1,4 +1,6 @@
+using System.Threading;
 using ThatsMyQuant.Application.Analytics;
+using Listener.Api.Services;
 
 namespace Listener.Api.Endpoints;
 
@@ -22,8 +24,28 @@ public static class BacktestLabEndpoints
         var group = endpoints.MapGroup("/api/backtest-lab").WithTags("BacktestLab");
 
         group.MapPost("/analyze", Analyze);
+        group.MapPost("/interpret", Interpret);
 
         return endpoints;
+    }
+
+    private static async Task<IResult> Interpret(
+        BacktestInterpretationRequest req,
+        BacktestInterpreterService interpreter,
+        ILogger<BacktestInterpreterService> logger,
+        CancellationToken ct)
+    {
+        if (req is null) return Results.BadRequest(new { error = "request body required" });
+        try
+        {
+            var result = await interpreter.InterpretAsync(req, ct).ConfigureAwait(false);
+            return Results.Ok(result);
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "BacktestLab interpret failed");
+            return Results.Problem(detail: ex.Message, statusCode: 500);
+        }
     }
 
     private static IResult Analyze(

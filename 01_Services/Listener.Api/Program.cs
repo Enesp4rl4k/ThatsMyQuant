@@ -299,6 +299,8 @@ builder.Services.AddHostedService<PortfolioBroadcastWorker>();
 builder.Services.AddSingleton<ThatsMyQuant.Application.Analytics.MonteCarloFanService>();
 builder.Services.AddSingleton<ThatsMyQuant.Application.Analytics.LinearRegressionDecomposer>();
 builder.Services.AddSingleton<ThatsMyQuant.Application.Analytics.ShannonEntropyAnalyzer>();
+// Scoped because IChatCompletionService may itself be scoped (SK convention).
+builder.Services.AddScoped<Listener.Api.Services.BacktestInterpreterService>();
 
 // Signal Diagnostics — registry is a singleton SHARED with the worker process.
 // In Listener.Api the registry will be populated by the worker (which writes via its
