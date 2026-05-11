@@ -294,6 +294,12 @@ if (isOkxMode)
 }
 builder.Services.AddHostedService<PortfolioBroadcastWorker>();
 
+// Backtest Lab analytics — pure-math services, registered as singletons (no
+// per-request state). Exposed via /api/backtest-lab/analyze.
+builder.Services.AddSingleton<ThatsMyQuant.Application.Analytics.MonteCarloFanService>();
+builder.Services.AddSingleton<ThatsMyQuant.Application.Analytics.LinearRegressionDecomposer>();
+builder.Services.AddSingleton<ThatsMyQuant.Application.Analytics.ShannonEntropyAnalyzer>();
+
 // Signal Diagnostics — registry is a singleton SHARED with the worker process.
 // In Listener.Api the registry will be populated by the worker (which writes via its
 // own DI singleton); since these are separate processes today, the in-memory registry
@@ -454,5 +460,6 @@ app.MapPost("/webhook", async (Signal signal, HttpContext context, IMediator med
 app.MapHub<MarketDataHub>("/market-hub");
 app.MapHub<SignalDiagnosticsHub>("/signal-diagnostics-hub");
 app.MapSignalDiagnosticsEndpoints();
+app.MapBacktestLabEndpoints();
 
 await app.RunAsync();
