@@ -52,6 +52,9 @@ const CockpitPage = lazy(() =>
 const UsersPage = lazy(() =>
   import("@/pages/UsersPage").then((m) => ({ default: m.UsersPage }))
 );
+const SignalDiagnosticsPage = lazy(() =>
+  import("@/pages/SignalDiagnosticsPage").then((m) => ({ default: m.SignalDiagnosticsPage }))
+);
 
 function App() {
   return (
@@ -145,6 +148,14 @@ function App() {
                   element={
                     <Suspense fallback={<PageLoadingSkeleton />}>
                       <ProModePage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="diagnostics"
+                  element={
+                    <Suspense fallback={<PageLoadingSkeleton />}>
+                      <SignalDiagnosticsPage />
                     </Suspense>
                   }
                 />

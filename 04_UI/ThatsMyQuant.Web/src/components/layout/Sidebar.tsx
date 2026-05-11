@@ -13,6 +13,7 @@ const navItems = [
   { to: "/pairs", label: "Pairs Discovery", glyph: "07" },
   { to: "/quant-lab", label: "Quant Lab", glyph: "08" },
   { to: "/pro-mode", label: "Pro Mode", glyph: "09" },
+  { to: "/diagnostics", label: "Signal Diagnostics", glyph: "◉" },
   { to: "/audit", label: "Audit Log", glyph: "10" },
   { to: "/health", label: "System Health", glyph: "11" },
   { to: "/users", label: "Users", glyph: "12" },
