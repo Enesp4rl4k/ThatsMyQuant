@@ -269,17 +269,11 @@ builder.Services.AddScoped<ISignalValidator, MarketHoursValidator>();
 builder.Services.AddScoped<ISignalValidator, PriceSanityValidator>();
 builder.Services.AddScoped<ISignalValidator, MinVolumeValidator>();
 
-// Safety Kernel
-var geminiApiKey = builder.Configuration["Ai:GeminiApiKey"];
-if (!string.IsNullOrWhiteSpace(geminiApiKey))
-{
-    builder.Services.AddKernel().AddGoogleAIGeminiChatCompletion("gemini-pro", geminiApiKey);
-}
-else
-{
-    builder.Services.AddKernel(); 
-    builder.Services.AddSingleton<IChatCompletionService, MockChatCompletionService>();
-}
+// AI provider router — picks chat-completion impl from env vars (TMQ_INTERPRETER_*)
+// or auto-detects which API key is present (preferring cheap providers first).
+// Supports: openai | deepseek | openrouter | ollama (local) | gemini (legacy) | mock.
+// See InterpreterProviderRouter.cs for the full routing matrix.
+builder.Services.AddInterpreterChatCompletion(builder.Configuration);
 
 builder.Services.AddHostedService<WebhookCleanupService>();
 builder.Services.AddSignalR();
