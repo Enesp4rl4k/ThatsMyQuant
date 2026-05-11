@@ -1,0 +1,33 @@
+04_UI/ThatsMyQuant.Web/src/components/backtestlab/InterpretationPanel.tsx
+  s_d24d549a5362a4::t_abe40613c187ba 1-170
+04_UI/ThatsMyQuant.Web/src/pages/BacktestLabPage.tsx
+  s_d24d549a5362a4::t_c2aca2a2232b11 10
+  s_d24d549a5362a4::t_cc2528e769b080 192-195
+01_Services/Listener.Api/Services/BacktestInterpreterService.cs
+  s_d24d549a5362a4::t_a165599cb5b87c 8
+01_Services/Listener.Api/Endpoints/BacktestLabEndpoints.cs
+  s_d24d549a5362a4::t_3cf10d8cbfe5d9 1
+  s_d24d549a5362a4::t_e07bce9c181845 3
+  s_d24d549a5362a4::t_eb92dd91964751 27,32-50
+04_UI/ThatsMyQuant.Web/src/api/backtestLab.ts
+  s_d24d549a5362a4::t_48be057c0bf6c2 54-78,83-86,88-122
+01_Services/Listener.Api/Program.cs
+  s_d24d549a5362a4::t_80731eef845665 302
+  s_d24d549a5362a4::t_87d7a7d9a0dd0f 303
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "4471e50052ee8a65deaa04b3e27dcc358427b706",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
