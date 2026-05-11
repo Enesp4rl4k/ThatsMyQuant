@@ -1,0 +1,23 @@
+04_UI/ThatsMyQuant.Web/src/pages/BacktestLabPage.tsx
+  s_d24d549a5362a4::t_dcb4ec4a41f0d1 268-270
+  s_d24d549a5362a4::t_2054e03d72bd50 121,130-136,152-169,171,179-181,193
+  s_d24d549a5362a4::t_af96595fce8aff 7,79,129,170
+  s_d24d549a5362a4::t_9959ccd20df325 27-31,34,36-37,67-78,80-100
+  s_d24d549a5362a4::t_fa32dab68b06d9 198
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "8c990c816bf4fa904cdfc3812cffcdd0090e13f2",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
