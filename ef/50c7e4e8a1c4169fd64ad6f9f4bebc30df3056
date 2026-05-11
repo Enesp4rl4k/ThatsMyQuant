@@ -1,0 +1,36 @@
+04_UI/ThatsMyQuant.Web/src/App.tsx
+  s_d24d549a5362a4::t_e26fa251ed3ca8 55-57,154
+  s_d24d549a5362a4::t_f4c059c0588059 155-161
+04_UI/ThatsMyQuant.Web/src/components/diagnostics/DecisionBadge.tsx
+  s_d24d549a5362a4::t_2b4d7fe1b2004f 1-62
+04_UI/ThatsMyQuant.Web/src/lib/signalrDiagnostics.ts
+  s_d24d549a5362a4::t_2c46ba565990e3 1-58
+04_UI/ThatsMyQuant.Web/src/components/layout/Sidebar.tsx
+  s_d24d549a5362a4::t_0d2ccbf9962ef6 16
+04_UI/ThatsMyQuant.Web/src/pages/SignalDiagnosticsPage.tsx
+  s_d24d549a5362a4::t_da00e1367278ac 1-159
+04_UI/ThatsMyQuant.Web/src/api/signalDiagnostics.ts
+  s_d24d549a5362a4::t_efeb3baff42d4a 1-57
+04_UI/ThatsMyQuant.Web/src/components/diagnostics/DistanceBar.tsx
+  s_d24d549a5362a4::t_522ba16a68254f 1-44
+04_UI/ThatsMyQuant.Web/src/components/diagnostics/SuppressionFilters.tsx
+  s_d24d549a5362a4::t_cffc908ad7e99e 1-106
+04_UI/ThatsMyQuant.Web/src/components/diagnostics/DiagnosticsTable.tsx
+  s_d24d549a5362a4::t_ec6377a20fc0b7 1-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "ef50c7e4e8a1c4169fd64ad6f9f4bebc30df3056",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
