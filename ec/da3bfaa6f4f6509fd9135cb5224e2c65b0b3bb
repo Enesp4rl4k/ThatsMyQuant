@@ -1,0 +1,22 @@
+01_Services/Listener.Api/Services/InterpreterProviderRouter.cs
+  s_d24d549a5362a4::t_d4c3873ee038f1 1-6,8-173
+  s_d24d549a5362a4::t_23491a4934f400 7
+01_Services/Listener.Api/Program.cs
+  s_d24d549a5362a4::t_a18063503e005e 272-276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "ecda3bfaa6f4f6509fd9135cb5224e2c65b0b3bb",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
