@@ -1,0 +1,22 @@
+01_Services/Listener.Api/Endpoints/BacktestLabEndpoints.cs
+  s_d24d549a5362a4::t_a5dd1baa2702ca 1-103
+01_Services/Listener.Api/Program.cs
+  s_d24d549a5362a4::t_885c27da1f08e7 297-302
+  s_d24d549a5362a4::t_8a7a4384246d1f 463
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "8df53402513b79ffee95f0fa4edc8d5579e244fa",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
