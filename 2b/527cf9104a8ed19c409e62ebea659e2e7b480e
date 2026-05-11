@@ -1,0 +1,28 @@
+04_UI/ThatsMyQuant.Web/src/api/backtestLab.ts
+  s_d24d549a5362a4::t_447c0f9d0985af 1-58
+04_UI/ThatsMyQuant.Web/src/components/layout/Sidebar.tsx
+  s_d24d549a5362a4::t_77d551dc430cf8 17
+04_UI/ThatsMyQuant.Web/src/components/backtestlab/EquityFanChart.tsx
+  s_d24d549a5362a4::t_769853d51c2b42 1-220
+04_UI/ThatsMyQuant.Web/src/pages/BacktestLabPage.tsx
+  s_d24d549a5362a4::t_7d8688f7c0dfcf 1-253
+04_UI/ThatsMyQuant.Web/src/App.tsx
+  s_d24d549a5362a4::t_175788e9969a08 58-60,165
+  s_d24d549a5362a4::t_dd3f114c7feb9d 166-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "2b527cf9104a8ed19c409e62ebea659e2e7b480e",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
