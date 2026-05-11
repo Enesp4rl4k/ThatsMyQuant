@@ -4,6 +4,7 @@ import {
   backtestLabApi,
   type AnalyzeResponse,
 } from "@/api/backtestLab";
+import { dashboardApi } from "@/api/dashboard";
 import { EquityFanChart } from "@/components/backtestlab/EquityFanChart";
 import { RegressionDecompositionChart } from "@/components/backtestlab/RegressionDecompositionChart";
 import { EntropyTrajectoryChart } from "@/components/backtestlab/EntropyTrajectoryChart";
@@ -23,9 +24,17 @@ import { InterpretationPanel } from "@/components/backtestlab/InterpretationPane
  * synthetic stress tests. A "load from running strategy" shortcut lands in
  * G6 once the basic flow is validated.
  */
+/** Default starting capital used when "Load from live" cannot read it from
+ *  the cumulative-PnL timeline (which begins at 0 by design). User can edit
+ *  the JSON before hitting Analyze. */
+const LIVE_LOAD_BASELINE_USD = 10_000;
+
 export function BacktestLabPage() {
   const [jsonInput, setJsonInput] = useState<string>("");
+  const [label, setLabel] = useState<string>("");
   const [parseError, setParseError] = useState<string | null>(null);
+  const [loadingLive, setLoadingLive] = useState<boolean>(false);
+  const [loadStatus, setLoadStatus] = useState<string | null>(null);
 
   const mutation = useMutation({
     mutationFn: backtestLabApi.analyze,
@@ -55,6 +64,40 @@ export function BacktestLabPage() {
   const handleLoadSample = () => {
     setJsonInput(JSON.stringify(buildSamplePayload(), null, 2));
     setParseError(null);
+    setLabel("Synthetic sample (drift+noise)");
+    setLoadStatus(null);
+  };
+
+  /**
+   * Load from /api/portfolio/equity-timeline. The timeline returns
+   * cumulative PnL (starting at 0); we prepend a baseline starting capital
+   * so the curve is non-zero throughout — required because MC fan resamples
+   * arithmetic returns and a zero divisor truncates the bootstrap path.
+   * Operator can edit the JSON / baseline before hitting Analyze.
+   */
+  const handleLoadLive = async () => {
+    setParseError(null);
+    setLoadStatus(null);
+    setLoadingLive(true);
+    try {
+      const points = await dashboardApi.equityTimeline();
+      if (points.length === 0) {
+        setLoadStatus("No closed trades yet — equity timeline is empty.");
+        return;
+      }
+      const dates = points.map((p) => `${p.date}T00:00:00Z`);
+      const equityCurve = points.map((p) => LIVE_LOAD_BASELINE_USD + p.cumulativeEquity);
+      setJsonInput(JSON.stringify({ dates, equityCurve }, null, 2));
+      setLabel(`Live portfolio (baseline $${LIVE_LOAD_BASELINE_USD.toLocaleString()}, ${points.length} days)`);
+      setLoadStatus(
+        `Loaded ${points.length} day(s) of cumulative PnL with $${LIVE_LOAD_BASELINE_USD.toLocaleString()} baseline. ` +
+        `Edit JSON if you want a different starting capital.`,
+      );
+    } catch (e) {
+      setLoadStatus(`Failed to load live timeline: ${(e as Error).message}`);
+    } finally {
+      setLoadingLive(false);
+    }
   };
 
   return (
@@ -75,7 +118,7 @@ export function BacktestLabPage() {
 
       {/* Input */}
       <section className="rounded-lg border border-white/5 bg-[#0D1117]/60 backdrop-blur-xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-2">
           <label
             htmlFor="bt-input"
             className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground/70"
@@ -83,6 +126,14 @@ export function BacktestLabPage() {
             Equity curve payload (JSON)
           </label>
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleLoadLive}
+              disabled={loadingLive}
+              className="text-[11px] px-3 py-1 rounded border border-white/10 hover:border-emerald-500/40 text-muted-foreground hover:text-emerald-300 transition disabled:opacity-30"
+              title="Pull /api/portfolio/equity-timeline and pre-fill"
+            >
+              {loadingLive ? "Loading…" : "Load from live"}
+            </button>
             <button
               onClick={handleLoadSample}
               className="text-[11px] px-3 py-1 rounded border border-white/10 hover:border-accent/40 text-muted-foreground hover:text-foreground transition"
@@ -98,6 +149,26 @@ export function BacktestLabPage() {
             </button>
           </div>
         </div>
+
+        {/* Strategy label — informational, passed to interpreter so the LLM
+            knows what it's looking at ('Funding Long', 'sample', etc.). */}
+        <div className="flex items-center gap-2">
+          <label
+            htmlFor="bt-label"
+            className="text-[10px] font-black uppercase tracking-[0.18em] text-muted-foreground/70 whitespace-nowrap"
+          >
+            Label
+          </label>
+          <input
+            id="bt-label"
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="e.g. FundingAlpha-Long LTC 90d"
+            className="flex-1 bg-[#070A0F] border border-white/10 rounded px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:border-accent"
+          />
+        </div>
+
         <textarea
           id="bt-input"
           value={jsonInput}
@@ -105,6 +176,9 @@ export function BacktestLabPage() {
           placeholder='{"dates": ["2026-01-01T00:00:00Z", ...], "equityCurve": [100000, 100500, ...]}'
           className="w-full h-32 bg-[#070A0F] border border-white/10 rounded p-3 text-xs font-mono text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:border-accent resize-none"
         />
+        {loadStatus && (
+          <div className="text-xs text-muted-foreground/70 italic">{loadStatus}</div>
+        )}
         {parseError && (
           <div className="text-xs text-rose-400 font-mono">{parseError}</div>
         )}
@@ -116,12 +190,12 @@ export function BacktestLabPage() {
       </section>
 
       {/* Results */}
-      {mutation.data && <ResultsPanel data={mutation.data} />}
+      {mutation.data && <ResultsPanel data={mutation.data} label={label} />}
     </div>
   );
 }
 
-function ResultsPanel({ data }: { data: AnalyzeResponse }) {
+function ResultsPanel({ data, label }: { data: AnalyzeResponse; label?: string }) {
   const { monteCarloFan, regression, entropy } = data;
   return (
     <div className="space-y-6">
@@ -191,8 +265,9 @@ function ResultsPanel({ data }: { data: AnalyzeResponse }) {
       </section>
 
       {/* AI interpretation panel (G5). Operator opt-in via button so we don't
-          spend tokens on every analyze click. */}
-      <InterpretationPanel data={data} />
+          spend tokens on every analyze click. Label flows to the LLM so it
+          knows what strategy/curve it is interpreting. */}
+      <InterpretationPanel data={data} label={label} />
     </div>
   );
 }
