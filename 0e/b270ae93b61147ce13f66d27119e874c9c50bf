@@ -1,0 +1,24 @@
+04_UI/ThatsMyQuant.Web/src/components/backtestlab/EntropyTrajectoryChart.tsx
+  s_d24d549a5362a4::t_ff66decf89b11d 1-178
+04_UI/ThatsMyQuant.Web/src/pages/BacktestLabPage.tsx
+  s_d24d549a5362a4::t_f67adb78407da4 8-9,202-203
+  s_d24d549a5362a4::t_dc53a7e70bcf91 143-154,156,166-175,177,188,195-201
+04_UI/ThatsMyQuant.Web/src/components/backtestlab/RegressionDecompositionChart.tsx
+  s_d24d549a5362a4::t_b1474da184c617 1-269
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "0eb270ae93b61147ce13f66d27119e874c9c50bf",
+  "prompts": {},
+  "sessions": {
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
