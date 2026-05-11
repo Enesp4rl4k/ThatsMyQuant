@@ -55,6 +55,9 @@ const UsersPage = lazy(() =>
 const SignalDiagnosticsPage = lazy(() =>
   import("@/pages/SignalDiagnosticsPage").then((m) => ({ default: m.SignalDiagnosticsPage }))
 );
+const BacktestLabPage = lazy(() =>
+  import("@/pages/BacktestLabPage").then((m) => ({ default: m.BacktestLabPage }))
+);
 
 function App() {
   return (
@@ -156,6 +159,14 @@ function App() {
                   element={
                     <Suspense fallback={<PageLoadingSkeleton />}>
                       <SignalDiagnosticsPage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="backtest-lab"
+                  element={
+                    <Suspense fallback={<PageLoadingSkeleton />}>
+                      <BacktestLabPage />
                     </Suspense>
                   }
                 />
