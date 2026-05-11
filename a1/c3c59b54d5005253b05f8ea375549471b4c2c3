@@ -1,0 +1,68 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.4",
+  "base_commit_sha": "a1c3c59b54d5005253b05f8ea375549471b4c2c3",
+  "prompts": {
+    "195bca36cd3280e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d63c0-6ff3-7ea3-99fa-90e52f5196bd",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 603,
+      "total_deletions": 279,
+      "accepted_lines": 35,
+      "overriden_lines": 0
+    },
+    "70d145275ac0a1ba": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d36ca-c142-7950-9a26-ec7c266444f0",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 1138,
+      "total_deletions": 614,
+      "accepted_lines": 593,
+      "overriden_lines": 0
+    },
+    "90797ac5b6887984": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d63c1-28d2-7ff1-b03f-8bb5edbb7291",
+        "model": "unknown"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 2125,
+      "total_deletions": 1840,
+      "accepted_lines": 1183,
+      "overriden_lines": 0
+    },
+    "e3de1cf7efdd7cf3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d579d-04a4-7750-ae4b-bd6044d1728b",
+        "model": "gpt-5.4"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 6,
+      "total_deletions": 6,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "eb8ee953f706c295": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019d579d-5163-7e70-8791-39693308e94f",
+        "model": "unknown"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>",
+      "total_additions": 42,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}
