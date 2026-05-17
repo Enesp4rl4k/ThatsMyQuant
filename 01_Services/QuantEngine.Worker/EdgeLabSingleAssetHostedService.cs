@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -160,6 +161,59 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
 
         var doc = result.Document!;
         var asOfBar = doc.AsOfBar!.Value;
+
+        // [2026-05-14 Quantlab paused-edge mechanism — TMQ_PAUSED_EDGES_SPEC.md]
+        // [2026-05-15 cleanup gap fix] — original implementation skipped paused signals
+        // but left ORPHAN open positions on OKX (opened pre-pause). DOGE long was sitting
+        // -$11 unrealized with no SL, no rebalance, no recovery path. The cleanup branch
+        // below detects existing OKX position via the DbToPortfolioSync mirror and submits
+        // a one-shot close order through the standard execution path.
+        if (doc.Metadata?.Paused == true)
+        {
+            // Symbol to clean up = the single target in this strategy's signal.
+            var pausedSymbol = result.Symbol;
+
+            // Check OKX mirror for an open position on this symbol (LIVE_OKX marker).
+            PaperPosition? openPosition = null;
+            if (!string.IsNullOrEmpty(pausedSymbol))
+            {
+                lock (_portfolio)
+                {
+                    openPosition = _portfolio.OpenPositions.FirstOrDefault(p =>
+                        string.Equals(p.Symbol, pausedSymbol, StringComparison.OrdinalIgnoreCase)
+                        && p.ExecutionMode == DbToPortfolioSyncHostedService.OkxMirrorMarker
+                        && p.Quantity > 0m);
+                }
+            }
+
+            if (openPosition is null)
+            {
+                // Clean — no orphan to mop up. Standard SKIP with dedupe.
+                if (_lastAppliedAsOfBar != asOfBar)
+                {
+                    _logger.LogInformation(
+                        "[SKIP] EdgeLabSingleAsset[{Strategy}] PAUSED by Quantlab as_of={AsOf} reason='{Reason}' (no orphan position to close)",
+                        _strategy, asOfBar, doc.Metadata.PausedReason ?? "(no reason given)");
+                    _lastAppliedAsOfBar = asOfBar;
+                }
+                return;
+            }
+
+            // Orphan position exists — attempt close-to-zero ONCE per asOfBar (idempotent).
+            // Per-asOfBar dedupe so a failed close attempt isn't retried every poll, only
+            // each fresh signal cycle (~1h for 1h strategies). If the close fails, next
+            // fresh signal will retry.
+            if (_lastAppliedAsOfBar == asOfBar) return;
+            _lastAppliedAsOfBar = asOfBar;
+
+            _logger.LogWarning(
+                "[CLEANUP] EdgeLabSingleAsset[{Strategy}] PAUSED but ORPHAN POSITION exists on {Symbol} (qty={Qty} side={Side}) — submitting close order.",
+                _strategy, openPosition.Symbol, openPosition.Quantity, openPosition.Side);
+
+            await TryClosePausedOrphanAsync(openPosition, doc.Metadata.PausedReason, ct).ConfigureAwait(false);
+            return;
+        }
+
         if (_lastAppliedAsOfBar == asOfBar)
             return;
 
@@ -199,6 +253,28 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                 "EdgeLabSingleAsset[{Strategy}]: PaperPortfolio.InitialBalance=0, " +
                 "skipping cycle as_of={AsOf}.",
                 _strategy, doc.AsOfBar);
+            return;
+        }
+
+        // 2026-05-11: Basis-drift hard veto. If the runtime basis exceeds the config
+        // Paper:InitialBalance by more than 1.5× the ExchangeBalanceSync hasn't yet
+        // re-anchored the stale snapshot — skip the cycle. Prevents the historical
+        // failure mode where boot-time race conditions sized orders off a $96K
+        // pre-pivot snapshot instead of the intended $2K cycle basis (over-sized
+        // ada_breakout fired at $11.6K notional vs the $240 target).
+        var configuration = _serviceProvider.GetService<IConfiguration>();
+        var configBasisRaw = configuration?["Paper:InitialBalance"];
+        if (decimal.TryParse(configBasisRaw, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var configBasis)
+            && configBasis > 0m
+            && basis > configBasis * 1.5m)
+        {
+            _logger.LogWarning(
+                "EdgeLabSingleAsset[{Strategy}]: BASIS DRIFT VETO — runtime ${Runtime:N2} > " +
+                "1.5× config ${Config:N2}. Most likely cause: stale PaperPortfolio snapshot " +
+                "that ExchangeBalanceSync hasn't re-anchored yet. Skipping cycle to prevent " +
+                "over-sized order. as_of={AsOf}.",
+                _strategy, basis, configBasis, doc.AsOfBar);
             return;
         }
 
@@ -300,6 +376,79 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         var targetNotional = basis * effectiveStrategyWeight * (decimal)(weight * leverage);
         var deltaNotional = targetNotional - currentNotional;
 
+        // [Sprint 7 — 2026-05-11] Per-symbol notional cap evaluation.
+        // Defends against multi-strategy concentration on a single underlying
+        // (current BTC stack: fee_panic + stablecoin_30d + rv_breakout + btc_breakout_4h_long
+        // sum to weight 0.31 → $930 at $2K basis × 1.5lev when all co-fire).
+        // Live mode → skip submit when breached. DryRun → log-only warning.
+        decimal? capFraction = null;
+        if (_options.PerSymbolCap is { Count: > 0 } caps
+            && caps.TryGetValue(symbol, out var capValue))
+        {
+            capFraction = capValue;
+        }
+
+        // Sum absolute notional across ALL open positions on the symbol (cross-strategy).
+        // Live mode reads from the exchange (single source of truth, no per-strategy attribution
+        // available from OKX). DryRun reads from the shared SyntheticPortfolio.
+        decimal totalSymbolNotional = 0m;
+        if (capFraction is not null)
+        {
+            if (mode == HybridMode.Live)
+            {
+                var positions = scope.ServiceProvider.GetRequiredService<IExchangePositionReader>();
+                var allOpen = await positions.GetOpenPositionsAsync(ct).ConfigureAwait(false);
+                foreach (var p in allOpen)
+                {
+                    if (!string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase)) continue;
+                    var signedNotional = (p.IsLong ? 1m : -1m) * p.Quantity * mark;
+                    totalSymbolNotional += signedNotional;
+                }
+            }
+            else if (mode == HybridMode.DryRun)
+            {
+                // Synthetic accounting is per-strategy instance, so for DryRun the cross-strategy
+                // aggregate is not directly available. Use this-strategy's currentNotional as
+                // the best-effort proxy — produces a conservative WouldBreach decision only when
+                // this strategy alone exceeds the cap. The warning is still informative.
+                totalSymbolNotional = currentNotional;
+            }
+        }
+
+        var capDecision = EdgeLabPerSymbolCapEvaluator.Evaluate(
+            symbol: symbol,
+            basis: basis,
+            targetNotionalUsd: targetNotional,
+            thisStrategyCurrentNotionalUsd: currentNotional,
+            totalSymbolNotionalUsd: totalSymbolNotional,
+            capFraction: capFraction,
+            isLive: mode == HybridMode.Live);
+
+        if (capDecision.Action == EdgeLabPerSymbolCapAction.WouldBreachInDryRun
+            || capDecision.Action == EdgeLabPerSymbolCapAction.InvalidCap)
+        {
+            _logger.LogWarning(
+                "EdgeLabSingleAsset[{Strategy}] per-symbol-cap WARN sym={Sym} action={Action} reason={Reason}",
+                _strategy, symbol, capDecision.Action, capDecision.Reason);
+        }
+
+        if (capDecision.ShouldBlockSubmit)
+        {
+            _logger.LogWarning(
+                "EdgeLabSingleAsset[{Strategy}] per-symbol-cap SKIP sym={Sym} cap=${Cap:F2} would_be=${Would:F2} headroom=${Head:F2} target=${Target:F2} delta=${Delta:F2}",
+                _strategy, symbol, capDecision.CapUsd, capDecision.WouldBeTotalAbsUsd,
+                capDecision.HeadroomUsd, targetNotional, deltaNotional);
+            if (_alerts is not null)
+            {
+                _ = _alerts.PublishAsync(
+                    "warn", $"EdgeLab[{_strategy}]",
+                    $"PerSymbolCap skip — {symbol}",
+                    $"cap ${capDecision.CapUsd:F2}, would_be ${capDecision.WouldBeTotalAbsUsd:F2}, headroom ${capDecision.HeadroomUsd:F2}. {capDecision.Reason}",
+                    ct);
+            }
+            return;
+        }
+
         // Update synthetic position regardless of whether we issue an order
         // (held position with no churn still earns hypothetical PnL).
         var newSynthetic = new Dictionary<string, EdgeLabSyntheticPosition>(StringComparer.Ordinal);
@@ -318,6 +467,35 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         {
             var qty = Math.Abs(deltaNotional) / mark;
             var side = deltaNotional > 0 ? TradeSide.Buy : TradeSide.Sell;
+
+            // [2026-05-16 PreEntryRiskGate wiring] EdgeLab rebalance can both ADD to position
+            // (open/increase) or REDUCE (close-toward-zero). Only gate-check when the delta
+            // would INCREASE absolute exposure — closing trades should always be allowed
+            // (reducing risk is good, even if existing position is at the cap).
+            var isIncreasingExposure = Math.Abs(targetNotional) > Math.Abs(currentNotional);
+            if (isIncreasingExposure)
+            {
+                try
+                {
+                    var preGate = _serviceProvider.GetService<PreEntryRiskGate>();
+                    if (preGate is not null)
+                    {
+                        // For increase, the relevant notional cap-check is the target (post-delta) size.
+                        var preGateDecision = preGate.CheckEntry(symbol, Math.Abs(targetNotional));
+                        if (!preGateDecision.Allowed)
+                        {
+                            _logger.LogWarning(
+                                "EdgeLabSingleAsset[{Strategy}] {Symbol} entry BLOCKED by PreEntryRiskGate: {Reason}",
+                                _strategy, symbol, preGateDecision.RejectReason);
+                            return;
+                        }
+                    }
+                }
+                catch (Exception preGateEx)
+                {
+                    _logger.LogDebug(preGateEx, "EdgeLabSingleAsset[{Strategy}] PreEntryRiskGate evaluation threw; allowing entry.", _strategy);
+                }
+            }
 
             var signal = new Signal
             {
@@ -570,6 +748,110 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// [2026-05-15 paused-edge cleanup] Submit a close order for an orphan position left
+    /// behind when an edge transitioned to PAUSED state. Uses the standard
+    /// OkxExecutionService path with ReduceOnly=true so the order cannot accidentally
+    /// open a reverse position if the size goes wrong. Telegram alert on success/failure.
+    ///
+    /// Called once per fresh asOfBar cycle (already deduped by _lastAppliedAsOfBar).
+    /// If the close fails, next cycle (1h later for 1h strategies, 4h for 4h) retries —
+    /// or operator can flatten manually on OKX UI.
+    /// </summary>
+    private async Task TryClosePausedOrphanAsync(
+        PaperPosition openPosition,
+        string? pausedReason,
+        CancellationToken ct)
+    {
+        try
+        {
+            using var scope = _serviceProvider.CreateScope();
+            var exchange = scope.ServiceProvider.GetRequiredService<IExchangeService>();
+
+            // Close = opposite side, same quantity.
+            var closeSide = openPosition.Side == TradeSide.Buy ? TradeSide.Sell : TradeSide.Buy;
+            var price = openPosition.CurrentPrice > 0m ? openPosition.CurrentPrice : openPosition.EntryPrice;
+
+            var signal = new Signal
+            {
+                Source = "EdgeLabSingleAsset",
+                StrategyTag = _strategy,
+                Symbol = openPosition.Symbol,
+                Side = closeSide,
+                Price = price,
+                Quantity = openPosition.Quantity,
+                OrderType = OrderType.Market,                  // urgent flatten — taker by intent
+                Exchange = "OKX",
+                MarketType = MarketType.Crypto,
+                Confidence = 100,
+                Reasoning = $"Paused-edge cleanup: closing orphan position (paused reason: {pausedReason ?? "n/a"})",
+                Timestamp = DateTime.UtcNow,
+            };
+            // ReduceOnly so OKX rejects the order if it would flip direction
+            // (defensive against position-size race with our mirror).
+            signal.Metadata["ReduceOnly"] = "true";
+            signal.Metadata["edge_lab_paused_cleanup"] = "true";
+
+            var trade = await exchange.ExecuteOrderAsync(signal).ConfigureAwait(false);
+
+            var actuallyFilled = trade is not null
+                && trade.Status == ThatsMyQuant.Contracts.Enums.TradeStatus.Executed
+                && trade.FilledQuantity > 0m;
+
+            if (actuallyFilled)
+            {
+                _logger.LogWarning(
+                    "[CLEANUP-OK] EdgeLabSingleAsset[{Strategy}] orphan close FILLED on {Symbol}: {Side} qty={Qty:F6} @ {Px:F4} fee={Fee:F4}",
+                    _strategy, openPosition.Symbol, closeSide, trade!.FilledQuantity, trade.EntryPrice, trade.TotalFeesPaid);
+
+                if (_alerts is not null)
+                {
+                    try
+                    {
+                        await _alerts.PublishAsync(
+                            "info", $"EdgeLab[{_strategy}]",
+                            $"✅ Paused-edge cleanup — {openPosition.Symbol} CLOSED",
+                            $"Orphan position from paused edge closed via market.\n" +
+                            $"Side: {closeSide} qty={trade.FilledQuantity:F6} @ {trade.EntryPrice:F4}\n" +
+                            $"Fee: ${trade.TotalFeesPaid:F4}\n" +
+                            $"Pause reason: {pausedReason}",
+                            ct).ConfigureAwait(false);
+                    }
+                    catch (Exception alertEx) { _logger.LogDebug(alertEx, "EdgeLabSingleAsset: cleanup-OK alert publish failed"); }
+                }
+            }
+            else
+            {
+                _logger.LogError(
+                    "[CLEANUP-FAIL] EdgeLabSingleAsset[{Strategy}] orphan close NOT executed on {Symbol} (status={Status} filled={Filled}). Will retry next fresh cycle.",
+                    _strategy, openPosition.Symbol, trade?.Status, trade?.FilledQuantity);
+
+                if (_alerts is not null)
+                {
+                    try
+                    {
+                        await _alerts.PublishAsync(
+                            "warning", $"EdgeLab[{_strategy}]",
+                            $"⚠️ Paused-edge cleanup — {openPosition.Symbol} close NOT executed",
+                            $"Tried to close orphan position from paused edge, order not executed.\n" +
+                            $"Status: {trade?.Status} filled={trade?.FilledQuantity:F6}\n" +
+                            $"Will retry next fresh signal cycle. Manual close on OKX UI also OK.\n" +
+                            $"Symbol: {openPosition.Symbol} qty={openPosition.Quantity:F6} side={openPosition.Side}",
+                            ct).ConfigureAwait(false);
+                    }
+                    catch (Exception alertEx) { _logger.LogDebug(alertEx, "EdgeLabSingleAsset: cleanup-FAIL alert publish failed"); }
+                }
+            }
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "[CLEANUP-EX] EdgeLabSingleAsset[{Strategy}] orphan close threw on {Symbol}",
+                _strategy, openPosition.Symbol);
+        }
+    }
+
     private async Task<(string Symbol, bool Ok, string? Err)> SubmitAsync(
         IExchangeService exchange, Signal signal, HybridMode mode)
     {
@@ -586,17 +868,78 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                 "EdgeLabSingleAsset order filled: {Sym} {Side} qty={Qty:N6} @ {Px:N4} status={Status} strategy={Strategy}",
                 signal.Symbol, signal.Side, signal.Quantity, signal.Price, trade?.Status, _strategy);
 
+            // [2026-05-15 BUG FIX] Skip ALL operator alerts when the trade did not actually
+            // execute. Previously: any non-null trade (even status=Pending or FilledQty=0)
+            // produced an "OPENED Buy ETHUSDT live fill" Telegram message → operator opens
+            // OKX, sees no new position, panics. Root cause: cancel-verify or market-retry
+            // returned the Trade scaffold but the actual fill never landed.
+            // Fix: alerts only when Status == Executed AND FilledQuantity > 0.
+            var actuallyFilled = trade is not null
+                && trade.Status == ThatsMyQuant.Contracts.Enums.TradeStatus.Executed
+                && trade.FilledQuantity > 0m;
+            if (trade is not null && !actuallyFilled)
+            {
+                _logger.LogWarning(
+                    "EdgeLabSingleAsset[{Strategy}] {Sym} {Side} submitted but NOT executed (status={Status} filled={Filled}); SKIPPING green-OPENED alert. Reconcile loop will sync real state.",
+                    _strategy, signal.Symbol, signal.Side, trade.Status, trade.FilledQuantity);
+
+                // [2026-05-15] Still surface to Telegram with HONEST text — operator
+                // needs visibility but should NOT see "🟢 OPENED" when nothing opened.
+                if (_alerts is not null)
+                {
+                    try
+                    {
+                        var dirIcon = signal.Side == TradeSide.Buy ? "[BUY]" : "[SELL]";
+                        var body = $"{dirIcon} {signal.Symbol} qty={signal.Quantity:F6} @ {signal.Price:F4} " +
+                                   $"status={trade.Status} filled={trade.FilledQuantity:F6} " +
+                                   $"strategy={_strategy}\n\n" +
+                                   "Order submitted but NOT executed yet. Possible: post-only timeout " +
+                                   "still in flight, MARKET fallback rejected, or cancel-verify aborted. " +
+                                   "Reconcile loop + DbToPortfolioSync (60s) will reflect real OKX state.";
+                        await _alerts.PublishAsync(
+                            "warning", $"EdgeLab[{_strategy}]",
+                            $"⚠️ EdgeLab order SUBMITTED — not yet executed ({signal.Symbol})",
+                            body, default).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) { _logger.LogDebug(ex, "EdgeLabSingleAsset: not-executed Telegram publish failed"); }
+                }
+            }
+
+            // [2026-05-16 per-strategy attribution] Append to fill-attribution ledger so
+            // DbToPortfolioSync can recover the strategy tag when mirroring closed positions
+            // (OKX positions-history doesn't carry attribution).
+            if (trade is not null && actuallyFilled)
+            {
+                try
+                {
+                    var attributionLedger = _serviceProvider.GetService<EdgeLabFillAttributionLedger>();
+                    attributionLedger?.Append(
+                        timestampUtc: DateTime.UtcNow,
+                        symbol: signal.Symbol,
+                        strategy: _strategy,
+                        side: signal.Side,
+                        qty: trade.FilledQuantity,
+                        price: trade.EntryPrice,
+                        venueOrderId: trade.Id.ToString());
+                }
+                catch (Exception attribEx)
+                {
+                    _logger.LogDebug(attribEx, "EdgeLabSingleAsset[{Strategy}]: attribution ledger append failed", _strategy);
+                }
+            }
+
             // [Sprint 5 — 2026-05-10] B3 fix: Telegram alert on every LIVE fill, not
             // just dry-run cycles. With 13 strategies firing concurrently the operator
             // needs surface-level awareness when a real order lands. Best-effort —
             // alert publish failure must not poison the order pipeline.
-            if (_alerts is not null && trade is not null)
+            // [2026-05-15] Gated on actuallyFilled (status=Executed + qty>0).
+            if (_alerts is not null && trade is not null && actuallyFilled)
             {
                 try
                 {
                     var dirIcon = signal.Side == TradeSide.Buy ? "[BUY]" : "[SELL]";
-                    var notional = signal.Quantity * signal.Price;
-                    var body = $"{dirIcon} {signal.Symbol} qty={signal.Quantity:F6} @ {signal.Price:F4} " +
+                    var notional = trade.FilledQuantity * trade.EntryPrice;
+                    var body = $"{dirIcon} {signal.Symbol} qty={trade.FilledQuantity:F6} @ {trade.EntryPrice:F4} " +
                                $"notional=${notional:N2} status={trade.Status} fees=${trade.TotalFeesPaid:F4} " +
                                $"strategy={_strategy} weight={_strategyWeight:P1}";
                     await _alerts.PublishAsync(
@@ -605,6 +948,54 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                         body, default).ConfigureAwait(false);
                 }
                 catch (Exception ex) { _logger.LogDebug(ex, "EdgeLabSingleAsset: live-fill Telegram publish failed"); }
+            }
+
+            // 2026-05-11: Publish PositionOpenedNotification — TelegramPositionPushHandler
+            // subscribes via MediatR and sends the "🟢 OPENED" Telegram push. Without
+            // this, EdgeLab fills only hit the DbOperatorAlertPublisher (DB row + SignalR)
+            // — the operator sees nothing in Telegram. Matches FundingHybridExecutor pattern.
+            // Fire-and-forget so a slow Telegram round-trip doesn't block the cycle.
+            // [2026-05-15] Gated on actuallyFilled — was firing "🟢 OPENED" even when order
+            // status=Pending or qty=0 (cancel-verify or market-retry returned scaffold).
+            if (trade is not null && actuallyFilled)
+            {
+                try
+                {
+                    var mediator = _serviceProvider.GetService<MediatR.IMediator>();
+                    if (mediator is not null)
+                    {
+                        decimal slPx = 0m, tpPx = 0m;
+                        if (signal.Metadata.TryGetValue("StopLossPx", out var slRaw))
+                            decimal.TryParse(slRaw, System.Globalization.NumberStyles.Any,
+                                System.Globalization.CultureInfo.InvariantCulture, out slPx);
+                        if (signal.Metadata.TryGetValue("TakeProfitPx", out var tpRaw))
+                            decimal.TryParse(tpRaw, System.Globalization.NumberStyles.Any,
+                                System.Globalization.CultureInfo.InvariantCulture, out tpPx);
+                        var note = new ThatsMyQuant.Contracts.Notifications.PositionOpenedNotification(
+                            Symbol: signal.Symbol,
+                            StrategyTag: _strategy,
+                            RegimeTag: $"weight={_strategyWeight:P0}",
+                            ExitPolicyTag: tpPx > 0m && slPx > 0m
+                                ? $"TP={tpPx:F4}/SL={slPx:F4}"
+                                : "HoldOpen",
+                            ExecutionMode: "OKX_DEMO",
+                            Side: signal.Side,
+                            EntryPrice: signal.Price,
+                            Quantity: signal.Quantity,
+                            StopLoss: slPx,
+                            TakeProfit: tpPx,
+                            EdgeScore: 0m,
+                            Confidence: 75m,
+                            Reasoning: $"EdgeLab[{_strategy}] live fill",
+                            EntryTimeUtc: DateTime.UtcNow,
+                            CorrelationId: trade.Id.ToString());
+                        _ = mediator.Publish(note);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "EdgeLabSingleAsset: PositionOpenedNotification publish failed");
+                }
             }
             return (signal.Symbol, true, null);
         }

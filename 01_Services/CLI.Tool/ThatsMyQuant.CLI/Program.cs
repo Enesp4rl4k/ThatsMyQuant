@@ -413,6 +413,7 @@ static async Task RunFundingBacktestAsync(IServiceProvider services, string[] ar
     }
 
     var useFlip = bool.Parse(GetArg(args, "--use-flip", "false"));
+    var reverseSignal = bool.Parse(GetArg(args, "--reverse-signal", "false"));
 
     var config = new ThatsMyQuant.Application.Strategy.FundingAlphaConfig(
         EntryThreshold: entryBps / 10000m,     // bps per 8h → fraction
@@ -420,7 +421,9 @@ static async Task RunFundingBacktestAsync(IServiceProvider services, string[] ar
         TakeProfitPct: tpPct / 100m,
         StopLossPct: slPct / 100m,
         MaxHoldingBars: maxHold,
-        UseFlipCatalyst: useFlip);
+        UseFlipCatalyst: useFlip,
+        ReverseSignal: reverseSignal);
+    if (reverseSignal) Console.WriteLine("[reverse-signal] HYPOTHESIS INVERTED: positive funding → LONG, negative funding → SHORT");
 
     var sw = System.Diagnostics.Stopwatch.StartNew();
     var result = await runner.RunAsync(symbol, candles, config, capital);
@@ -1608,6 +1611,7 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
     var byStrategy   = args.Any(a => a.Equals("--by-strategy", StringComparison.OrdinalIgnoreCase));
     var strategyFilter = args.FirstOrDefault(a => a.StartsWith("--strategy=", StringComparison.OrdinalIgnoreCase));
     var sinceFilter  = args.FirstOrDefault(a => a.StartsWith("--since=", StringComparison.OrdinalIgnoreCase));
+    var ignorePreregCutoff = args.Any(a => a.Equals("--ignore-prereg-cutoff", StringComparison.OrdinalIgnoreCase));
     string portfolioPath = portfolioArg is null
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "paper_portfolio.json")
         : portfolioArg.Substring("--portfolio=".Length);
@@ -1631,11 +1635,32 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
     using var doc = System.Text.Json.JsonDocument.Parse(json);
     if (!doc.RootElement.TryGetProperty("ClosedPositions", out var closed)) { Console.WriteLine("No closed positions."); return; }
 
+    // Pre-registration cutoffs by strategy tag. A trade is "in the new pre-reg sample" iff
+    // its EntryTime >= cutoff. Trades opened before the cutoff used a prior config (different
+    // universe, threshold, sizing, etc.) and pooling them inflates the sample with parameters
+    // that were data-snooped — classic p-hacking. Auto-applied unless --ignore-prereg-cutoff.
+    //
+    //   PairsTrading-Hybrid-Long  → 2026-05-01: pruned 6→3 pairs (config note in
+    //                               appsettings.Paper.json:Strategy:PairsTrading:Long)
+    //   FundingAlpha-Hybrid-Long  → 2026-04-28: promoted to live, AAVE dropped, Kelly cap
+    //                               (memory: funding_long_live_promotion_2026_04_28)
+    var preregCutoffs = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["PairsTrading-Hybrid-Long"]  = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc),
+        ["FundingAlpha-Hybrid-Long"]  = new DateTime(2026, 4, 28, 0, 0, 0, DateTimeKind.Utc),
+    };
+    if (!ignorePreregCutoff)
+    {
+        foreach (var kv in preregCutoffs)
+            Console.WriteLine($"[prereg-cutoff] {kv.Key}: trades before {kv.Value:u} excluded (override with --ignore-prereg-cutoff)");
+    }
+
     // Per-strategy buckets (Bonferroni family is LOCAL to each strategy — funding and pairs
     // each have their own pre-registered hypothesis with its own family m). Pooling across
     // strategies inflates the family and is statistically wrong. The --by-strategy switch
     // (or default when StrategyTag column is present) reports each strategy in isolation.
     var bySymbolPerStrategy = new Dictionary<string, Dictionary<string, List<(double Net, double Gross, decimal? RealFee)>>>(StringComparer.OrdinalIgnoreCase);
+    int droppedByPrereg = 0;
     foreach (var t in closed.EnumerateArray())
     {
         var sym = t.GetProperty("Symbol").GetString() ?? "";
@@ -1652,6 +1677,15 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
                 System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var et)
             && et < sinceUtc.Value)
             continue;
+        if (!ignorePreregCutoff && preregCutoffs.TryGetValue(strategy, out var cutoff)
+            && t.TryGetProperty("EntryTime", out var entryEl)
+            && DateTime.TryParse(entryEl.GetString(), System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal, out var entTime)
+            && entTime < cutoff)
+        {
+            droppedByPrereg++;
+            continue;
+        }
         var grossD = side == 0 ? (exit - entry) * qty : (entry - exit) * qty;
         decimal? rfp = null;
         if (t.TryGetProperty("RealFeePaid", out var rfpEl) && rfpEl.ValueKind == System.Text.Json.JsonValueKind.Number)
@@ -1668,6 +1702,9 @@ static async Task RunAnalyzeEdgeAsync(string[] args)
         if (!bySymBucket.ContainsKey(sym)) bySymBucket[sym] = new();
         bySymBucket[sym].Add(((double)net, (double)grossD, rfp));
     }
+
+    if (droppedByPrereg > 0)
+        Console.WriteLine($"[prereg-cutoff] dropped {droppedByPrereg} pre-cutoff trades from analysis");
 
     // Print one block per strategy (each is an INDEPENDENT pre-registered family).
     foreach (var stratEntry in bySymbolPerStrategy.OrderBy(kv => kv.Key, StringComparer.Ordinal))

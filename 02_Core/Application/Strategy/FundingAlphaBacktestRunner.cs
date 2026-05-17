@@ -74,6 +74,15 @@ public sealed class FundingAlphaBacktestRunner
         decimal sumFunding = 0m;
         decimal maxAbsFunding = 0m;
 
+        // Shadow threshold counters (2026-05-03): counts |funding| crossings at relaxed
+        // thresholds to diagnose "is funding regime dead, or is our 1bp threshold too tight?".
+        // Bands: 0.25bp, 0.5bp, 1bp (live LTC), 2bp, 3bp. Same approach as pairs shadow.
+        int shadow_0_25bp = 0;  // |f| >= 0.000025
+        int shadow_0_5bp = 0;   // |f| >= 0.00005   (live DOGE override)
+        int shadow_1bp = 0;     // |f| >= 0.0001    (live LTC)
+        int shadow_2bp = 0;     // |f| >= 0.0002
+        int shadow_3bp = 0;     // |f| >= 0.0003
+
         for (int i = 0; i < candles.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -85,6 +94,13 @@ public sealed class FundingAlphaBacktestRunner
                 sumFunding += funding;
                 var absF = Math.Abs(funding);
                 if (absF > maxAbsFunding) maxAbsFunding = absF;
+
+                // Shadow threshold tally — diagnostic only, no decision impact.
+                if (absF >= 0.000025m) shadow_0_25bp++;
+                if (absF >= 0.00005m)  shadow_0_5bp++;
+                if (absF >= 0.0001m)   shadow_1bp++;
+                if (absF >= 0.0002m)   shadow_2bp++;
+                if (absF >= 0.0003m)   shadow_3bp++;
             }
 
             // --- Exit logic (if in position) ---
@@ -165,12 +181,14 @@ public sealed class FundingAlphaBacktestRunner
 
                 if (funding >= effEntry)
                 {
-                    side = TradeSide.Sell;
+                    // Default: positive funding → SHORT (canonical mean-reversion bet).
+                    // ReverseSignal: positive funding → LONG (test funding-momentum hypothesis).
+                    side = config.ReverseSignal ? TradeSide.Buy : TradeSide.Sell;
                     sizeFractionBase = config.BaseSizeFraction;
                 }
                 else if (funding <= -effEntry)
                 {
-                    side = TradeSide.Buy;
+                    side = config.ReverseSignal ? TradeSide.Sell : TradeSide.Buy;
                     sizeFractionBase = config.BaseSizeFraction;
                 }
                 else if (config.UseFlipCatalyst)
@@ -347,6 +365,19 @@ public sealed class FundingAlphaBacktestRunner
             symbol, trades.Count, winRate, totalPnl, sharpe, profitFactor, maxDrawdown,
             entrySignals, fundingObservations, avgFunding, maxAbsFunding);
 
+        // Shadow threshold report — diagnoses regime compression independently of live gate.
+        if (fundingObservations >= 30)
+        {
+            _logger.LogInformation(
+                "Funding shadow {Symbol}: obs={N} | crossings: 0.25bp→{S025} ({P025:F1}%) 0.5bp→{S05} ({P05:F1}%) 1bp→{S1} ({P1:F1}%) 2bp→{S2} ({P2:F1}%) 3bp→{S3} ({P3:F1}%)",
+                symbol, fundingObservations,
+                shadow_0_25bp, 100.0 * shadow_0_25bp / fundingObservations,
+                shadow_0_5bp,  100.0 * shadow_0_5bp  / fundingObservations,
+                shadow_1bp,    100.0 * shadow_1bp    / fundingObservations,
+                shadow_2bp,    100.0 * shadow_2bp    / fundingObservations,
+                shadow_3bp,    100.0 * shadow_3bp    / fundingObservations);
+        }
+
         return new FundingAlphaResult(
             symbol,
             trades.Count, wins.Count, losses.Count,
@@ -501,7 +532,15 @@ public sealed record FundingAlphaConfig(
     // first SettlementSkipMinutes minutes after a settlement boundary. Exits are NOT
     // skipped — closing fast on a stop is more important than fee optimization.
     bool SkipSettlementBars = true,
-    int SettlementSkipMinutes = 30);
+    int SettlementSkipMinutes = 30,
+
+    // --- Sign-flip diagnostic (2026-05-03) ---
+    // When true, INVERTS the entry-side decision: positive funding triggers LONG (was SHORT),
+    // negative funding triggers SHORT (was LONG). Tests the hypothesis that the canonical
+    // mean-reversion signal is *backwards* in the current regime — i.e. positive funding
+    // persists rather than reverts, so betting against it loses while betting WITH it wins.
+    // Diagnostic only — never set true in live config. Used by `funding-backtest --reverse-signal`.
+    bool ReverseSignal = false);
 
 public sealed record FundingAlphaTrade(
     TradeSide Side,

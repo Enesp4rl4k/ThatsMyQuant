@@ -74,6 +74,24 @@ public sealed class PairsBacktestRunner
         double absMaxZ = 0;
         double? previousZScore = null;
 
+        // Captures WHY the latest bar declined to emit a WouldOpenNew signal — surfaced via
+        // PairsLiveSignal.Reasoning so the hybrid executor can log "BCH-LTC skipped: velocity
+        // filter zPrev=3.8 zNow=4.31" instead of silently doing nothing. Only the LAST bar's
+        // reason matters for live execution; intermediate bars don't affect anything reachable.
+        string? liveSkipReason = null;
+
+        // Shadow threshold instrumentation (2026-05-02): how many bars in the lookback would
+        // have hit relaxed entry thresholds? Diagnoses "are we starving for signals because
+        // the regime is dead, or because 2.5σ is too tight?". Counts |z| crossings at fixed
+        // thresholds — separate from the actual entryZ — so we measure raw signal supply
+        // without contaminating the live decision. Threshold-independent; no PnL simulation.
+        int barsWithValidZ = 0;
+        int shadowAbove1_0 = 0;
+        int shadowAbove1_5 = 0;
+        int shadowAbove2_0 = 0;
+        int shadowAbove2_5 = 0;
+        int shadowAbove3_0 = 0;
+
         var trades = new List<BacktestTradeResult>();
         var equityCurve = new List<decimal> { startingCapital };
         decimal equity = startingCapital;
@@ -155,8 +173,19 @@ public sealed class PairsBacktestRunner
             if (rollStd <= 0m) { equityCurve.Add(equity); continue; }
 
             double zScore = (double)((residual - rollMean) / rollStd);
-            if (Math.Abs(zScore) > absMaxZ) absMaxZ = Math.Abs(zScore);
+            double absZ = Math.Abs(zScore);
+            if (absZ > absMaxZ) absMaxZ = absZ;
             signalArmed++;
+
+            // Shadow threshold counters: only on bars where coint ALREADY admitted (we passed
+            // the IsTradeable gate at line 128). Measures "if entryZ were X, how many bars would
+            // have crossed?" — answers user's question "is edge dead or just throttled by 2.5σ?".
+            barsWithValidZ++;
+            if (absZ >= 1.0) shadowAbove1_0++;
+            if (absZ >= 1.5) shadowAbove1_5++;
+            if (absZ >= 2.0) shadowAbove2_0++;
+            if (absZ >= 2.5) shadowAbove2_5++;
+            if (absZ >= 3.0) shadowAbove3_0++;
 
             if (position != PairPositionState.Flat)
             {
@@ -289,18 +318,46 @@ public sealed class PairsBacktestRunner
             }
             else
             {
-                if ((i - lastSignalBar) < cooldown) { equityCurve.Add(equity); continue; }
+                bool isLastBar = i == aligned.Count - 1;
+                // Cooldown gate operates on `lastSignalBar`, which is set by the runner's
+                // INTERNAL simulation when sim trades close. For BACKTEST integrity this is
+                // correct — successive sim entries respect a cooling-off window. But for the
+                // LIVE signal at the latest bar, when the hybrid executor passes
+                // liveIsFlat=true (real-life flat), the cooldown is meaningless: the sim's
+                // last-trade timestamp is synthetic, the operator has no real position, and
+                // gating live entry on it silently suppresses signals for ~cooldown bars
+                // every time the sim runs through a recent close. Diagnosed 2026-05-02:
+                // BCH-LTC + TRX-XLM pairs reported "cooldown active (20-24 bars left)" via
+                // skip-reason logging despite real-life open=0 — the entire reason no Pairs
+                // entries fired post-prune. Bypass only on the live-decision bar; backtest
+                // statistics (trade list, equity, Sharpe) are unaffected because all earlier
+                // bars still respect cooldown.
+                bool cooldownActive = (i - lastSignalBar) < cooldown;
+                bool bypassCooldownForLiveSignal = isLastBar && liveIsFlat;
+                if (cooldownActive && !bypassCooldownForLiveSignal)
+                {
+                    if (isLastBar) liveSkipReason = $"cooldown active ({cooldown - (i - lastSignalBar)} bars left)";
+                    equityCurve.Add(equity); continue;
+                }
                 if (currentCoint.HalfLife > _options.MaxHalfLifeBars || currentCoint.HalfLife < _options.MinHalfLifeBars || double.IsInfinity(currentCoint.HalfLife) || double.IsNaN(currentCoint.HalfLife))
-                { equityCurve.Add(equity); continue; }
+                {
+                    if (isLastBar) liveSkipReason = $"half-life={currentCoint.HalfLife:F1} out of [{_options.MinHalfLifeBars},{_options.MaxHalfLifeBars}]";
+                    equityCurve.Add(equity); continue;
+                }
 
                 bool wantShort = zScore > entryZ;
                 bool wantLong = zScore < -entryZ;
+                if (!wantShort && !wantLong && isLastBar)
+                {
+                    liveSkipReason = $"|z|={Math.Abs(zScore):F2} below entry {entryZ:F2}";
+                }
                 if (wantShort || wantLong)
                 {
                     hedgeRatio = currentCoint.HedgeRatio;
                     var absBeta = Math.Abs(hedgeRatio);
                     if (absBeta < _options.MinHedgeRatio || absBeta > _options.MaxHedgeRatio)
                     {
+                        if (isLastBar) liveSkipReason = $"|β|={absBeta:F3} out of [{_options.MinHedgeRatio},{_options.MaxHedgeRatio}]";
                         equityCurve.Add(equity);
                         continue;
                     }
@@ -314,12 +371,14 @@ public sealed class PairsBacktestRunner
                     {
                         if (wantShort && zScore > previousZScore.Value + velocityThreshold)
                         {
+                            if (isLastBar) liveSkipReason = $"velocity filter (short): zPrev={previousZScore.Value:F2} → zNow={zScore:F2} (Δ={zScore - previousZScore.Value:F2} > {velocityThreshold:F2}) — spread still diverging";
                             equityCurve.Add(equity);
                             previousZScore = zScore;
                             continue;
                         }
                         if (wantLong && zScore < previousZScore.Value - velocityThreshold)
                         {
+                            if (isLastBar) liveSkipReason = $"velocity filter (long): zPrev={previousZScore.Value:F2} → zNow={zScore:F2} (Δ={zScore - previousZScore.Value:F2} < -{velocityThreshold:F2}) — spread still diverging";
                             equityCurve.Add(equity);
                             previousZScore = zScore;
                             continue;
@@ -357,6 +416,7 @@ public sealed class PairsBacktestRunner
                         if (regimeResult.Regime != MarketRegime.Ranging &&
                             regimeResult.Regime != MarketRegime.Unknown)
                         {
+                            if (isLastBar) liveSkipReason = $"spread regime={regimeResult.Regime} (need Ranging)";
                             equityCurve.Add(equity);
                             previousZScore = zScore;
                             continue;
@@ -377,6 +437,7 @@ public sealed class PairsBacktestRunner
                             var hunt = StopHuntDetector.DetectOnLatestBar(huntCandles);
                             if (hunt is not null && hunt.StrengthScore >= 50)
                             {
+                                if (isLastBar) liveSkipReason = $"stop-hunt active on leg-A (strength={hunt.StrengthScore})";
                                 equityCurve.Add(equity);
                                 previousZScore = zScore;
                                 continue;
@@ -393,6 +454,7 @@ public sealed class PairsBacktestRunner
                         int qualityScore = ComputePairQualityScore(currentCoint);
                         if (qualityScore < _options.MinPairQualityScore)
                         {
+                            if (isLastBar) liveSkipReason = $"pair quality score={qualityScore} < {_options.MinPairQualityScore}";
                             equityCurve.Add(equity);
                             previousZScore = zScore;
                             continue;
@@ -420,6 +482,7 @@ public sealed class PairsBacktestRunner
                                 enableVolumeFloor: true);
                             if (!gateResult.Pass)
                             {
+                                if (isLastBar) liveSkipReason = $"confluence floor reject: {gateResult.RejectReason}";
                                 equityCurve.Add(equity);
                                 previousZScore = zScore;
                                 continue;
@@ -435,6 +498,7 @@ public sealed class PairsBacktestRunner
                         double spreadBps = (double)(currentCoint.SpreadStdDev / a.Close) * 10_000.0;
                         if (spreadBps < _options.MinSpreadAtrBps)
                         {
+                            if (isLastBar) liveSkipReason = $"spread σ={spreadBps:F1}bps < floor {_options.MinSpreadAtrBps}bps (cost won't be earned)";
                             equityCurve.Add(equity);
                             previousZScore = zScore;
                             continue;
@@ -560,7 +624,9 @@ public sealed class PairsBacktestRunner
                 }
                 else
                 {
-                    liveSignal = PairsLiveSignal.None;
+                    liveSignal = liveSkipReason is null
+                        ? PairsLiveSignal.None
+                        : PairsLiveSignal.None with { Reasoning = liveSkipReason };
                 }
             }
         }
@@ -601,6 +667,23 @@ public sealed class PairsBacktestRunner
             "Pairs diagnostics: alignedBars={Aligned} cointTests={CT} cointPassed={CP} zEvaluated={ZE} |Zmax|={ZMax:F2} halfLife={HL}",
             aligned.Count, cointTestCount, cointPassCount, signalArmed, absMaxZ,
             coint?.HalfLife.ToString("F1") ?? "n/a");
+
+        // Shadow threshold report: "of N bars where coint admitted, how many would have crossed
+        // entry threshold X?" — gives operator real edge-supply visibility independent of live
+        // gate. If shadow@2.5 == 0 but shadow@1.5 is also small, regime is genuinely tight.
+        // If shadow@2.5 is small but shadow@1.5 is large, threshold tuning is the bottleneck.
+        // Only emit when sample is meaningful (≥30 valid-z bars).
+        if (barsWithValidZ >= 30)
+        {
+            _logger.LogInformation(
+                "Pairs shadow {A}/{B}: validZ={N} | crossings: σ≥1.0→{S10} ({P10:F1}%) σ≥1.5→{S15} ({P15:F1}%) σ≥2.0→{S20} ({P20:F1}%) σ≥2.5→{S25} ({P25:F1}%) σ≥3.0→{S30} ({P30:F1}%)",
+                _options.SymbolA, _options.SymbolB, barsWithValidZ,
+                shadowAbove1_0, 100.0 * shadowAbove1_0 / barsWithValidZ,
+                shadowAbove1_5, 100.0 * shadowAbove1_5 / barsWithValidZ,
+                shadowAbove2_0, 100.0 * shadowAbove2_0 / barsWithValidZ,
+                shadowAbove2_5, 100.0 * shadowAbove2_5 / barsWithValidZ,
+                shadowAbove3_0, 100.0 * shadowAbove3_0 / barsWithValidZ);
+        }
 
         return new BacktestResult
         {

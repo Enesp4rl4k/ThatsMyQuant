@@ -43,11 +43,27 @@ public class PaperPortfolio
         }
     }
 
-    public decimal TotalEquity => Cash + OpenPositions.Sum(p => p.IsLeveragedPaperPosition ? p.UnrealizedPnL : p.MarketValue);
+    // [2026-05-13] All position-iterating accessors lock on `this` because writers across
+    // the worker (FundingHybridExecutor, PairsHybridExecutor, FundingAlphaPaperHostedService,
+    // PairsTradingPaperHostedService, etc.) Add/Remove OpenPositions and ClosedPositions
+    // under `lock (_portfolio) { ... }`. Without matching the lock here, concurrent Sum() /
+    // Count() / Where() iteration can throw "Collection was modified" when a hybrid executor
+    // closes a position while a monitor reads aggregate state. Same monitor = no deadlock,
+    // recursive locks are fine in C# Monitor semantics.
+    public decimal TotalEquity
+    {
+        get
+        {
+            lock (this)
+            {
+                return Cash + OpenPositions.Sum(p => p.IsLeveragedPaperPosition ? p.UnrealizedPnL : p.MarketValue);
+            }
+        }
+    }
     public decimal TotalPnL => TotalEquity - InitialBalance;
     public double TotalPnLPercent => InitialBalance > 0 ? (double)(TotalPnL / InitialBalance * 100) : 0;
-    public int TotalTrades => ClosedPositions.Count;
-    public int WinningTrades => ClosedPositions.Count(p => p.RealizedPnL > 0);
+    public int TotalTrades { get { lock (this) { return ClosedPositions.Count; } } }
+    public int WinningTrades { get { lock (this) { return ClosedPositions.Count(p => p.RealizedPnL > 0); } } }
     public double WinRate => TotalTrades > 0 ? WinningTrades * 100.0 / TotalTrades : 0;
 
     public void ResetDailyPnLIfNeeded()

@@ -4,6 +4,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using ThatsMyQuant.Application.Strategy.EdgeLab;
 using ThatsMyQuant.Contracts.Interfaces;
 using ThatsMyQuant.Contracts.Models;
 
@@ -21,25 +22,68 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
     private readonly ILogger<DailyTelegramDigestHostedService> _logger;
     private readonly IServiceProvider _serviceProvider;
     private readonly PaperPortfolio _portfolio;
+    private readonly EdgeLabDryRunLedger? _edgeLabDryRunLedger;
+    private readonly EdgeLabReconciliationLedger? _edgeLabReconLedger;
     private readonly string _botToken;
     private readonly string _chatId;
-    private readonly TimeOnly _digestTime;
-    private DateOnly? _lastDigestDate;
+
+    // [2026-05-14 unattended hardening] Digest moved from once-daily to 4×/day.
+    // Operator may be away for days; "what happened in the last 6h" cadence catches
+    // problems within a quarter-day vs 24h.
+    // Override via Telegram:DigestTimes = "00:00,06:00,12:00,18:00" (comma-separated HH:mm).
+    // Legacy Telegram:DailyDigestTime still honored if DigestTimes absent.
+    private readonly TimeOnly[] _digestTimes;
+    // Per-slot dedupe key: ($"{date:yyyy-MM-dd}|{slotIdx}"). Memory-only, reset on restart.
+    private readonly HashSet<string> _sentSlots = new();
 
     public DailyTelegramDigestHostedService(
         ILogger<DailyTelegramDigestHostedService> logger,
         IServiceProvider serviceProvider,
         IConfiguration configuration,
-        PaperPortfolio portfolio)
+        PaperPortfolio portfolio,
+        EdgeLabDryRunLedger? edgeLabDryRunLedger = null,
+        EdgeLabReconciliationLedger? edgeLabReconLedger = null)
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
         _portfolio = portfolio;
+        _edgeLabDryRunLedger = edgeLabDryRunLedger;
+        _edgeLabReconLedger = edgeLabReconLedger;
         _botToken = configuration["Telegram:BotToken"] ?? string.Empty;
         _chatId = configuration["Telegram:ChatId"] ?? string.Empty;
-        // Default 00:00 local. Override via Telegram:DailyDigestTime ("HH:mm").
-        var raw = configuration["Telegram:DailyDigestTime"];
-        _digestTime = TimeOnly.TryParse(raw, out var t) ? t : new TimeOnly(0, 0);
+
+        // Parse digest times. Priority: DigestTimes (CSV) > legacy DailyDigestTime > default 4×/day.
+        var raw = configuration["Telegram:DigestTimes"];
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            _digestTimes = raw
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => TimeOnly.TryParse(s, out var t) ? (TimeOnly?)t : null)
+                .Where(t => t.HasValue)
+                .Select(t => t!.Value)
+                .Distinct()
+                .OrderBy(t => t)
+                .ToArray();
+        }
+        if (_digestTimes is null || _digestTimes.Length == 0)
+        {
+            var legacy = configuration["Telegram:DailyDigestTime"];
+            if (TimeOnly.TryParse(legacy, out var legacyTime))
+            {
+                _digestTimes = new[] { legacyTime };
+            }
+            else
+            {
+                // Default: 4×/day at quarter marks (00, 06, 12, 18 local).
+                _digestTimes = new[]
+                {
+                    new TimeOnly(0, 0),
+                    new TimeOnly(6, 0),
+                    new TimeOnly(12, 0),
+                    new TimeOnly(18, 0),
+                };
+            }
+        }
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -50,7 +94,10 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
             return;
         }
 
-        _logger.LogInformation("DailyTelegramDigestHostedService starting. DigestTime={Time} (local).", _digestTime);
+        _logger.LogInformation(
+            "TelegramDigestHostedService starting. DigestTimes=[{Times}] local ({Count}/day).",
+            string.Join(",", _digestTimes.Select(t => t.ToString("HH\\:mm"))),
+            _digestTimes.Length);
 
         // Send a startup ping so the user knows the digest service is wired.
         await SendMessageAsync(BuildStartupPing(), stoppingToken).ConfigureAwait(false);
@@ -66,20 +113,33 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
                     var todayLocal = DateOnly.FromDateTime(nowLocal);
                     var nowTime = TimeOnly.FromDateTime(nowLocal);
 
-                    // Fire once between digestTime and digestTime+5min, only if we haven't already today.
-                    var inWindow = nowTime >= _digestTime && nowTime < _digestTime.AddMinutes(5);
-                    var notSentToday = _lastDigestDate is null || _lastDigestDate.Value < todayLocal;
-                    if (inWindow && notSentToday)
+                    // Fire once per slot: each slotTime opens a 5-min window; we check
+                    // a per-slot dedupe key so each digest fires exactly once per day per slot.
+                    for (int i = 0; i < _digestTimes.Length; i++)
                     {
+                        var slotTime = _digestTimes[i];
+                        var inWindow = nowTime >= slotTime && nowTime < slotTime.AddMinutes(5);
+                        if (!inWindow) continue;
+
+                        var slotKey = $"{todayLocal:yyyy-MM-dd}|{i}";
+                        if (_sentSlots.Contains(slotKey)) continue;
+
                         var exchangeBalance = await TryGetExchangeBalanceAsync(stoppingToken).ConfigureAwait(false);
-                        var msg = BuildDigest(nowLocal, exchangeBalance);
+                        var msg = BuildDigest(nowLocal, exchangeBalance, slotTime, slotIndex: i, totalSlots: _digestTimes.Length);
                         var ok = await SendMessageAsync(msg, stoppingToken).ConfigureAwait(false);
-                        if (ok) _lastDigestDate = todayLocal;
+                        if (ok)
+                        {
+                            _sentSlots.Add(slotKey);
+                            // Garbage-collect old slot keys (keep only today + yesterday).
+                            var cutoff = todayLocal.AddDays(-1);
+                            _sentSlots.RemoveWhere(k =>
+                                DateOnly.TryParseExact(k.Split('|')[0], "yyyy-MM-dd", out var d) && d < cutoff);
+                        }
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "DailyTelegramDigestHostedService tick failed.");
+                    _logger.LogError(ex, "TelegramDigestHostedService tick failed.");
                 }
             }
             while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
@@ -87,12 +147,27 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
         catch (OperationCanceledException) { }
     }
 
+    /// <summary>
+    /// [2026-05-14] Escape Markdown V1 special chars in user/dynamic strings to avoid
+    /// "can't parse entities" 400 errors from Telegram. The error we saw was triggered
+    /// by "fee_panic" — the underscore is the Markdown italic delimiter and Telegram
+    /// looks for a closing `_` it never finds. Escape: _ * [ ` (backslash prefix).
+    /// </summary>
+    private static string EscapeMarkdown(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        return s.Replace(@"\", @"\\").Replace("_", @"\_").Replace("*", @"\*").Replace("[", @"\[").Replace("`", @"\`");
+    }
+
     private string BuildStartupPing()
     {
         var sb = new StringBuilder();
-        sb.AppendLine("📈 ThatsMyQuant Paper Daily Digest enabled");
-        sb.AppendLine($"Will report at {_digestTime:HH\\:mm} local each night.");
-        sb.AppendLine($"Edges live: pairs (TRX/XLM, SOL/AVAX, SOL/LINK 4h) + funding (LINK/LTC/DOGE/AAVE 1h).");
+        var schedule = string.Join(", ", _digestTimes.Select(t => t.ToString("HH\\:mm")));
+        sb.AppendLine("📈 ThatsMyQuant Paper Digest enabled");
+        sb.AppendLine($"Will report {_digestTimes.Length}×/day at: {schedule} (local).");
+        // 2026-05-14: escape dynamic strategy names — they contain `_` (e.g. "fee_panic")
+        // which Markdown V1 reads as italic delimiter and 400-errors when unmatched.
+        sb.AppendLine($"Edges live: 13 strategies (breakout 4h/1h, {EscapeMarkdown("fee_panic")}, stablecoin, funding alpha).");
         sb.AppendLine($"Initial Cash: ${_portfolio.Cash:N2}");
         return sb.ToString();
     }
@@ -113,7 +188,7 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
         }
     }
 
-    private string BuildDigest(DateTime nowLocal, Account? exchange)
+    private string BuildDigest(DateTime nowLocal, Account? exchange, TimeOnly slotTime, int slotIndex, int totalSlots)
     {
         // Snapshot under lock to avoid mid-mutation reads from the trading hosted services.
         List<PaperPosition> closed;
@@ -134,7 +209,10 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
         decimal dailyPnLPct = initial > 0 ? dailyPnl / initial * 100m : 0m;
 
         var sb = new StringBuilder();
-        sb.AppendLine("📊 *Paper Trade Daily Digest*");
+        // Title differs by slot count: "Daily" for once-a-day, "Nh" for multi-slot.
+        var hoursPerSlot = totalSlots > 0 ? 24 / totalSlots : 24;
+        var titleQualifier = totalSlots == 1 ? "Daily" : $"{hoursPerSlot}h";
+        sb.AppendLine($"📊 *Paper Trade {titleQualifier} Digest* (slot {slotIndex + 1}/{totalSlots} @ {slotTime:HH\\:mm})");
         sb.AppendLine($"_{nowLocal:yyyy-MM-dd HH:mm} local_");
         sb.AppendLine();
         if (exchange is not null && exchange.Balance > 0m)
@@ -270,7 +348,101 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
             AppendAiTakeaways(sb, nowLocal);
         }
 
+        // ── EdgeLab Dry-Run (last 24h intended orders) ──
+        // Sits OUTSIDE the closed-trades guard above because dry-run by design
+        // produces no closed positions; it still has its own intent stream.
+        AppendEdgeLabDryRun(sb, nowLocal);
+
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Reads <see cref="EdgeLabDryRunLedger"/> for entries in the last 24h and
+    /// renders a compact summary: cycle count, intended order count, gross
+    /// exposure, top symbols, last <c>as_of_bar</c> seen. Silently skipped
+    /// when the ledger is unavailable or empty (e.g. EdgeLab is in <c>off</c>
+    /// or <c>live</c> mode, or worker is fresh).
+    /// </summary>
+    private void AppendEdgeLabDryRun(System.Text.StringBuilder sb, DateTime nowLocal)
+    {
+        if (_edgeLabDryRunLedger is null) return;
+
+        IReadOnlyList<EdgeLabDryRunEntry> entries;
+        try { entries = _edgeLabDryRunLedger.ReadSince(DateTime.UtcNow.AddHours(-24)); }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Daily digest: EdgeLab dry-run ledger read failed.");
+            return;
+        }
+        if (entries.Count == 0) return;
+
+        sb.AppendLine("*EdgeLab Dry-Run (last 24h)*");
+        var cycles = entries
+            .GroupBy(e => e.AsOfBar)
+            .OrderBy(g => g.Key)
+            .ToList();
+        var totalGross = entries.Sum(e => e.NotionalUsd);
+        var lastCycle = cycles[^1];
+        sb.AppendLine($"  Cycles: {cycles.Count}  Intended orders: {entries.Count}  Gross: ${totalGross:N0}");
+        sb.AppendLine($"  Last as_of: {lastCycle.Key:u}  ({lastCycle.Count()} orders, gross ${lastCycle.Sum(e => e.NotionalUsd):N0})");
+
+        // Top symbols by appearance × side — gives a quick sense of which names
+        // EdgeLab consistently picks at the bottom/top of the rank distribution.
+        var topLong = entries.Where(e => e.Side == "Buy")
+            .GroupBy(e => e.Symbol)
+            .OrderByDescending(g => g.Count())
+            .Take(3)
+            .Select(g => $"{g.Key}×{g.Count()}");
+        var topShort = entries.Where(e => e.Side == "Sell")
+            .GroupBy(e => e.Symbol)
+            .OrderByDescending(g => g.Count())
+            .Take(3)
+            .Select(g => $"{g.Key}×{g.Count()}");
+        var longStr = string.Join(", ", topLong);
+        var shortStr = string.Join(", ", topShort);
+        if (longStr.Length > 0)  sb.AppendLine($"  🟢 Long picks : {longStr}");
+        if (shortStr.Length > 0) sb.AppendLine($"  🔴 Short picks: {shortStr}");
+
+        // Hypothetical PnL — the only signal that tells us "is the bot's behavior
+        // consistent with the validated edge?" Cumulative is read from the latest
+        // reconciliation entry (running total since worker first booted in dry-run).
+        // At promotion-gate time (N≥30 cycles) we'll compare distribution to
+        // EdgeLab's backtest to decide live-readiness.
+        if (_edgeLabReconLedger is not null)
+        {
+            try
+            {
+                var reconEntries = _edgeLabReconLedger.ReadSince(DateTime.UtcNow.AddHours(-24));
+                var last = _edgeLabReconLedger.ReadLast();
+                if (reconEntries.Count > 0 && last is not null)
+                {
+                    var sumPeriod24h = reconEntries.Sum(e => e.PeriodPnLUsd);
+                    var basisRef = last.Basis > 0 ? last.Basis : 1m;
+                    var pctOfBasis = sumPeriod24h / basisRef * 100m;
+                    var bestSym = reconEntries
+                        .SelectMany(e => e.PerSymbolPnL)
+                        .GroupBy(kv => kv.Key)
+                        .Select(g => new { Sym = g.Key, Pnl = g.Sum(kv => kv.Value) })
+                        .OrderByDescending(x => x.Pnl)
+                        .FirstOrDefault();
+                    var worstSym = reconEntries
+                        .SelectMany(e => e.PerSymbolPnL)
+                        .GroupBy(kv => kv.Key)
+                        .Select(g => new { Sym = g.Key, Pnl = g.Sum(kv => kv.Value) })
+                        .OrderBy(x => x.Pnl)
+                        .FirstOrDefault();
+                    sb.AppendLine($"  *Hypothetical PnL (mark-to-mark)*");
+                    sb.AppendLine($"    24h period sum: ${sumPeriod24h:+0.00;-0.00;0.00} ({pctOfBasis:+0.00;-0.00;0.00}% of ${basisRef:N0} basis)");
+                    sb.AppendLine($"    Cum since boot: ${last.CumulativePnLUsd:+0.00;-0.00;0.00}");
+                    if (bestSym is not null && bestSym.Pnl != 0m)
+                        sb.AppendLine($"    Best: {bestSym.Sym} ${bestSym.Pnl:+0.00;-0.00;0.00}   Worst: {worstSym!.Sym} ${worstSym.Pnl:+0.00;-0.00;0.00}");
+                }
+            }
+            catch (Exception ex) { _logger.LogDebug(ex, "Daily digest: EdgeLab reconciliation read failed."); }
+        }
+
+        sb.AppendLine($"  _Mode: dry-run · no OKX traffic · contract: signals/README.md_");
+        sb.AppendLine();
     }
 
     /// <summary>

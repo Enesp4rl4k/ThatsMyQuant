@@ -98,22 +98,48 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
     }
 
+    // [2026-05-13] Hard cap on order-book staleness for execution decisions. When the
+    // OKX WebSocket disconnects/silently lags, the cached snapshot can age out → post-only
+    // price nudge uses bid/ask from minutes ago → either crosses the new book (51015 reject)
+    // or rests far from it (never fills). 30s is comfortably long for normal book updates
+    // (typically <1s between snapshots) but short enough to fail closed when the feed dies.
+    private const long OrderBookMaxAgeMs = 30_000;
+
     public bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book)
     {
+        OrderBookSnapshot candidate = default;
+        bool found = false;
         if (_latestOrderBooks.TryGetValue(ResolveOkxInstrumentId(symbol), out var b))
         {
-            book = b;
-            return true;
+            candidate = b; found = true;
         }
-
-        if (_latestOrderBooks.TryGetValue(symbol, out b))
+        else if (_latestOrderBooks.TryGetValue(symbol, out b))
         {
-            book = b;
-            return true;
+            candidate = b; found = true;
         }
 
-        book = default;
-        return false;
+        if (!found)
+        {
+            book = default;
+            return false;
+        }
+
+        // Staleness gate. WebSocket disconnects can leave a snapshot frozen in the cache;
+        // returning it would feed stale bid/ask to ResolvePostOnlyLimitPrice → 51015 reject
+        // or queue-deep rest. Better to fail closed: caller falls back to signal.Price (or
+        // refuses to submit if RequireOrderBookForPostOnly=true).
+        var nowMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        if (candidate.TimestampMs > 0 && nowMs - candidate.TimestampMs > OrderBookMaxAgeMs)
+        {
+            _logger.LogWarning(
+                "OKX order-book snapshot for {Symbol} is STALE ({Age}ms > {Max}ms) — refusing to use for execution. WebSocket may be disconnected.",
+                symbol, nowMs - candidate.TimestampMs, OrderBookMaxAgeMs);
+            book = default;
+            return false;
+        }
+
+        book = candidate;
+        return true;
     }
 
     public async Task<decimal> GetQueuePositionAsync(string symbol, decimal price, TradeSide side)
@@ -224,71 +250,168 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         // sz interpreted as base qty for perp/margin and as quote notional for spot buy
         // by default unless tgtCcy is set). OrderType.Limit preserves legacy maker path.
         var isMarket = signal.OrderType == OrderType.Market;
-        var orderBody = isMarket
-            ? (object)new
+
+        // [Sprint 1 — Track B, 2026-05-10] Maker-side price nudge.
+        // When PostOnlyMode is enabled and the caller passed a Limit signal with a price
+        // that would sit inside or cross the spread (typical when the consumer uses mid
+        // as signal.Price — e.g. EdgeLabSingleAsset line 242), nudge the price to the
+        // outside of the book by MakerEdgeBps so the post_only flag accepts it cleanly.
+        // Without this, the demo-account harvest (336 fills, 2026-05-09) measured 0%
+        // maker — every order either rejected as 51015 "would_match" or timed out
+        // after LimitOrderTimeoutSeconds and fell through to the Market fallback.
+        var pxForLimit = signal.Price;
+        var postOnlyAttempted = false;
+        if (!isMarket && _execOptions.PostOnlyMode)
+        {
+            var (adjusted, source) = ResolvePostOnlyLimitPrice(okxSymbol, signal, _execOptions.MakerEdgeBps);
+            if (adjusted is decimal px)
             {
-                instId = okxSymbol,
-                tdMode,
-                side = signal.Side == TradeSide.Buy ? "buy" : "sell",
-                ordType = "market",
-                clOrdId = clientOrderId,
-                sz = szStr,
-                posSide,
-                reduceOnly = reduceOnlyField,
-                attachAlgoOrds
+                pxForLimit = px;
+                postOnlyAttempted = true;
+                _logger.LogDebug(
+                    "OKX maker-side price nudge for {Symbol} {Side}: signal.Price={SignalPx} → px={Px} (edge={Edge}bp, src={Src})",
+                    okxSymbol, signal.Side, signal.Price, pxForLimit, _execOptions.MakerEdgeBps, source);
             }
-            : new
+            else if (_execOptions.RequireOrderBookForPostOnly)
             {
-                instId = okxSymbol,
-                tdMode,
-                side = signal.Side == TradeSide.Buy ? "buy" : "sell",
-                // OKX v5 uses a dedicated ordType=post_only for maker-only orders.
-                // If it would cross the book, the order is rejected rather than
-                // silently filled as taker — protects the maker rebate edge.
-                ordType = _execOptions.PostOnlyMode ? "post_only" : "limit",
-                clOrdId = clientOrderId,
-                // CRITICAL: InvariantCulture — without it Turkish/etc. locales emit "55,57"
-                // for the decimal separator and OKX rejects with sCode=51000 "Parameter px
-                // error". Same applies to sz (already invariant on line 206).
-                px = signal.Price.ToString("F8", System.Globalization.CultureInfo.InvariantCulture),
-                sz = szStr,
-                posSide,
-                reduceOnly = reduceOnlyField,
-                attachAlgoOrds
-            };
-
-        var bodyJson = JsonSerializer.Serialize(orderBody);
-        var timestamp = GetIsoTimestamp();
-        var signature = ComputeSignature(timestamp, "POST", "/api/v5/trade/order", bodyJson);
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/api/v5/trade/order");
-        request.Content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
-
-        // OKX-specific authentication headers
-        request.Headers.Add("OK-ACCESS-KEY", ApiKey);
-        request.Headers.Add("OK-ACCESS-SIGN", signature);
-        request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
-        request.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
-
-        if (IsDemoMode)
-        {
-            request.Headers.Add("x-simulated-trading", "1");
+                _portfolio.ReleaseReservationForOrder(Venue, "USDT", clientOrderId, signal.Quantity * signal.Price);
+                _logger.LogWarning(
+                    "OKX post_only refused for {Symbol}: no order-book snapshot and RequireOrderBookForPostOnly=true. Caller will retry on next signal cycle.",
+                    okxSymbol);
+                throw new InvalidOperationException(
+                    $"OKX post_only refused for {okxSymbol}: order-book snapshot unavailable.");
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "OKX maker-side price nudge skipped for {Symbol}: no order-book snapshot. Falling back to signal.Price={SignalPx} (post_only may reject if it crosses).",
+                    okxSymbol, signal.Price);
+            }
         }
 
-        var response = await _httpClient.SendAsync(request);
-
-        if (!response.IsSuccessStatusCode)
+        // [Sprint 1 — Track B] Initial submit + post-only reject retry loop.
+        // OKX returns sCode 51015 "Order would match an existing order" when a post_only
+        // order would cross the book (e.g. book moved between snapshot read and submit).
+        // We widen the maker edge by PostOnlyRejectRetryWideningBps each retry up to
+        // PostOnlyRejectRetries attempts. Default: 2 retries → up to 3 attempts at
+        // edges {1.0, 1.5, 2.0} bp. Pure post-only failure is logged and propagated;
+        // there is NO automatic taker fallback at this stage — the existing
+        // LimitOrderTimeoutSeconds / market-fallback path further down handles
+        // accepted-but-unfilled orders.
+        HttpResponseMessage response;
+        string responseJson = string.Empty;
+        string? code = null;
+        var attempt = 0;
+        var maxAttempts = (postOnlyAttempted ? _execOptions.PostOnlyRejectRetries : 0) + 1;
+        var currentEdgeBps = _execOptions.MakerEdgeBps;
+        while (true)
         {
-            TrackHttpFailure(response);
-            var error = await response.Content.ReadAsStringAsync();
-            _logger.LogError("OKX execution failed: {Error}", error);
-            throw new InvalidOperationException($"OKX execution failed: {error}");
+            var orderBody = isMarket
+                ? (object)new
+                {
+                    instId = okxSymbol,
+                    tdMode,
+                    side = signal.Side == TradeSide.Buy ? "buy" : "sell",
+                    ordType = "market",
+                    clOrdId = clientOrderId,
+                    sz = szStr,
+                    posSide,
+                    reduceOnly = reduceOnlyField,
+                    attachAlgoOrds
+                }
+                : new
+                {
+                    instId = okxSymbol,
+                    tdMode,
+                    side = signal.Side == TradeSide.Buy ? "buy" : "sell",
+                    // OKX v5 uses a dedicated ordType=post_only for maker-only orders.
+                    // If it would cross the book, the order is rejected rather than
+                    // silently filled as taker — protects the maker rebate edge.
+                    ordType = _execOptions.PostOnlyMode ? "post_only" : "limit",
+                    clOrdId = clientOrderId,
+                    // CRITICAL: InvariantCulture — without it Turkish/etc. locales emit "55,57"
+                    // for the decimal separator and OKX rejects with sCode=51000 "Parameter px
+                    // error". Same applies to sz (already invariant on line 206).
+                    px = pxForLimit.ToString("F8", System.Globalization.CultureInfo.InvariantCulture),
+                    sz = szStr,
+                    posSide,
+                    reduceOnly = reduceOnlyField,
+                    attachAlgoOrds
+                };
+
+            var bodyJson = JsonSerializer.Serialize(orderBody);
+            var timestamp = GetIsoTimestamp();
+            var signature = ComputeSignature(timestamp, "POST", "/api/v5/trade/order", bodyJson);
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/api/v5/trade/order");
+            request.Content = new StringContent(bodyJson, Encoding.UTF8, "application/json");
+
+            // OKX-specific authentication headers
+            request.Headers.Add("OK-ACCESS-KEY", ApiKey);
+            request.Headers.Add("OK-ACCESS-SIGN", signature);
+            request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
+            request.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+
+            if (IsDemoMode)
+            {
+                request.Headers.Add("x-simulated-trading", "1");
+            }
+
+            response = await _httpClient.SendAsync(request);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                TrackHttpFailure(response);
+                var error = await response.Content.ReadAsStringAsync();
+                _logger.LogError("OKX execution failed: {Error}", error);
+                throw new InvalidOperationException($"OKX execution failed: {error}");
+            }
+
+            // Check OKX response body for error codes (OKX returns 200 even on logical errors)
+            responseJson = await response.Content.ReadAsStringAsync();
+            string probedSCode = "";
+            using (var probe = JsonDocument.Parse(responseJson))
+            {
+                code = probe.RootElement.GetProperty("code").GetString();
+                if (code != "0")
+                {
+                    try
+                    {
+                        var dataArr = probe.RootElement.GetProperty("data");
+                        if (dataArr.GetArrayLength() > 0 && dataArr[0].TryGetProperty("sCode", out var sc))
+                            probedSCode = sc.GetString() ?? "";
+                    }
+                    catch { /* ignore */ }
+                }
+            }
+            if (code == "0") break;
+
+            if (postOnlyAttempted && probedSCode == "51015" && attempt < maxAttempts - 1)
+            {
+                attempt++;
+                currentEdgeBps += _execOptions.PostOnlyRejectRetryWideningBps;
+                var (retryPx, retrySrc) = ResolvePostOnlyLimitPrice(okxSymbol, signal, currentEdgeBps);
+                if (retryPx is decimal newPx)
+                {
+                    pxForLimit = newPx;
+                    _logger.LogInformation(
+                        "OKX post_only would_match for {Symbol} {Side} attempt {Attempt}/{Max}: widening edge to {Edge}bp, retry px={Px} (src={Src}).",
+                        okxSymbol, signal.Side, attempt, maxAttempts, currentEdgeBps, pxForLimit, retrySrc);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        "OKX post_only would_match for {Symbol} {Side} attempt {Attempt}/{Max}: no fresh order-book snapshot for retry — reusing prior px={Px}.",
+                        okxSymbol, signal.Side, attempt, maxAttempts, pxForLimit);
+                }
+                continue;
+            }
+
+            // Fall through to the existing rejection-handling block (sCode 51169, etc.).
+            break;
         }
 
-        // Check OKX response body for error codes (OKX returns 200 even on logical errors)
-        var responseJson = await response.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(responseJson);
-        var code = doc.RootElement.GetProperty("code").GetString();
         if (code != "0")
         {
             var msg = doc.RootElement.GetProperty("msg").GetString();
@@ -371,7 +494,9 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         decimal fillFeeSigned = 0m;
         if (!string.IsNullOrEmpty(ordId))
         {
-            var initial = await PollFillStatusAsync(ordId, okxSymbol, signal.Quantity);
+            // 2026-05-11: same unit-fix as the timeout-wait below — pass orderSz (contracts)
+            // so RemainingQty is in contract units that the lot-size guard understands.
+            var initial = await PollFillStatusAsync(ordId, okxSymbol, orderSz);
             filledQty = initial.FilledQty;
             remainingQty = initial.RemainingQty;
             fillStatus = initial.Status;
@@ -395,7 +520,12 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             && !string.IsNullOrEmpty(ordId)
             && _execOptions.LimitOrderTimeoutSeconds > 0)
         {
-            var waited = await WaitForLimitFillOrTimeoutAsync(ordId, okxSymbol, signal.Quantity);
+            // 2026-05-11: pass orderSz (CONTRACTS for SWAP) — not signal.Quantity (base) —
+            // so RemainingQty stays in contract units. Prior bug: base/contract unit mix
+            // produced a fractional remainder that OKX rejected with sCode 51121 on the
+            // market fallback (lot-size violation). orderSz was already lotSz-rounded at
+            // submit time; remainders are therefore lot-multiples by construction.
+            var waited = await WaitForLimitFillOrTimeoutAsync(ordId, okxSymbol, orderSz);
             filledQty = waited.FilledQty;
             remainingQty = waited.RemainingQty;
             fillStatus = waited.Status;
@@ -411,14 +541,148 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                     ordId, okxSymbol, _execOptions.LimitOrderTimeoutSeconds, remainingQty);
 
                 var cancelled = await TryCancelOrderAsync(okxSymbol, ordId);
+                if (cancelled && _execOptions.CancelVerifyPollAttempts > 0)
+                {
+                    // [2026-05-13 cancel-verify FSM] Cancel HTTP 200 ≠ cancel applied.
+                    // Without this verification, demo congestion (or rare live race) leaves
+                    // the limit ALIVE while the market fallback fires → 2× position duplicate.
+                    var verify = await VerifyCancelAppliedAsync(okxSymbol, ordId).ConfigureAwait(false);
+                    switch (verify.Outcome)
+                    {
+                        case CancelVerifyOutcome.Canceled:
+                            // ✅ proceed to market fallback below.
+                            // verify.FilledQty captures any partial that landed pre-cancel —
+                            // adopt it so the remainder we send to market is accurate.
+                            // [2026-05-14 BUG #4 FIX] verify.FillFeeSigned is the CUMULATIVE
+                            // fee for the SAME order (not delta). Earlier waited.FillFeeSigned
+                            // also reported cumulative for the same ordId. Adding both would
+                            // double-count fees by the partial-fill amount. Replace, not add.
+                            if (verify.FilledQty > filledQty)
+                            {
+                                var deltaFill = verify.FilledQty - filledQty;
+                                filledQty = verify.FilledQty;
+                                fillFeeSigned = verify.FillFeeSigned;   // not +=  (cumulative)
+                                remainingQty = Math.Max(0m, remainingQty - deltaFill);
+                            }
+                            break;
+
+                        case CancelVerifyOutcome.FilledInRace:
+                            // Limit filled during the cancel race. Adopt the fill, skip market.
+                            // [2026-05-14 BUG #4 FIX] Same-order cumulative fee — replace, not add.
+                            _logger.LogWarning(
+                                "OKX: limit order {OrdId} {Symbol} filled IN RACE during cancel ({Filled} qty, fee {Fee}); SKIPPING market fallback to prevent duplicate.",
+                                ordId, okxSymbol, verify.FilledQty, verify.FillFeeSigned);
+                            filledQty = Math.Max(filledQty, verify.FilledQty);
+                            fillFeeSigned = verify.FillFeeSigned;   // not +=  (cumulative for same order)
+                            remainingQty = 0m;
+                            fillStatus = filledQty > 0m ? TradeStatus.Executed : TradeStatus.Pending;
+                            fillOutcome = FillPollOutcome.Filled;
+                            cancelled = false; // bypass market submit below
+                            break;
+
+                        case CancelVerifyOutcome.StillLive:
+                        case CancelVerifyOutcome.Unknown:
+                            // Cancel did not apply OR we cannot tell. Either way, market submit
+                            // would risk a duplicate-order disaster. Abort. Reconcile loop +
+                            // operator UI check will resolve. (Detailed alert already logged
+                            // inside VerifyCancelAppliedAsync.)
+                            cancelled = false; // bypass market submit below
+                            break;
+                    }
+                }
                 if (cancelled)
                 {
-                    var mktResult = await SubmitMarketFallbackAsync(signal, okxSymbol, remainingQty, tdMode, posSide, reduceOnlyField);
-                    filledQty += mktResult.FilledQty;
-                    remainingQty = mktResult.RemainingQty;
-                    fillStatus = mktResult.Status;
-                    fillFeeSigned += mktResult.FillFeeSigned;
-                    fillOutcome = mktResult.Outcome;
+                    // 2026-05-11: Normalize the remainder to contract spec BEFORE submitting
+                    // the market fallback. Previously the leftover from a partial maker fill
+                    // was passed through as-is and OKX rejected with sCode 51121 ("Order
+                    // quantity must be a multiple of the lot size") because the divisor mix
+                    // of base-asset signal.Quantity and contract-unit poll responses left
+                    // a fractional remainder (e.g. 853.333 contracts for ADA-USDT-SWAP).
+                    // Dust below one lotSz is dropped — partial-fill survival is acceptable;
+                    // the worker HoldOpen tick will manage the smaller-than-requested position.
+                    decimal mktQty = remainingQty;
+                    if (IsSwapMode)
+                    {
+                        var spec = await GetContractSpecAsync(okxSymbol).ConfigureAwait(false);
+                        if (spec.LotSz > 0m)
+                        {
+                            mktQty = Math.Floor(remainingQty / spec.LotSz) * spec.LotSz;
+                        }
+                        if (mktQty < spec.MinSz)
+                        {
+                            _logger.LogWarning(
+                                "OKX: market fallback for {Symbol} SKIPPED — remainder {Rem} < minSz {Min} after lotSz {Lot} normalization. Accepting partial maker fill {Filled} as final.",
+                                okxSymbol, remainingQty, spec.MinSz, spec.LotSz, filledQty);
+                            // Treat as fully resolved: no further submission, status reflects what we got.
+                            remainingQty = 0m;
+                            fillStatus = filledQty > 0m ? TradeStatus.Executed : TradeStatus.Pending;
+                            fillOutcome = FillPollOutcome.Live;
+                            mktQty = 0m;
+                        }
+                    }
+                    if (mktQty > 0m)
+                    {
+                        // [2026-05-14 Day 5 — B1 smart routing] Try IOC first when enabled.
+                        // IOC (ordType="ioc") cap-fills at an aggressive cross-side limit,
+                        // cancels remainder. Saves 2-5bp slippage vs naive market on volatile
+                        // books. If IOC fully fills, skip market entirely. Otherwise reduce
+                        // mktQty by IOC partial and proceed to market for the rest.
+                        if (_execOptions.SmartRoutingIocEnabled)
+                        {
+                            var iocResult = await SubmitIocFallbackAsync(signal, okxSymbol, mktQty, tdMode, posSide, reduceOnlyField);
+                            // [2026-05-14 BUG #2 FIX caller-side] If IOC outcome is Unknown
+                            // (HTTP error / silent submit), the order MAY exist on OKX. Going
+                            // straight to MARKET would risk a duplicate. Skip the entire
+                            // fallback and let reconcile loop sync.
+                            if (iocResult.Outcome == FillPollOutcome.Unknown)
+                            {
+                                _logger.LogError(
+                                    "OKX IOC outcome UNKNOWN for {Symbol} — SKIPPING market fallback to prevent duplicate. Reconcile will sync.",
+                                    okxSymbol);
+                                fillStatus = filledQty > 0m ? TradeStatus.Executed : TradeStatus.Pending;
+                                fillOutcome = FillPollOutcome.Unknown;
+                                mktQty = 0m;
+                            }
+                            else if (iocResult.FilledQty > 0m)
+                            {
+                                filledQty += iocResult.FilledQty;
+                                fillFeeSigned += iocResult.FillFeeSigned;
+                                remainingQty -= iocResult.FilledQty;
+                                mktQty = Math.Max(0m, mktQty - iocResult.FilledQty);
+                                _logger.LogInformation(
+                                    "OKX smart-routing IOC filled {Filled}/{Req} for {Symbol}; remaining {Rem} → MARKET fallback.",
+                                    iocResult.FilledQty, mktQty + iocResult.FilledQty, okxSymbol, mktQty);
+                            }
+                            // If mktQty now < minSz after IOC partial, skip MARKET (dust).
+                            if (mktQty > 0m && IsSwapMode)
+                            {
+                                var spec2 = await GetContractSpecAsync(okxSymbol).ConfigureAwait(false);
+                                if (mktQty < spec2.MinSz)
+                                {
+                                    fillStatus = filledQty > 0m ? TradeStatus.Executed : TradeStatus.Pending;
+                                    fillOutcome = FillPollOutcome.Filled;
+                                    remainingQty = 0m;
+                                    mktQty = 0m;
+                                }
+                            }
+                        }
+
+                        if (mktQty <= 0m)
+                        {
+                            // IOC fully covered the remainder — done.
+                            fillStatus = filledQty > 0m ? TradeStatus.Executed : TradeStatus.Pending;
+                            fillOutcome = FillPollOutcome.Filled;
+                        }
+                        else
+                        {
+                            var mktResult = await SubmitMarketFallbackAsync(signal, okxSymbol, mktQty, tdMode, posSide, reduceOnlyField);
+                            filledQty += mktResult.FilledQty;
+                            remainingQty = mktResult.RemainingQty;
+                            fillStatus = mktResult.Status;
+                            fillFeeSigned += mktResult.FillFeeSigned;
+                            fillOutcome = mktResult.Outcome;
+                        }
+                    }
                 }
             }
             else if (fillOutcome == FillPollOutcome.Unknown)
@@ -477,13 +741,25 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             catch { /* fall back to raw fill qty if spec lookup fails */ }
         }
 
-        return new Trade
+        // [Sprint 3 — 2026-05-10] Critical attribution bug fix.
+        // Pre-fix: Trade was returned without StrategyTag/SignalPrice/ExecutionSource
+        // populated, so every fill landed with default StrategyTag="TrendConfluence" in
+        // the database — collapsing all 11 EdgeLab strategies into one bucket and
+        // making per-strategy P&L attribution impossible. With per-strategy basis
+        // weights now in place (Sprint 2), this propagation is mandatory: downstream
+        // services (TCA, ShadowAudit, PromotionGate, daily digest) all key on
+        // Trade.StrategyTag.
+        // Post-fix: copy the signal's identifying fields onto the Trade. Also captures
+        // BacktestExpectedPnL when present in metadata so Sprint 4's divergence audit
+        // has the realized-vs-expected PnL paired at fill time.
+        var trade = new Trade
         {
             Id = Guid.NewGuid(),
             SignalId = signal.Id,
             Symbol = signal.Symbol,
             Side = signal.Side,
             EntryPrice = signal.Price,
+            SignalPrice = signal.Price,
             Quantity = filledQtyBase,
             FilledQuantity = filledQtyBase,
             RequestedQuantity = requestedQtyBase,
@@ -496,11 +772,24 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             ExecutionMode = IsSwapMode
                 ? (IsDemoMode ? "DEMO-OKX-SWAP" : "REAL-OKX-SWAP")
                 : (IsDemoMode ? "DEMO-OKX" : "REAL-OKX"),
+            ExecutionSource = IsDemoMode ? "PAPER" : "LIVE",
             Leverage = leverage,
             MarginMode = marginMode,
             TotalFeesPaid = feePaid,
-            NetFunding = 0m
+            NetFunding = 0m,
+            StrategyTag = string.IsNullOrWhiteSpace(signal.StrategyTag)
+                ? "TrendConfluence"
+                : signal.StrategyTag,
         };
+
+        // Capture optional Quantlab signal expectation if the caller propagated it.
+        if (signal.Metadata.TryGetValue("BacktestExpectedPnL", out var expectedRaw)
+            && decimal.TryParse(expectedRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var expected))
+        {
+            trade.BacktestExpectedPnL = expected;
+        }
+
+        return trade;
     }
 
     private static decimal ResolveLeverage(Signal signal)
@@ -524,6 +813,63 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
 
         return MarginMode.Isolated;
+    }
+
+    /// <summary>
+    /// [Sprint 1 — Track B, 2026-05-10] Compute the post_only-safe limit price.
+    /// Uses the cached top-of-book snapshot (populated by the websocket subscriber)
+    /// and pulls the price <paramref name="edgeBps"/> bp inside the maker side.
+    ///
+    ///   BUY  → bestBid × (1 − edgeBps/10000)  (sit BELOW the highest bid)
+    ///   SELL → bestAsk × (1 + edgeBps/10000)  (sit ABOVE the lowest ask)
+    ///
+    /// Both placements guarantee the post_only flag accepts the order: the BUY
+    /// cannot match any seller (it's below all asks AND below the best bid), the
+    /// SELL cannot match any buyer (it's above all bids AND above the best ask).
+    ///
+    /// Returns (null, "no-book") when no snapshot is available — caller decides
+    /// whether to fall back to <c>signal.Price</c> or refuse to submit (per
+    /// <see cref="OrderExecutionOptions.RequireOrderBookForPostOnly"/>).
+    /// </summary>
+    internal (decimal? Price, string Source) ResolvePostOnlyLimitPrice(
+        string okxSymbol, Signal signal, decimal edgeBps)
+    {
+        if (!TryGetLatestOrderBook(okxSymbol, out var book) &&
+            !TryGetLatestOrderBook(signal.Symbol, out book))
+        {
+            return (null, "no-book");
+        }
+
+        return ComputePostOnlyLimitPrice(book, signal.Side, edgeBps);
+    }
+
+    /// <summary>
+    /// Pure-function variant of <see cref="ResolvePostOnlyLimitPrice"/> for direct
+    /// unit testing (no order-book cache lookup). See that overload for the math.
+    /// </summary>
+    internal static (decimal? Price, string Source) ComputePostOnlyLimitPrice(
+        OrderBookSnapshot book, TradeSide side, decimal edgeBps)
+    {
+        if (book.Bids is null || book.Asks is null ||
+            book.Bids.Length == 0 || book.Asks.Length == 0)
+        {
+            return (null, "empty-book");
+        }
+
+        var bestBid = book.Bids[0].Price;
+        var bestAsk = book.Asks[0].Price;
+        if (bestBid <= 0m || bestAsk <= 0m || bestAsk < bestBid)
+        {
+            return (null, "invalid-quote");
+        }
+
+        var nudgedEdge = edgeBps > 0m ? edgeBps / 10000m : 0m;
+        decimal px = side == TradeSide.Buy
+            ? bestBid * (1m - nudgedEdge)
+            : bestAsk * (1m + nudgedEdge);
+
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        return (px, $"book bid={bestBid.ToString("F8", inv)} ask={bestAsk.ToString("F8", inv)} edge={edgeBps.ToString(inv)}bp");
     }
 
     /// <summary>
@@ -763,7 +1109,32 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             var json = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             using var doc = JsonDocument.Parse(json);
             var code = doc.RootElement.GetProperty("code").GetString();
-            return code == "0";
+            if (code != "0")
+            {
+                // [2026-05-15 BUG FIX] Was silently `return false` here, eating the
+                // diagnosis. OKX often returns code="1" + data[0].sCode for cancel
+                // failures (51400 "Order does not exist" → likely raced-fill, 51401
+                // "Already canceled" → no-op, 50113 "Invalid sign" → auth bug, etc.).
+                // Surface the detail so future cancel anomalies are diagnosable.
+                var rootMsg = doc.RootElement.TryGetProperty("msg", out var m) ? m.GetString() : "<no msg>";
+                string detail = "<no detail>";
+                try
+                {
+                    if (doc.RootElement.TryGetProperty("data", out var d) && d.GetArrayLength() > 0)
+                    {
+                        var d0 = d[0];
+                        var sc = d0.TryGetProperty("sCode", out var sce) ? sce.GetString() : "";
+                        var sm = d0.TryGetProperty("sMsg", out var sme) ? sme.GetString() : "";
+                        detail = $"sCode={sc} sMsg={sm}";
+                    }
+                }
+                catch { }
+                _logger.LogWarning(
+                    "OKX cancel-order returned code={Code} msg='{Msg}' | {Detail} | ordId={OrdId} body={Body}",
+                    code, rootMsg, detail, ordId, json);
+                return false;
+            }
+            return true;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -773,6 +1144,245 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
     }
 
+    /// <summary>
+    /// [2026-05-13 cancel-verify FSM] OKX cancel-order HTTP 200 ≠ cancel applied on the venue.
+    /// On demo congestion (or rare live race) the cancel can lag or be silently dropped, so
+    /// the previous limit stays "live" while the caller submits a market fallback — producing
+    /// a duplicate-order disaster (both limit AND market alive simultaneously → 2× position).
+    /// This method polls GET /trade/order until the state confirms one of the terminal
+    /// outcomes below. Caller MUST check <see cref="CancelVerifyOutcome"/> before submitting
+    /// any fallback.
+    /// </summary>
+    private enum CancelVerifyOutcome
+    {
+        /// <summary>state=canceled or mmp_canceled — safe to submit market fallback for the remainder.</summary>
+        Canceled,
+        /// <summary>state=filled or partially_filled — limit filled during the cancel race; adopt the fill, DO NOT submit fallback.</summary>
+        FilledInRace,
+        /// <summary>state=live after all retries — cancel did not apply OKX-side. ABORT fallback to prevent duplicate; reconcile loop will sync.</summary>
+        StillLive,
+        /// <summary>Polling failed (HTTP error / parse / empty). ABORT fallback; reconcile loop will sync.</summary>
+        Unknown
+    }
+
+    private readonly record struct CancelVerifyResult(
+        CancelVerifyOutcome Outcome,
+        decimal FilledQty,
+        decimal FillFeeSigned);
+
+    private async Task<CancelVerifyResult> VerifyCancelAppliedAsync(
+        string instId,
+        string ordId,
+        CancellationToken cancellationToken = default)
+    {
+        var attempts = Math.Max(1, _execOptions.CancelVerifyPollAttempts);
+        var delayMs = Math.Clamp(_execOptions.CancelVerifyPollDelayMs, 100, 5000);
+
+        for (int attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
+            {
+                var path = $"/api/v5/trade/order?instId={instId}&ordId={ordId}";
+                var timestamp = GetIsoTimestamp();
+                var signature = ComputeSignature(timestamp, "GET", path, string.Empty);
+
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{path}");
+                request.Headers.Add("OK-ACCESS-KEY", ApiKey);
+                request.Headers.Add("OK-ACCESS-SIGN", signature);
+                request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
+                request.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+                if (IsDemoMode) request.Headers.Add("x-simulated-trading", "1");
+
+                var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                {
+                    TrackHttpFailure(response);
+                    _logger.LogWarning("OKX cancel-verify HTTP {Status} for ordId={OrdId} (attempt {Attempt}/{Max})",
+                        response.StatusCode, ordId, attempt, attempts);
+                    if (attempt < attempts) await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(json);
+                var data = doc.RootElement.GetProperty("data");
+                if (data.GetArrayLength() == 0)
+                {
+                    if (attempt < attempts) await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                var order = data[0];
+                var state = order.TryGetProperty("state", out var stateEl) ? stateEl.GetString() : "live";
+                var fillSz = ParseDecimal(order, "fillSz");
+                var fillFee = ParseDecimal(order, "fillFee");
+
+                switch (state)
+                {
+                    case "canceled":
+                    case "mmp_canceled":
+                        // ✅ confirmed. fillSz captures any partial-fill that landed before cancel applied.
+                        return new CancelVerifyResult(CancelVerifyOutcome.Canceled, fillSz, fillFee);
+
+                    case "filled":
+                    case "partially_filled":
+                        // Limit filled during the cancel race. OKX's cancel-order endpoint cancels
+                        // the unfilled portion automatically when called against a partially-filled
+                        // order, so partial_filled here means "remaining was canceled, what's filled
+                        // is what we got". Either way, do NOT submit fallback — adopt the fill.
+                        return new CancelVerifyResult(CancelVerifyOutcome.FilledInRace, fillSz, fillFee);
+
+                    case "live":
+                    default:
+                        // Cancel HTTP succeeded but order still on the book. Wait + retry.
+                        if (attempt < attempts) await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+                        break;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "OKX cancel-verify exception attempt {Attempt}/{Max} for ordId={OrdId}", attempt, attempts, ordId);
+                if (attempt < attempts) await Task.Delay(delayMs, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // Exhausted. Either polls failed entirely OR state remained live across all attempts.
+        // Caller MUST treat this as "do not submit fallback" — duplicate-order prevention
+        // is more important than getting a fill on this cycle.
+        _logger.LogError(
+            "OKX_ORPHAN_SUSPECT: cancel-verify EXHAUSTED for ordId={OrdId} on {Inst} after {Attempts} attempts — " +
+            "order may still be live on OKX. ABORTING market fallback to prevent duplicate position. " +
+            "Reconcile loop will sync; operator should verify on OKX UI.",
+            ordId, instId, attempts);
+        return new CancelVerifyResult(CancelVerifyOutcome.StillLive, 0m, 0m);
+    }
+
+    /// <summary>
+    /// [2026-05-14 Day 5 — B1 smart routing] IOC limit fallback: aggressive cross-side
+    /// limit price with Immediate-Or-Cancel — fills what it can within ~1s and cancels
+    /// the rest. Trades 2-5bp slippage savings vs naive market when book is stable; if
+    /// book is moving fast and IOC partial-fills, caller falls through to MARKET for the
+    /// remainder. Uses bid/ask from the cached order-book snapshot (already age-gated by
+    /// TryGetLatestOrderBook). When no book is available, returns FilledQty=0 so caller
+    /// proceeds straight to MARKET.
+    /// </summary>
+    private async Task<FillPollResult> SubmitIocFallbackAsync(
+        Signal original,
+        string okxSymbol,
+        decimal qty,
+        string tdMode,
+        string? posSide,
+        bool? reduceOnlyField,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Compute aggressive cross-side limit price from latest book.
+            if (!TryGetLatestOrderBook(okxSymbol, out var book) || book.Bids.Length == 0 || book.Asks.Length == 0)
+            {
+                _logger.LogDebug("OKX IOC fallback: no order-book snapshot for {Sym} — caller will use MARKET.", okxSymbol);
+                return new FillPollResult(0m, qty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
+            }
+
+            var bestBid = book.Bids[0].Price;
+            var bestAsk = book.Asks[0].Price;
+            // [2026-05-14 BUG #3 FIX] Guard against zero/negative quotes — corrupt L2 data
+            // could otherwise emit a 0-price IOC that OKX rejects (or worse, fills cheaply).
+            if (bestBid <= 0m || bestAsk <= 0m)
+            {
+                _logger.LogWarning(
+                    "OKX IOC fallback: degenerate book for {Sym} (bid={Bid} ask={Ask}) — caller will use MARKET.",
+                    okxSymbol, bestBid, bestAsk);
+                return new FillPollResult(0m, qty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
+            }
+
+            var offsetBps = _execOptions.SmartRoutingIocPriceOffsetBps;
+            decimal iocPrice = original.Side == TradeSide.Buy
+                ? bestAsk * (1m + offsetBps / 10000m)   // pay up to ask+offset
+                : bestBid * (1m - offsetBps / 10000m);  // hit down to bid-offset
+
+            // Build clOrdId — 32-char limit, "I" suffix to differentiate from "M" market.
+            var baseClientId = ExecutionOrderIdentity.EnsureClientOrderId(original);
+            var truncated = baseClientId.Length > 31 ? baseClientId.Substring(0, 31) : baseClientId;
+            var iocClientId = truncated + "I";
+
+            var body = JsonSerializer.Serialize(new
+            {
+                instId = okxSymbol,
+                tdMode,
+                side = original.Side == TradeSide.Buy ? "buy" : "sell",
+                ordType = "ioc",                // immediate or cancel — taker with price protection
+                clOrdId = iocClientId,
+                px = iocPrice.ToString("F8", System.Globalization.CultureInfo.InvariantCulture),
+                sz = qty.ToString("F8", System.Globalization.CultureInfo.InvariantCulture),
+                posSide,
+                reduceOnly = reduceOnlyField
+            });
+
+            var timestamp = GetIsoTimestamp();
+            var signature = ComputeSignature(timestamp, "POST", "/api/v5/trade/order", body);
+
+            using var req = new HttpRequestMessage(HttpMethod.Post, $"{BaseUrl}/api/v5/trade/order");
+            req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            req.Headers.Add("OK-ACCESS-KEY", ApiKey);
+            req.Headers.Add("OK-ACCESS-SIGN", signature);
+            req.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
+            req.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+            if (IsDemoMode) req.Headers.Add("x-simulated-trading", "1");
+
+            var resp = await _httpClient.SendAsync(req, cancellationToken).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode)
+            {
+                TrackHttpFailure(resp);
+                // [2026-05-14 BUG #2 FIX] Was returning Live (caller proceeds to MARKET = potential
+                // duplicate if IOC actually placed silently). HTTP failure after POST means we don't
+                // know the order state. Return Unknown so caller skips MARKET and reconcile syncs.
+                _logger.LogError("OKX IOC fallback HTTP {Status} — outcome UNKNOWN, caller will SKIP market fallback to prevent duplicate.", resp.StatusCode);
+                return new FillPollResult(0m, qty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
+            }
+
+            var json = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.GetProperty("code").GetString() != "0")
+            {
+                // Explicit OKX rejection — order definitely NOT placed. Caller proceeds to MARKET.
+                _logger.LogWarning("OKX IOC fallback rejected: body={Body} — caller will fall through to MARKET.", json);
+                return new FillPollResult(0m, qty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
+            }
+
+            var iocOrdId = doc.RootElement.GetProperty("data")[0].GetProperty("ordId").GetString() ?? string.Empty;
+            if (string.IsNullOrEmpty(iocOrdId))
+            {
+                // Code=0 (success) but no ordId returned — anomalous OKX response. Order MAY exist.
+                // Treat as Unknown to prevent duplicate.
+                _logger.LogError("OKX IOC fallback: code=0 but empty ordId — outcome UNKNOWN, caller will SKIP market.");
+                return new FillPollResult(0m, qty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
+            }
+
+            // IOC fills (or cancels remainder) within ~1s. Poll once with short timeout.
+            await Task.Delay(800, cancellationToken).ConfigureAwait(false);
+            var pollResult = await PollFillStatusAsync(iocOrdId, okxSymbol, qty, cancellationToken).ConfigureAwait(false);
+            return pollResult;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            // [2026-05-14 BUG #2 FIX] Exception after submit is the same uncertainty as HTTP error.
+            // Return Unknown so caller skips MARKET fallback.
+            _logger.LogError(ex, "OKX IOC fallback exception — outcome UNKNOWN, caller will SKIP market fallback.");
+            return new FillPollResult(0m, qty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
+        }
+    }
+
+    /// <summary>
+    /// [2026-05-13 market-retry] Wraps the inner submit with exponential-backoff retry
+    /// for transient OKX rejects (Systems busy / market volatility / sCode 51008 margin
+    /// recompute race). Outcome=Unknown (HTTP error / no ordId) does NOT retry — the
+    /// order may have filled silently; reconcile loop resolves. Outcome=Filled returns
+    /// immediately. Only Outcome=Live (explicit rejection from OKX with code!="0")
+    /// triggers a retry. After all attempts exhausted, returns Live with a hard alert log.
+    /// </summary>
     private async Task<FillPollResult> SubmitMarketFallbackAsync(
         Signal original,
         string okxSymbol,
@@ -782,6 +1392,49 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         bool? reduceOnlyField,
         CancellationToken cancellationToken = default)
     {
+        var attempts = Math.Max(1, _execOptions.MarketFallbackRetryAttempts);
+        FillPollResult last = new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
+
+        for (int attempt = 1; attempt <= attempts; attempt++)
+        {
+            last = await TrySubmitMarketFallbackOnceAsync(
+                original, okxSymbol, remainingQty, tdMode, posSide, reduceOnlyField, attempt, cancellationToken
+            ).ConfigureAwait(false);
+
+            // Terminal outcomes: Filled (success) or Unknown (HTTP/parse error — must NOT retry
+            // because order may have placed silently and retry would double-fill).
+            if (last.Outcome == FillPollOutcome.Filled || last.Outcome == FillPollOutcome.Unknown)
+                return last;
+
+            // Outcome=Live with attempts remaining → exponential backoff retry.
+            if (attempt < attempts)
+            {
+                var backoffMs = 500 * (1 << (attempt - 1));   // 500ms, 1000ms, 2000ms, 4000ms ...
+                _logger.LogWarning(
+                    "OKX market fallback rejected (attempt {Attempt}/{Max}) for {Symbol} qty={Qty}; retrying in {Ms}ms.",
+                    attempt, attempts, okxSymbol, remainingQty, backoffMs);
+                try { await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; }
+            }
+        }
+
+        _logger.LogError(
+            "OKX_MARKET_FALLBACK_FAILED: all {Attempts} attempts exhausted for {Symbol} qty={Qty}. " +
+            "Position NOT opened/closed via fallback path. Strategy will retry next cycle.",
+            attempts, okxSymbol, remainingQty);
+        return last;
+    }
+
+    private async Task<FillPollResult> TrySubmitMarketFallbackOnceAsync(
+        Signal original,
+        string okxSymbol,
+        decimal remainingQty,
+        string tdMode,
+        string? posSide,
+        bool? reduceOnlyField,
+        int attemptNumber,
+        CancellationToken cancellationToken)
+    {
         try
         {
             // OKX clOrdId hard limit: 32 chars. Original Guid-based id is exactly 32, so the
@@ -789,8 +1442,17 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             // every market fallback silently rejected. Truncate to 31 first, then suffix.
             // 2026-04-30: this was the root cause of the "OKX-rejects-everything" symptom
             // surfaced by the phantom-open guard.
+            // 2026-05-13: when retrying we MUST vary the clOrdId — OKX rejects duplicate
+            // clOrdId with sCode 51075. Append the attempt number after "M" within the 32-char
+            // budget. Attempt 1 stays as "...M" (legacy unchanged) so existing reconcile keeps
+            // matching; attempts ≥2 use "...Mn" where n is the attempt index.
             var baseClientId = ExecutionOrderIdentity.EnsureClientOrderId(original);
-            var fallbackClientId = (baseClientId.Length > 31 ? baseClientId.Substring(0, 31) : baseClientId) + "M";
+            var truncated = baseClientId.Length > 31 ? baseClientId.Substring(0, 31) : baseClientId;
+            var suffix = attemptNumber <= 1 ? "M" : $"M{attemptNumber}";
+            // suffix may be up to 3 chars ("M99") — drop one more char from truncated if needed.
+            if (truncated.Length + suffix.Length > 32)
+                truncated = truncated.Substring(0, 32 - suffix.Length);
+            var fallbackClientId = truncated + suffix;
             var body = JsonSerializer.Serialize(new
             {
                 instId = okxSymbol,
@@ -818,7 +1480,8 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             if (!resp.IsSuccessStatusCode)
             {
                 TrackHttpFailure(resp);
-                _logger.LogError("OKX market fallback failed: HTTP {Status}.", resp.StatusCode);
+                _logger.LogError("OKX market fallback failed: HTTP {Status} (attempt {Attempt}).", resp.StatusCode, attemptNumber);
+                // Unknown — order may have placed silently; do NOT retry to avoid double-fill.
                 return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
             }
             var json = await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -842,9 +1505,10 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                     }
                 }
                 catch { }
-                _logger.LogError("OKX market fallback rejected: {Msg} | {Detail} | body={Body}", rootMsg, detail, json);
-                // Fallback REJECTED — order definitely not placed. Outcome=Live (no fill,
-                // nothing to reconcile from the fallback attempt itself).
+                _logger.LogError("OKX market fallback rejected (attempt {Attempt}): {Msg} | {Detail} | body={Body}",
+                    attemptNumber, rootMsg, detail, json);
+                // Fallback REJECTED — order definitely not placed. Outcome=Live signals the
+                // retry wrapper to back off and try again (transient OKX congestion).
                 return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Live);
             }
 
@@ -857,26 +1521,25 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "OKX: exception during market fallback submission.");
+            _logger.LogError(ex, "OKX: exception during market fallback submission (attempt {Attempt}).", attemptNumber);
             return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
         }
     }
 
     public async Task<Account> GetAccountStatusAsync()
     {
-        // Use localized portfolio state if already synced
-        var availableUsdt = _portfolio.GetAvailableBalance(Venue, "USDT");
-        if (availableUsdt > 0)
-        {
-            return new Account
-            {
-                Id = "OKX-LIVE-CACHED",
-                Provider = "OKX",
-                Balance = availableUsdt,
-                Equity = availableUsdt
-            };
-        }
-
+        // 2026-05-11: Removed the "OKX-LIVE-CACHED" early-return.
+        //
+        // The cached path read _portfolio.GetAvailableBalance(Venue, "USDT") — the very value
+        // we are about to seed FROM the result of this call. That made the seeder
+        // (PaperTradingHostedService.TrySyncInitialBalanceFromExchangeAsync) re-anchor the
+        // portfolio's stale Cash to itself, fabricating a "fresh sync from OKX" log line
+        // while never touching the real exchange. Symptom: a stale $96K snapshot survived
+        // every restart and over-sized EdgeLab orders by ~48× until the slow periodic
+        // ExchangeBalanceSync tick finally hit the REST endpoint minutes later.
+        //
+        // Always query the venue. The HTTP cost is negligible compared to the risk of
+        // sizing orders off a self-referential cache.
         var timestamp = GetIsoTimestamp();
         var signature = ComputeSignature(timestamp, "GET", "/api/v5/account/balance", string.Empty);
 
@@ -1109,8 +1772,36 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     /// <summary>
     /// OKX requires ISO 8601 timestamp: e.g. "2024-01-01T00:00:00.000Z"
     /// </summary>
+    // [2026-05-17 critical fix — clock drift] OKX rejects timestamps > 30s off server clock.
+    // When Windows W32Time is mis-configured (Source: Local CMOS), drift accumulates freely.
+    // ThatsMyQuant.Bot.OkxClockSync periodically fetches OKX server time and exposes an
+    // offset-adjusted UtcNow. We read it via reflection-free static accessor — OkxClockSync
+    // is in ThatsMyQuant.Bot project which we cannot reference from Infrastructure (would
+    // create a circular dep). Fallback: local DateTime.UtcNow.
+    private static readonly Func<DateTime>? _clockSourceLookup = ResolveClockSourceLookup();
+
+    private static Func<DateTime>? ResolveClockSourceLookup()
+    {
+        // Discover ThatsMyQuant.Bot.OkxClockSync.UtcNowOffsetAdjusted at startup. If the
+        // type isn't loaded (e.g., unit test harness), fall back to DateTime.UtcNow silently.
+        try
+        {
+            var asm = AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(a => a.GetName().Name == "ThatsMyQuant.Bot");
+            var type = asm?.GetType("ThatsMyQuant.Bot.OkxClockSync");
+            var prop = type?.GetProperty("UtcNowOffsetAdjusted",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (prop is null) return null;
+            return () => (DateTime)prop.GetValue(null)!;
+        }
+        catch { return null; }
+    }
+
     private static string GetIsoTimestamp()
-        => DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+    {
+        var now = _clockSourceLookup is not null ? _clockSourceLookup() : DateTime.UtcNow;
+        return now.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+    }
 
     /// <summary>
     /// Converts internal symbol format (BTCUSDT) to OKX format (BTC-USDT).
@@ -1416,6 +2107,115 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         return DateTime.UtcNow;
     }
 
+    /// <summary>
+    /// [2026-05-16] Closed-position history for ledger mirror. OKX v5
+    /// /api/v5/account/positions-history returns one record per CLOSED position
+    /// (open + close fully aggregated), including realizedPnl and fees. We page
+    /// up to 100 records per call; for our daily volumes the 3-month default
+    /// window comfortably fits inside one page.
+    /// </summary>
+    public async Task<IReadOnlyList<ClosedPositionSnapshot>> GetClosedPositionsHistoryAsync(
+        DateTime sinceUtc,
+        DateTime untilUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var instType = IsSwapMode ? "SWAP" : "MARGIN";
+        var sinceMs = new DateTimeOffset(DateTime.SpecifyKind(sinceUtc, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+        var untilMs = new DateTimeOffset(DateTime.SpecifyKind(untilUtc, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+
+        var path = $"/api/v5/account/positions-history?instType={instType}&begin={sinceMs}&end={untilMs}&limit=100";
+        var timestamp = GetIsoTimestamp();
+        var signature = ComputeSignature(timestamp, "GET", path, string.Empty);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{path}");
+        request.Headers.Add("OK-ACCESS-KEY", ApiKey);
+        request.Headers.Add("OK-ACCESS-SIGN", signature);
+        request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
+        request.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+        if (IsDemoMode) request.Headers.Add("x-simulated-trading", "1");
+
+        try
+        {
+            var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                TrackHttpFailure(response);
+                _logger.LogWarning("OKX positions-history fetch failed: HTTP {Status}", response.StatusCode);
+                return Array.Empty<ClosedPositionSnapshot>();
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.GetProperty("code").GetString() != "0")
+            {
+                _logger.LogWarning("OKX positions-history non-zero code: {Msg}",
+                    doc.RootElement.TryGetProperty("msg", out var m) ? m.GetString() : "<no msg>");
+                return Array.Empty<ClosedPositionSnapshot>();
+            }
+
+            var data = doc.RootElement.GetProperty("data");
+            var list = new List<ClosedPositionSnapshot>(data.GetArrayLength());
+            foreach (var p in data.EnumerateArray())
+            {
+                var instId = p.TryGetProperty("instId", out var iid) ? iid.GetString() ?? "" : "";
+                if (string.IsNullOrEmpty(instId)) continue;
+
+                // posSide: long/short/net. For net mode, derive from direction field.
+                var posSide = p.TryGetProperty("posSide", out var ps) ? ps.GetString() ?? "net" : "net";
+                var direction = p.TryGetProperty("direction", out var dir) ? dir.GetString() ?? "" : "";
+                bool wasLong = posSide switch
+                {
+                    "long" => true,
+                    "short" => false,
+                    _ => string.Equals(direction, "long", StringComparison.OrdinalIgnoreCase)
+                };
+
+                var openMaxPos = ParseDecimal(p, "openMaxPos");   // peak open size in contracts
+                var openAvgPx = ParseDecimal(p, "openAvgPx");
+                var closeAvgPx = ParseDecimal(p, "closeAvgPx");
+                var realizedPnl = ParseDecimal(p, "realizedPnl");
+                var fee = ParseDecimal(p, "fee");                 // OKX returns negative for paid fees
+                var cTimeMs = p.TryGetProperty("cTime", out var ct) && long.TryParse(ct.GetString(), out var c) ? c : 0L;
+                var uTimeMs = p.TryGetProperty("uTime", out var ut) && long.TryParse(ut.GetString(), out var u) ? u : 0L;
+
+                // Skip degenerate records — anything still open or missing required fields.
+                if (openMaxPos == 0m || openAvgPx <= 0m || closeAvgPx <= 0m || uTimeMs == 0L) continue;
+
+                // De-contract qty (positions-history returns contracts for SWAP).
+                decimal qtyBase = openMaxPos;
+                if (IsSwapMode)
+                {
+                    try
+                    {
+                        var spec = await GetContractSpecAsync(instId, cancellationToken).ConfigureAwait(false);
+                        if (spec.CtVal > 0m) qtyBase = openMaxPos * spec.CtVal;
+                    }
+                    catch { /* keep raw contract qty */ }
+                }
+
+                var canonicalSym = NormalizeFromOkx(instId.Replace("-SWAP", "", StringComparison.OrdinalIgnoreCase));
+                list.Add(new ClosedPositionSnapshot(
+                    Symbol: canonicalSym,
+                    WasLong: wasLong,
+                    Quantity: qtyBase,
+                    OpenAvgPrice: openAvgPx,
+                    CloseAvgPrice: closeAvgPx,
+                    OpenTimeUtc: cTimeMs > 0 ? DateTimeOffset.FromUnixTimeMilliseconds(cTimeMs).UtcDateTime : DateTime.UtcNow,
+                    CloseTimeUtc: DateTimeOffset.FromUnixTimeMilliseconds(uTimeMs).UtcDateTime,
+                    RealizedPnl: realizedPnl,
+                    FeePaid: Math.Abs(fee),
+                    StrategyTag: null));   // OKX doesn't surface strategy attribution; left null
+            }
+            return list;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "OKX: GetClosedPositionsHistoryAsync failed.");
+            return Array.Empty<ClosedPositionSnapshot>();
+        }
+    }
+
     public async Task<IReadOnlyList<ExchangePositionSnapshot>> GetOpenPositionsAsync(CancellationToken cancellationToken = default)
     {
         // OKX v5: GET /api/v5/account/positions returns SWAP/FUTURES/MARGIN positions.
@@ -1551,6 +2351,11 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             var fillQty  = ParseDecimal(latest.Value, "fillSz");
             var fillPx   = ParseDecimal(latest.Value, "fillPx");
             var fillFee  = ParseDecimal(latest.Value, "fee");
+            // 2026-05-07 (Sprint 1.2): capture execType ("T"=taker, "M"=maker) for MakerFillRatioMonitor.
+            var execType = latest.Value.TryGetProperty("execType", out var et) ? et.GetString() : null;
+            // 2026-05-07 (Sprint 1.2 live-fill validation): capture subType (Hedge Mode entry/exit signal) and fillPnl (Net Mode entry/exit signal — realized PnL is non-zero only on close fills).
+            var subType = latest.Value.TryGetProperty("subType", out var st) ? st.GetString() : null;
+            var realizedPnl = ParseDecimal(latest.Value, "fillPnl");
 
             // Convert qty contracts → base units when in swap mode, mirroring our open path.
             decimal qtyBase = fillQty;
@@ -1570,7 +2375,10 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 Quantity: qtyBase,
                 Price: fillPx,
                 FeePaid: Math.Abs(fillFee),
-                FillTimeUtc: DateTimeOffset.FromUnixTimeMilliseconds(latestTs).UtcDateTime);
+                FillTimeUtc: DateTimeOffset.FromUnixTimeMilliseconds(latestTs).UtcDateTime,
+                ExecType: execType,
+                SubType: subType,
+                RealizedPnl: realizedPnl);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -1655,6 +2463,11 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 var fillFee = ParseDecimal(f, "fee"); // OKX returns negative when paid (out-of-pocket)
                 var tsMs = f.TryGetProperty("ts", out var tsEl) && long.TryParse(tsEl.GetString(), out var t) ? t : 0L;
                 lastBillId = f.TryGetProperty("billId", out var bId) ? bId.GetString() : lastBillId;
+                // 2026-05-07 (Sprint 1.2): capture execType ("T"=taker, "M"=maker) for MakerFillRatioMonitor.
+                var execType = f.TryGetProperty("execType", out var et) ? et.GetString() : null;
+                // 2026-05-07 (Sprint 1.2 live-fill validation): capture subType (Hedge Mode entry/exit) and fillPnl (Net Mode entry/exit). In our Net Mode config OKX returns subType=1/2 (direction only) so the maker-fill monitor falls back to fillPnl != 0 ⇒ exit.
+                var subType = f.TryGetProperty("subType", out var st) ? st.GetString() : null;
+                var realizedPnl = ParseDecimal(f, "fillPnl");
 
                 // Decontract qty for swaps (mirrors GetLastFillAsync logic).
                 decimal qtyBase = fillQty;
@@ -1677,7 +2490,10 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                     Quantity: qtyBase,
                     Price: fillPx,
                     FeePaid: Math.Abs(fillFee),
-                    FillTimeUtc: DateTimeOffset.FromUnixTimeMilliseconds(tsMs).UtcDateTime));
+                    FillTimeUtc: DateTimeOffset.FromUnixTimeMilliseconds(tsMs).UtcDateTime,
+                    ExecType: execType,
+                    SubType: subType,
+                    RealizedPnl: realizedPnl));
             }
 
             // OKX paginates by billId — pass smallest billId of returned page as `after` to fetch older rows.

@@ -38,6 +38,15 @@ builder.Configuration.AddJsonFile(
     Path.Combine(builder.Environment.ContentRootPath, "appsettings.runtime.json"),
     optional: true,
     reloadOnChange: true);
+// 2026-05-11 — EdgeLab Live observability page reads strategy list + overrides via
+// EdgeLabSingleAsset:* config keys. The worker's appsettings.Paper.json is the
+// canonical source; load it here as an additional layer (optional, reload-on-change)
+// so /api/edgelab/live reflects the current 14-strategy stack without manual sync.
+// Existing Listener.Api appsettings.json keys still win when they overlap.
+var workerPaperConfigPath = Path.GetFullPath(Path.Combine(
+    builder.Environment.ContentRootPath,
+    "..", "QuantEngine.Worker", "appsettings.Paper.json"));
+builder.Configuration.AddJsonFile(workerPaperConfigPath, optional: true, reloadOnChange: true);
 builder.Configuration.ApplySharedExchangeConfiguration();
 builder.Configuration.ApplySharedTelegramConfiguration();
 var selectedExchangeMode = SharedExchangeConfiguration.GetSelectedExchangeMode(builder.Configuration);
@@ -438,6 +447,7 @@ app.MapSystemHealthEndpoints();
 app.MapAuthEndpoints();
 app.MapMarketsEndpoints();
 app.MapDashboardIntelEndpoints();
+app.MapEdgeLabEndpoints();
 
 app.MapPost("/webhook", async (Signal signal, HttpContext context, IMediator mediator) =>
 {

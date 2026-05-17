@@ -194,6 +194,12 @@ public sealed class PromotionGateLiveHostedService : BackgroundService
 
             totalPnL += p.RealizedPnL;
             totalFunding += p.NetFunding;
+            // [2026-05-13] BUG FIX: `totalFees` was declared but never assigned, leaving
+            // BacktestResult.TotalFeesPaid=0, GrossPnL == NetPnL, and CostLeakagePercent=0
+            // permanently. PromotionGate's rigor check then evaluated strategies as if they
+            // had ZERO fee cost — a fee-leaky strategy could pass the gate. Source the fee
+            // from the same RealFeePaid field TCA uses; null (paper-only) → 0 contribution.
+            totalFees += p.RealFeePaid ?? 0m;
             if (p.RealizedPnL > 0)
             {
                 wins++; sumWin += p.RealizedPnL;

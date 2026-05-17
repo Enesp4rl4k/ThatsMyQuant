@@ -94,11 +94,18 @@ public sealed class TcaLiveAnalyzerHostedService : BackgroundService
         // is a pure-simulation that never touched a real venue. Mixing the two on the same
         // window would double-count fees and inflate leakage — the 2026-04-30 fee-harvest
         // showed the assumed 28bp rate over-stated reality by 2.8×.
+        // [2026-05-13] Track real-vs-assumed split so the operator knows if the TCA leakage
+        // number is venue truth or a fee-model estimate (Bug #9: demo OKX returns fee=0 →
+        // RealFeePaid stored null → assumed-rate path dominates → operator might mistake
+        // the model for reality).
+        int realFeeCount = 0, assumedFeeCount = 0;
         var trades = recent.Select(p =>
         {
             var exitPx = p.CurrentPrice > 0 ? p.CurrentPrice : p.EntryPrice;
             var qty = p.Quantity > 0 ? p.Quantity : p.OpenedQuantity;
-            var feeEst = p.RealFeePaid ?? (exitPx * qty * _assumedFeeRate);
+            decimal feeEst;
+            if (p.RealFeePaid.HasValue) { feeEst = p.RealFeePaid.Value; realFeeCount++; }
+            else { feeEst = exitPx * qty * _assumedFeeRate; assumedFeeCount++; }
             return new BacktestTradeResult
             {
                 EntryTime = p.EntryTime,
@@ -125,9 +132,14 @@ public sealed class TcaLiveAnalyzerHostedService : BackgroundService
         var tca = scope.ServiceProvider.GetRequiredService<TransactionCostAnalysisService>();
         var report = tca.Analyse(trades);
 
+        // [2026-05-13] Annotate fee provenance: feeMix=R/A where R=real-from-venue, A=assumed-rate.
+        // When A dominates, leakage% is a model estimate not measured truth.
+        var feeMixTag = realFeeCount > 0 && assumedFeeCount == 0 ? "real"
+                      : realFeeCount == 0 ? "assumed"
+                      : $"mixed(R={realFeeCount}/A={assumedFeeCount})";
         _logger.LogWarning(
-            "TCA window: trades={N} gross=${G:F2} net=${Net:F2} fees=${F:F2} funding=${Fun:F2} leakage={L:F1}%",
-            report.TradeCount, report.GrossPnL, report.NetPnL, report.TotalFees, report.NetFunding, report.CostLeakagePercent);
+            "TCA window: trades={N} gross=${G:F2} net=${Net:F2} fees=${F:F2}({FeeSrc}) funding=${Fun:F2} leakage={L:F1}%",
+            report.TradeCount, report.GrossPnL, report.NetPnL, report.TotalFees, feeMixTag, report.NetFunding, report.CostLeakagePercent);
 
         // Per-strategy breakdown so we can see WHICH edge is leaking.
         foreach (var (strat, b) in report.ByStrategy)

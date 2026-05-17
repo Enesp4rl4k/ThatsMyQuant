@@ -14,7 +14,12 @@ public sealed class VenuePortfolioManager : ISharedPortfolioStateManager, IPortf
 {
     private const long BalanceScale = 100_000_000L;
     private long _peakEquityScaled = 0;
+    // [2026-05-13] _initialEquityScaled was declared but never read (CS0414). Kept as a
+    // future hook for "fixed-anchor drawdown" mode; suppress the warning until that
+    // code path lands. Removing the field outright would lose the design intent.
+#pragma warning disable CS0414
     private long _initialEquityScaled = 0;
+#pragma warning restore CS0414
 
     private readonly ConcurrentDictionary<BalanceKey, AtomicBalanceCell> _balances = new();
     private readonly ConcurrentDictionary<PositionKey, AtomicPositionCell> _positions = new();

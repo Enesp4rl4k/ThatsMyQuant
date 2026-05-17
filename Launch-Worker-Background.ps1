@@ -70,6 +70,11 @@ $env:Tca__AlertThresholdPercent = '20.0'
 $env:OrderExecution__PostOnlyMode = 'true'
 $env:OrderExecution__LimitOrderTimeoutSeconds = '20'
 $env:OrderExecution__LimitFillPollIntervalMs = '1000'
+# Track B activation 2026-05-09: maker routing on; was 0% maker fill due to default EnableMakerRouting=false
+$env:OrderExecution__EnableMakerRouting = 'true'
+$env:OrderExecution__MakerUrgency = '0.3'
+$env:OrderExecution__MakerPatientTimeoutMs = '5000'
+$env:OrderExecution__MakerUrgentTimeoutMs = '1000'
 
 Write-Host "[BUILD]"
 & dotnet build '01_Services\QuantEngine.Worker\ThatsMyQuant.Bot.csproj' -c Release --nologo -v minimal | Out-Null

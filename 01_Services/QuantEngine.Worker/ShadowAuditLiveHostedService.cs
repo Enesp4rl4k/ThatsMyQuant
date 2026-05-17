@@ -135,6 +135,23 @@ public sealed class ShadowAuditLiveHostedService : BackgroundService
             };
 
             var report = auditor.Audit(synthetic, candles);
+
+            // [2026-05-13] Was logging "verdict=Pass" with trades=1 / trades=2 — single-trade
+            // verdicts are statistically meaningless (one outlier flips the leakage). Require
+            // at least 5 trades per symbol before producing a verdict; below that, log at
+            // INFO level for visibility without misleading the operator.
+            // [2026-05-14 BUG #1 FIX] Also EXCLUDE small-N from aggregate accumulators.
+            // Otherwise XRPUSDT trades=1 + DOTUSDT trades=2 contaminate the aggregate
+            // leakage (-178.8% nonsense from 7-symbol mix-of-noise-and-signal).
+            const int MinTradesForVerdict = 5;
+            if (report.TradesEvaluated < MinTradesForVerdict)
+            {
+                _logger.LogInformation(
+                    "SHADOW_AUDIT {Sym} | trades={N} (< {Min}, sample too small for verdict) backtestPnL=${B:F2} shadowPnL=${S:F2}",
+                    symbol, report.TradesEvaluated, MinTradesForVerdict, report.BacktestTotalPnL, report.ShadowTotalPnL);
+                continue;   // skip aggregate too — small-N is noise that shouldn't pollute the universe-wide leakage stat
+            }
+
             aggregateBacktest += report.BacktestTotalPnL;
             aggregateShadow += report.ShadowTotalPnL;
             aggregateTrades += report.TradesEvaluated;

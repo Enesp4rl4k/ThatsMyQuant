@@ -32,6 +32,20 @@ public interface IExchangePositionReader
         string? instType = null,
         CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<ExchangeFillSnapshot>>(Array.Empty<ExchangeFillSnapshot>());
+
+    /// <summary>
+    /// [2026-05-16] Returns CLOSED positions (one record per closed position lifecycle,
+    /// not per-fill) within the window. Used by DbToPortfolioSync to mirror live-mode
+    /// closed positions into PaperPortfolio.ClosedPositions so digest / TCA / ShadowAudit
+    /// see realtime activity instead of just stale paper-mode history.
+    /// OKX-source: /api/v5/account/positions-history (3-month max).
+    /// Implementations that don't support position history should return empty.
+    /// </summary>
+    Task<IReadOnlyList<ClosedPositionSnapshot>> GetClosedPositionsHistoryAsync(
+        DateTime sinceUtc,
+        DateTime untilUtc,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<ClosedPositionSnapshot>>(Array.Empty<ClosedPositionSnapshot>());
 }
 
 /// <summary>
@@ -46,4 +60,7 @@ public sealed record ExchangeFillSnapshot(
     decimal Quantity,
     decimal Price,
     decimal FeePaid,
-    DateTime FillTimeUtc);
+    DateTime FillTimeUtc,
+    string? ExecType = null,    // 2026-05-07 (Sprint 1.2): "T"=taker, "M"=maker per OKX. Null on legacy paths / venues that don't surface it. Consumed by MakerFillRatioMonitorHostedService.
+    string? SubType = null,     // 2026-05-07 (Sprint 1.2 live-fill validation): OKX SWAP subType. In Hedge Mode: "3"=open long, "4"=open short, "5"=close long, "6"=close short (clean entry/exit). In Net Mode (our config): subType only encodes "1"=buy / "2"=sell — entry/exit must be derived from RealizedPnl instead. Kept here for completeness so a future Hedge Mode flip works without re-plumbing.
+    decimal RealizedPnl = 0m);  // 2026-05-07 (Sprint 1.2 live-fill validation): OKX `fillPnl` — realized PnL booked by this fill. 0 on entry fills (no close yet), non-zero on exit fills (close booked PnL). The Net Mode entry/exit oracle: |RealizedPnl| > 0 ⇒ exit fill (closing a position), == 0 ⇒ entry fill. Used by MakerFillRatioMonitor to compute the entry-only maker ratio that Premortem #4 actually measures, since Net Mode subType is direction-only (1/2) and ordType is not in the fills-history response at all.

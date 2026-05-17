@@ -975,6 +975,29 @@ public sealed class FundingHybridExecutor : BackgroundService
         var notional = sig.Qty * sig.ReferencePrice;
         var basis = _portfolio.InitialBalance > 0m ? _portfolio.InitialBalance : 100_000m;
 
+        // [2026-05-16 PreEntryRiskGate wiring] Singleton safety net: fat-finger (max
+        // 15% notional), position-count ceiling (max 10 concurrent), macro blackout
+        // (CPI/FOMC ±30dk). Resolved at call site to avoid constructor signature churn.
+        try
+        {
+            var preGate = _serviceProvider.GetService<PreEntryRiskGate>();
+            if (preGate is not null)
+            {
+                var gateDecision = preGate.CheckEntry(symbol, notional);
+                if (!gateDecision.Allowed)
+                {
+                    _logger.LogWarning(
+                        "FundingHybrid[{Tier}] {Symbol} entry BLOCKED by PreEntryRiskGate: {Reason}",
+                        _tierName, symbol, gateDecision.RejectReason);
+                    return;
+                }
+            }
+        }
+        catch (Exception preGateEx)
+        {
+            _logger.LogDebug(preGateEx, "FundingHybrid[{Tier}] PreEntryRiskGate evaluation threw; allowing entry (gate is best-effort).", _tierName);
+        }
+
         // Notional cap — atomic reserve. If reservation fails, abort entry to prevent
         // cross-tier cash overrun. Released on close.
         if (_notionalGuard is not null && !_notionalGuard.TryReserve($"Funding:{_tierName}", symbol, notional, basis))

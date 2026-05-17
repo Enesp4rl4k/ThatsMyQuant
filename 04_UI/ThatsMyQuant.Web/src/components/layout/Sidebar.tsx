@@ -10,6 +10,7 @@ const navItems = [
   { to: "/trades", label: "Trade Journal", glyph: "04" },
   { to: "/alpha", label: "Alpha Portfolio", glyph: "05" },
   { to: "/funding", label: "Funding Monitor", glyph: "06" },
+  { to: "/edgelab-live", label: "EdgeLab Live", glyph: "⚡" },
   { to: "/pairs", label: "Pairs Discovery", glyph: "07" },
   { to: "/quant-lab", label: "Quant Lab", glyph: "08" },
   { to: "/pro-mode", label: "Pro Mode", glyph: "09" },

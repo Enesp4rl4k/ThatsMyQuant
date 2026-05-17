@@ -25,6 +25,9 @@ const AlphaPortfolioPage = lazy(() =>
 const FundingMonitorPage = lazy(() =>
   import("@/pages/FundingMonitorPage").then((m) => ({ default: m.FundingMonitorPage }))
 );
+const EdgeLabLivePage = lazy(() =>
+  import("@/pages/EdgeLabLivePage").then((m) => ({ default: m.EdgeLabLivePage }))
+);
 const PairsDiscoveryPage = lazy(() =>
   import("@/pages/PairsDiscoveryPage").then((m) => ({ default: m.PairsDiscoveryPage }))
 );
@@ -127,6 +130,14 @@ function App() {
                   element={
                     <Suspense fallback={<PageLoadingSkeleton />}>
                       <FundingMonitorPage />
+                    </Suspense>
+                  }
+                />
+                <Route
+                  path="edgelab-live"
+                  element={
+                    <Suspense fallback={<PageLoadingSkeleton />}>
+                      <EdgeLabLivePage />
                     </Suspense>
                   }
                 />
