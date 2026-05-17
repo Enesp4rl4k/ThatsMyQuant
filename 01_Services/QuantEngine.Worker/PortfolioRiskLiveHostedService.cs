@@ -104,34 +104,66 @@ public sealed class PortfolioRiskLiveHostedService : BackgroundService
         var risk = scope.ServiceProvider.GetRequiredService<PortfolioRiskAnalytics>();
         var report = risk.BuildReport(trades, periodicReturns, _confidence, _kellyFraction);
 
+        // 2026-05-13: ME.Logging template parser does NOT accept '$' inside placeholder
+        // names ({V$:F2} / {CV$:F2} → printed as literal raw text "${V$:F2}"). Renamed
+        // to VarDollars / CvarDollars; the leading '$' BEFORE the brace is preserved as
+        // a literal currency sigil ("...VaR=$1.23 CVaR=$2.34").
         _logger.LogWarning(
-            "PORT_RISK | basis=${Basis:F2} trades={N} returns={R} | Kelly={K:P2} VaR{C:P0}={V:P2} CVaR{C:P0}={CV:P2} | basis$ VaR=${V$:F2} CVaR=${CV$:F2}",
+            "PORT_RISK | basis=${Basis:F2} trades={N} returns={R} | Kelly={K:P2} VaR{C:P0}={V:P2} CVaR{C:P0}={CV:P2} | basis$ VaR=${VarDollars:F2} CVaR=${CvarDollars:F2}",
             basis, report.TradeSampleSize, report.ReturnSampleSize,
             report.FractionalKelly, report.ConfidenceLevel, report.HistoricalVaR, report.ConfidenceLevel, report.HistoricalCVaR,
             report.HistoricalVaR * basis, report.HistoricalCVaR * basis);
 
+        // 2026-05-07 (Sprint 3.2): convert from observational to enforcing.
+        // Trip the shared PortfolioRiskBlockState whenever VaR or CVaR exceeds threshold;
+        // executor pre-entry checks consult this and refuse to open new positions.
+        var blockState = scope.ServiceProvider.GetService<PortfolioRiskBlockState>();
+        bool varBreach = report.HistoricalVaR > _varAlertPctOfBasis;
+        bool cvarBreach = report.HistoricalCVaR > _cvarAlertPctOfBasis;
+        if (blockState is not null)
+        {
+            if (varBreach || cvarBreach)
+            {
+                var reason =
+                    $"VaR{_confidence:P0}={report.HistoricalVaR:P2} (lim {_varAlertPctOfBasis:P2})  " +
+                    $"CVaR{_confidence:P0}={report.HistoricalCVaR:P2} (lim {_cvarAlertPctOfBasis:P2})";
+                if (!blockState.BlockNewEntries)
+                {
+                    _logger.LogWarning(
+                        "PORT_RISK BLOCK ENGAGED — new entries refused until next snapshot clears. {Reason}",
+                        reason);
+                }
+                blockState.Trip(reason);
+            }
+            else if (blockState.BlockNewEntries)
+            {
+                _logger.LogWarning("PORT_RISK BLOCK CLEARED — VaR/CVaR back inside thresholds. New entries permitted.");
+                blockState.Clear();
+            }
+        }
+
         if (_alerter is null) return;
 
-        if (report.HistoricalVaR > _varAlertPctOfBasis)
+        if (varBreach)
         {
             await _alerter.SendAsync(
                 key: "portfolio_risk_var_breach",
                 severity: AlertSeverity.Warning,
-                title: $"PortfolioRisk: VaR{_confidence:P0} above threshold",
+                title: $"PortfolioRisk: VaR{_confidence:P0} above threshold (BLOCK ENGAGED)",
                 body:
                     $"VaR{_confidence:P0} = {report.HistoricalVaR:P2} of basis (threshold {_varAlertPctOfBasis:P2}).\n" +
-                    $"Sample: {report.ReturnSampleSize} trade returns. Tail risk has widened — consider reducing exposure.",
+                    $"Sample: {report.ReturnSampleSize} trade returns. New entries blocked until next snapshot.",
                 ct: ct).ConfigureAwait(false);
         }
-        if (report.HistoricalCVaR > _cvarAlertPctOfBasis)
+        if (cvarBreach)
         {
             await _alerter.SendAsync(
                 key: "portfolio_risk_cvar_breach",
                 severity: AlertSeverity.Warning,
-                title: $"PortfolioRisk: CVaR{_confidence:P0} above threshold",
+                title: $"PortfolioRisk: CVaR{_confidence:P0} above threshold (BLOCK ENGAGED)",
                 body:
                     $"CVaR{_confidence:P0} (expected shortfall) = {report.HistoricalCVaR:P2} of basis (threshold {_cvarAlertPctOfBasis:P2}).\n" +
-                    "Worst-tail mean loss is uncomfortably large. Reduce sizing or tighten stops.",
+                    "Worst-tail mean loss is uncomfortably large. New entries blocked until next snapshot.",
                 ct: ct).ConfigureAwait(false);
         }
     }

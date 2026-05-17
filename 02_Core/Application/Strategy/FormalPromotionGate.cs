@@ -121,6 +121,73 @@ public sealed class FormalPromotionGate
         return Finalise($"{stage}+Rigor", failures, passes);
     }
 
+    /// <summary>
+    /// 2026-05-07 (Sprint 2 — Master Plan v3) — sequential alternative to the
+    /// frequentist EvaluateStatisticalRigor + N=50 stopping rule. Replays each
+    /// trade's return through SPRT + Bayesian posterior, returning a path-
+    /// independent PROMOTE / KILL / CONTINUE verdict.
+    ///
+    /// Path-independent means: extending the strategy universe mid-test does
+    /// NOT invalidate accumulated samples. Each strategy's evidence is its own
+    /// trial. This is the fundamental fix for premortem #6 (pre-registration
+    /// trap) — Bonferroni m=k requires committing to the family upfront and
+    /// re-baselines on every extension. SPRT does not.
+    ///
+    /// Use BOTH this method AND EvaluateStatisticalRigor during the migration
+    /// window so we can compare verdicts on the same trade stream and
+    /// document any cases where they disagree (publish in MASTER_PLAN_v3
+    /// followup).
+    /// </summary>
+    /// <param name="stage">Logging label.</param>
+    /// <param name="tradeReturns">Per-trade return as a fraction (e.g. 0.005 = +0.5%). Must be the SAME unit as your sigma assumption — be consistent.</param>
+    /// <param name="targetPerTradeSharpe">Per-trade Sharpe target for H1. Default 0.15 ≈ daily Sharpe ~1.0 / 4h-cadence Sharpe ~0.5 annualized.</param>
+    public PromotionDecision EvaluateSequentialPromotion(
+        string stage,
+        IReadOnlyList<decimal> tradeReturns,
+        double targetPerTradeSharpe = 0.15)
+    {
+        var failures = new List<string>();
+        var passes = new List<string>();
+
+        if (tradeReturns.Count < 3)
+        {
+            failures.Add($"Sequential test needs at least 3 trades (have {tradeReturns.Count}); CONTINUE accumulating.");
+            return Finalise($"{stage}+SPRT", failures, passes);
+        }
+
+        var sprt = new SprtSharpeTest(targetSharpe: targetPerTradeSharpe);
+        var bayes = new BayesianSharpeEstimator();
+        foreach (var r in tradeReturns)
+        {
+            var rd = (double)r;
+            sprt.Update(rd);
+            bayes.Update(rd);
+        }
+
+        var verdict = SequentialDecisionRule.Evaluate(sprt, bayes);
+        var summary =
+            $"N={verdict.Observations} sampleSharpe={sprt.SampleSharpe:F3} " +
+            $"logLR={sprt.LogLikelihoodRatio:F2} (boundsA={sprt.UpperBoundLogA:F2}/B={sprt.LowerBoundLogB:F2}) " +
+            $"P(SR≥0.5)={verdict.PosteriorProbSharpeAtLeastHalf:F2} " +
+            $"P(SR≥0)={verdict.PosteriorProbSharpePositive:F2} " +
+            $"→ {verdict.Recommendation}";
+
+        if (verdict.Recommendation == "PROMOTE")
+        {
+            passes.Add($"SPRT accept H1 + posterior P(SR≥0.5) ≥ 0.7. {summary}");
+        }
+        else if (verdict.Recommendation == "KILL")
+        {
+            failures.Add($"Sequential KILL recommendation. {summary}");
+        }
+        else
+        {
+            failures.Add($"Insufficient evidence — CONTINUE. {summary}");
+        }
+
+        return Finalise($"{stage}+SPRT", failures, passes);
+    }
+
     private static void Check(bool condition, string desc, List<string> failures, List<string> passes)
     {
         if (condition) passes.Add(desc); else failures.Add(desc);

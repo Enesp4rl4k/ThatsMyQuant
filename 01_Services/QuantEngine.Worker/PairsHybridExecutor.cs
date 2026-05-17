@@ -522,6 +522,29 @@ public sealed class PairsHybridExecutor : BackgroundService
         var notionalX = sig.QtyB * sig.PriceB;
         var totalNotional = notionalY + notionalX;
         var basis = _portfolio.InitialBalance > 0m ? _portfolio.InitialBalance : 100_000m;
+
+        // [2026-05-16 PreEntryRiskGate wiring] Per-entry safety: fat-finger / position-count
+        // / macro blackout. Sum of both legs as notional (pair = single composite position).
+        try
+        {
+            var preGate = _serviceProvider.GetService<PreEntryRiskGate>();
+            if (preGate is not null)
+            {
+                var gateDecision = preGate.CheckEntry(pair.Key, totalNotional);
+                if (!gateDecision.Allowed)
+                {
+                    _logger.LogWarning(
+                        "PairsHybrid[{Tier}] {Pair} entry BLOCKED by PreEntryRiskGate: {Reason}",
+                        _tierName, pair.Key, gateDecision.RejectReason);
+                    return;
+                }
+            }
+        }
+        catch (Exception preGateEx)
+        {
+            _logger.LogDebug(preGateEx, "PairsHybrid[{Tier}] PreEntryRiskGate evaluation threw; allowing entry.", _tierName);
+        }
+
         if (_notionalGuard is not null && !_notionalGuard.TryReserve($"Pairs:{_tierName}", pair.Key, totalNotional, basis))
         {
             _logger.LogWarning(

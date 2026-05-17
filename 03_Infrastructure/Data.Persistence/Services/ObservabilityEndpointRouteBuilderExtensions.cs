@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.AspNetCore.Http;
 using ThatsMyQuant.Application.Observability;
 using ThatsMyQuant.Application.Strategy;
 using ThatsMyQuant.Contracts.Interfaces;

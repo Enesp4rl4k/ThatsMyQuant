@@ -22,6 +22,7 @@ public sealed class PaperTradingHostedService : BackgroundService
     // signal on crypto 1h/4h. Real validated alpha lives in PairsTradingPaperHostedService and
     // FundingAlphaPaperHostedService. Flip true only for directional research.
     private readonly bool _directionalScannerEnabled;
+    private readonly IConfiguration _configuration;
 
     public PaperTradingHostedService(
         ILogger<PaperTradingHostedService> logger,
@@ -30,6 +31,7 @@ public sealed class PaperTradingHostedService : BackgroundService
     {
         _logger = logger;
         _serviceProvider = serviceProvider;
+        _configuration = configuration;
 
         var symbolsCsv = configuration["Paper:Symbols"]
             ?? configuration["TMQ_PAPER_SYMBOLS"]
@@ -167,14 +169,32 @@ public sealed class PaperTradingHostedService : BackgroundService
                 return;
             }
 
+            // 2026-05-11: Apply Paper:InitialBalance as a basis CAP at seed time too.
+            // ExchangeBalanceSync applies the cap on its periodic ticks, but that runs AFTER
+            // EdgeLab hosted services have already fired their first cycle off the stale
+            // raw OKX balance ($96K demo → $11K orders on intended $2K cycle).
+            // The same min(balance, cap) logic must run here so the initial seed is correct.
+            decimal effectiveBalance = account.Balance;
+            decimal cap = 0m;
+            var capRaw = _configuration["Paper:InitialBalance"];
+            if (decimal.TryParse(capRaw, System.Globalization.NumberStyles.Any,
+                System.Globalization.CultureInfo.InvariantCulture, out var c) && c > 0m)
+            {
+                cap = c;
+                if (effectiveBalance > cap) effectiveBalance = cap;
+            }
+
             var previousCash = paperService.Portfolio.Cash;
-            paperService.Portfolio.InitialBalance = account.Balance;
-            paperService.Portfolio.Cash = account.Balance;
+            paperService.Portfolio.InitialBalance = effectiveBalance;
+            paperService.Portfolio.Cash = effectiveBalance;
             paperService.Portfolio.EquityCurve.Clear();
             paperService.Portfolio.AppendEquity(paperService.Portfolio.TotalEquity);
+            var capNote = cap > 0m && account.Balance > cap
+                ? $" (CAPPED from ${account.Balance:N2} to config ${cap:N2})"
+                : string.Empty;
             _logger.LogWarning(
-                "Paper:SyncWithExchange — seeded from real {Provider} account {Id}: ${Balance:N2} (was ${Prev:N2}).",
-                account.Provider, account.Id, account.Balance, previousCash);
+                "Paper:SyncWithExchange — seeded from real {Provider} account {Id}: ${Balance:N2}{Cap} (was ${Prev:N2}).",
+                account.Provider, account.Id, effectiveBalance, capNote, previousCash);
         }
         catch (Exception ex)
         {

@@ -191,7 +191,10 @@ public sealed class BinanceExecutionService : IExchangeService, IExchangeOrderSt
         var leverage = ResolveLeverage(signal);
         var marginMode = ResolveMarginMode(signal);
 
-        return new Trade
+        // [Sprint 3 — 2026-05-10] Same StrategyTag/SignalPrice/ExecutionSource
+        // propagation as OkxExecutionService — fixes per-strategy attribution
+        // for any future caller that routes through Binance.
+        var trade = new Trade
         {
             Id = queuePosId,
             SignalId = signal.Id,
@@ -201,6 +204,7 @@ public sealed class BinanceExecutionService : IExchangeService, IExchangeOrderSt
             FilledQuantity = executedQty,
             RemainingQuantity = ResolveRemainingQuantity(signal.Quantity, originalQty, executedQty),
             EntryPrice = signal.Price,
+            SignalPrice = signal.Price,
             MarkPrice = avgPrice,
             Quantity = executedQty,
             EntryTime = DateTime.UtcNow,
@@ -209,11 +213,23 @@ public sealed class BinanceExecutionService : IExchangeService, IExchangeOrderSt
             Status = executedQty > 0m ? TradeStatus.Executed : TradeStatus.Pending,
             LifecycleStatus = MapBinanceLifecycle(orderStatus, executedQty, originalQty > 0m ? originalQty : signal.Quantity),
             ExecutionMode = _isFuturesMode ? "REAL-FUTURES" : "REAL",
+            ExecutionSource = "LIVE",
             Leverage = leverage,
             MarginMode = marginMode,
             TotalFeesPaid = feesQuote,
-            NetFunding = 0m
+            NetFunding = 0m,
+            StrategyTag = string.IsNullOrWhiteSpace(signal.StrategyTag)
+                ? "TrendConfluence"
+                : signal.StrategyTag,
         };
+
+        if (signal.Metadata.TryGetValue("BacktestExpectedPnL", out var expectedRaw)
+            && decimal.TryParse(expectedRaw, NumberStyles.Any, CultureInfo.InvariantCulture, out var expected))
+        {
+            trade.BacktestExpectedPnL = expected;
+        }
+
+        return trade;
     }
 
     private static decimal ResolveLeverage(Signal signal)

@@ -579,6 +579,50 @@ switch (runMode)
             mlSampleStore: sp.GetService<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore>()));
         builder.Services.AddHostedService<HybridReconciliationHostedService>();
         builder.Services.AddHostedService<DailyTelegramDigestHostedService>();
+        // [2026-05-14 unattended hardening] Daily 24h ledger reconciliation: count + volume + fee
+        // match between local DB closed trades and OKX fills-history. Fires Telegram if drift > tol.
+        builder.Services.AddHostedService<DailyTradeReconciliationHostedService>();
+        // [2026-05-14 unattended hardening] Hard kill-switch: force-flatten on -8% drawdown
+        // OR -3% daily PnL. Singleton so executors can read IsKilled before opening entries.
+        builder.Services.AddSingleton<KillSwitchHostedService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<KillSwitchHostedService>());
+        // [2026-05-14 unattended hardening] Pre-entry risk gate: per-entry safety checks
+        // (fat-finger 15%, position-count 10, funding-drift 100bp). Singleton consulted by
+        // executors via constructor injection. Optional — checks return Allow() when disabled.
+        builder.Services.AddSingleton<PreEntryRiskGate>();
+        // [2026-05-14 unattended hardening] Capture full Risk:/OrderExecution:/Paper:/etc.
+        // config to a timestamped JSON snapshot at every boot. Index file tracks which
+        // snapshots changed config vs prior boot. Helps answer "what config was running
+        // on day X?" 15 days later.
+        builder.Services.AddHostedService<ConfigSnapshotHostedService>();
+        // [2026-05-14 unattended hardening — Layer 4 from cancel-verify FSM plan]
+        // At boot (after 60s grace), reconcile OKX open orders with local active trades.
+        // Orphan venue orders trigger Telegram alert. Periodic sync handles ongoing drift.
+        builder.Services.AddHostedService<BootOrphanSweepHostedService>();
+        // [2026-05-14 bug-hunt round 5 — Bug #6] SQLite WAL grows unbounded under
+        // continuous-INSERT load (telemetry, alerts, trade events). Periodic
+        // wal_checkpoint(TRUNCATE) every 6h, optimize every 24h, disk-space alarm < 2GB.
+        builder.Services.AddHostedService<SqliteMaintenanceHostedService>();
+        // [2026-05-17 CRITICAL fix — clock drift] Windows W32Time may be disabled/mis-
+        // configured (Source: Local CMOS Clock). When local clock drifts >30s from OKX
+        // server, every OKX REST call fails with 50102 "Timestamp request expired".
+        // This service fetches OKX server time at boot + every 5min, applies the offset
+        // to OkxExecutionService.GetIsoTimestamp() so requests stay accepted even when
+        // Windows clock is drifting. Critical Telegram alert on > 25s drift.
+        builder.Services.AddHostedService<OkxClockSync>();
+        // [2026-05-15 ledger drift fix — Option C] EdgeLab strategies fill via
+        // OkxExecutionService → DB.Trades but never touch PaperPortfolio. All monitors
+        // (heartbeat, TCA, ShadowAudit, KillSwitch, digest) read PaperPortfolio →
+        // operator-blind to live OKX state. This service mirrors DB Trades into
+        // PaperPortfolio.OpenPositions/ClosedPositions every 60s with ExecutionMode
+        // marker "LIVE_DB". Paper-only entries preserved.
+        builder.Services.AddHostedService<DbToPortfolioSyncHostedService>();
+        // [2026-05-16 per-strategy attribution] OKX positions-history doesn't carry strategy
+        // attribution. This ledger captures (time, symbol, strategy) on every EdgeLab live fill;
+        // DbToPortfolioSync looks up by time+symbol when mirroring closed positions so the
+        // digest shows per-strategy PnL (not "OkxLive" collapse). Needed by Quantlab
+        // track_realized.py for OOS validation.
+        builder.Services.AddSingleton<EdgeLabFillAttributionLedger>();
         // TelegramCommandHostedService — two-way bot: long-polls /status /pnl /positions /help.
         // Independent of digest service; replies only to the configured chat id.
         builder.Services.AddHostedService<TelegramCommandHostedService>();
@@ -621,6 +665,16 @@ switch (runMode)
         // execType field. Alerts when ratio < 0.75 (queue race lost, fees ~2x assumed).
         // Premortem #4 detector.
         builder.Services.AddHostedService<MakerFillRatioMonitorHostedService>();
+        // 2026-05-11: Maker-fill-ratio root-cause fix. OkxWebSocketService was registered
+        // but never connected — books5 subscription empty → OkxExecutionService had no
+        // top-of-book snapshot → post-only fell back to mid → 0% maker fill across 336
+        // fills. This service reads EdgeLab strategies' latest.json target_weights and
+        // calls ConnectAsync so books5 + trades stream into _latestOrderBooks, restoring
+        // the post-only nudge path.
+        if (isOkxMode)
+        {
+            builder.Services.AddHostedService<OrderBookSubscriptionHostedService>();
+        }
         // 2026-05-07 (Sprint 1.3): Diversification-myth detector. Pairwise Pearson correlation
         // across daily-bucketed PnL of every active StrategyTag (rolling 60d). Off-diagonal
         // > 0.4 = factor concentration disguised as diversification. Premortem #5 detector.

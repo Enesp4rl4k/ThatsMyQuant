@@ -183,6 +183,13 @@ public sealed class ExchangeExecutionSyncHostedService : IHostedService, IObserv
         }
     }
 
+    /// <summary>
+    /// [2026-05-13] Tri-state replay outcome. Distinguishes "ok-with-drift" (poll faster
+    /// to catch up) from "ok-stable" (poll slower) from "venue rejected the call entirely"
+    /// (back off to avoid hammering a degraded endpoint with WARN spam).
+    /// </summary>
+    private enum ReplayOutcome { Stable, Drift, Failed }
+
     private void StartPeriodicReplayLoop()
     {
         _periodicReplayCts = new CancellationTokenSource();
@@ -190,13 +197,48 @@ public sealed class ExchangeExecutionSyncHostedService : IHostedService, IObserv
         _periodicReplayTask = Task.Run(async () =>
         {
             var nextDelay = ReplayIntervalStable;
+            int consecutiveFailures = 0;
+            const int FailureWarnEvery = 10;     // throttle: log first failure + every 10th
+            const int FailureBackoffStartSec = 15;
+            const int FailureBackoffMaxSec = 300; // cap at 5 min between retries
+
             while (!token.IsCancellationRequested)
             {
                 try
                 {
                     await Task.Delay(nextDelay, token);
-                    var driftDetected = await ReplayOpenOrdersAsync(token);
-                    nextDelay = driftDetected ? ReplayIntervalWithDrift : ReplayIntervalStable;
+                    var outcome = await ReplayOpenOrdersAsync(token);
+                    switch (outcome)
+                    {
+                        case ReplayOutcome.Drift:
+                            nextDelay = ReplayIntervalWithDrift;
+                            if (consecutiveFailures > 0)
+                            {
+                                _logger.LogInformation(
+                                    "Execution sync replay recovered after {Failures} consecutive failures.",
+                                    consecutiveFailures);
+                            }
+                            consecutiveFailures = 0;
+                            break;
+                        case ReplayOutcome.Stable:
+                            nextDelay = ReplayIntervalStable;
+                            if (consecutiveFailures > 0)
+                            {
+                                _logger.LogInformation(
+                                    "Execution sync replay recovered after {Failures} consecutive failures.",
+                                    consecutiveFailures);
+                            }
+                            consecutiveFailures = 0;
+                            break;
+                        case ReplayOutcome.Failed:
+                            consecutiveFailures++;
+                            // Exponential backoff: 15s → 30s → 60s → 120s → 240s → 300s (cap)
+                            var backoffSec = Math.Min(
+                                FailureBackoffStartSec * (1 << Math.Min(consecutiveFailures - 1, 5)),
+                                FailureBackoffMaxSec);
+                            nextDelay = TimeSpan.FromSeconds(backoffSec);
+                            break;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
@@ -204,14 +246,26 @@ public sealed class ExchangeExecutionSyncHostedService : IHostedService, IObserv
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Execution sync periodic replay loop error.");
-                    nextDelay = ReplayIntervalWithDrift;
+                    consecutiveFailures++;
+                    if (consecutiveFailures == 1 || consecutiveFailures % FailureWarnEvery == 0)
+                    {
+                        _logger.LogWarning(ex, "Execution sync periodic replay loop error (consecutive={Count}).", consecutiveFailures);
+                    }
+                    var backoffSec = Math.Min(
+                        FailureBackoffStartSec * (1 << Math.Min(consecutiveFailures - 1, 5)),
+                        FailureBackoffMaxSec);
+                    nextDelay = TimeSpan.FromSeconds(backoffSec);
                 }
             }
         }, token);
     }
 
-    private async Task<bool> ReplayOpenOrdersAsync(CancellationToken cancellationToken)
+    // [2026-05-13] Track consecutive replay failures so ReplayOpenOrdersAsync can throttle
+    // its own WARN spam — every 15s "Systems are busy" was producing 5760 WARN/day, masking
+    // real alerts. Log first failure + every 10th, info-level recovery on first success.
+    private int _replayConsecutiveFailures;
+
+    private async Task<ReplayOutcome> ReplayOpenOrdersAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -224,7 +278,7 @@ public sealed class ExchangeExecutionSyncHostedService : IHostedService, IObserv
             var syncService = scope.ServiceProvider.GetService<TradeExecutionSyncService>();
             if (exchangeService is not IExchangeOrderStateProvider orderStateProvider || syncService is null)
             {
-                return false;
+                return ReplayOutcome.Stable;
             }
 
             var openOrders = await orderStateProvider.GetOpenOrdersAsync(cancellationToken);
@@ -241,12 +295,29 @@ public sealed class ExchangeExecutionSyncHostedService : IHostedService, IObserv
                 telemetry?.RecordExecutionSyncReplayDrift(driftCount);
             }
 
-            return driftCount > 0;
+            _replayConsecutiveFailures = 0;
+            return driftCount > 0 ? ReplayOutcome.Drift : ReplayOutcome.Stable;
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Execution sync replay failed.");
-            return true;
+            _replayConsecutiveFailures++;
+            // Throttle: log first failure with exception detail + every 10th. In between,
+            // a single-line debug message keeps the operator able to count failures via
+            // log-level lift without flooding the WARN stream.
+            if (_replayConsecutiveFailures == 1 || _replayConsecutiveFailures % 10 == 0)
+            {
+                _logger.LogWarning(ex,
+                    "Execution sync replay failed (consecutive={Count}). Backing off; will retry with exponential delay.",
+                    _replayConsecutiveFailures);
+            }
+            else
+            {
+                _logger.LogDebug(
+                    "Execution sync replay failed (consecutive={Count}, suppressed): {Message}",
+                    _replayConsecutiveFailures, ex.Message);
+            }
+            return ReplayOutcome.Failed;
         }
     }
 

@@ -2,6 +2,14 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "arsa-tkgm-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5174,
+      "autoPort": false,
+      "cwd": "C:/Users/parlak/Downloads/arsa-tkgm-extension"
+    },
+    {
       "name": "Web Dashboard (Vite)",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vite", "--host", "--port", "5173", "--strictPort"],
