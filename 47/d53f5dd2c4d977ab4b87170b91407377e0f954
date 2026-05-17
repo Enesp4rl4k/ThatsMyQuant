@@ -1,0 +1,301 @@
+03_Infrastructure/Data.Persistence/Services/BinanceExecutionService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 194-197,207,216,220-223,225-232
+01_Services/QuantEngine.Worker/PortfolioRiskLiveHostedService.cs
+  s_b3ca8f0e0bfd66::t_9bcf5981d34b33 107-110,112
+  s_d24d549a5362a4::t_c43aecda1fe025 117-144,147,152,155,158,163,166
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabKillSwitchTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-129
+02_Core/Application/Strategy/FundingAlphaBacktestRunner.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 77-85,97-103,184-186,191,368-380,535-543
+01_Services/QuantEngine.Worker/OrderBookSubscriptionHostedService.cs
+  s_2b3b79d6b4a145::t_011ffaf4328768 1-190
+02_Core/Application/Strategy/EdgeLab/EdgeLabPerSymbolCapEvaluator.cs
+  s_f011a3ba6381ba::t_d96229ddd8c772 1-158
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalOptions.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-71
+02_Core/Application/Strategy/EdgeLab/EdgeLabKillSwitch.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-183
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/MarkoutLedgerTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-108
+02_Core/Application/Strategy/PairsBacktestRunner.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 77-94,176-177,180-189,321-341,343-346,350-353,360,374,381,419,440,457,485,501,627-629,671-687
+.claude/launch.json
+  s_d24d549a5362a4::t_c43aecda1fe025 4-11
+01_Services/QuantEngine.Worker/FundingFeeRatioMonitorHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-248
+01_Services/QuantEngine.Worker/Program.cs
+  s_b3ca8f0e0bfd66::t_e0e02093b7c792 606-612
+  s_b3ca8f0e0bfd66::t_e0c62c4ac177cb 585-588
+  s_b3ca8f0e0bfd66::t_0cc2b1d5579e79 589-592
+  s_2b3b79d6b4a145::t_20d8c0432b7d94 668-677
+  s_b3ca8f0e0bfd66::t_431e82bc27bad9 613-619
+  s_b3ca8f0e0bfd66::t_965361086a1e14 593-601
+  s_b3ca8f0e0bfd66::t_e9f9e48da76413 620-625
+  s_b3ca8f0e0bfd66::t_ca0f37d9300dc8 582-584
+  s_b3ca8f0e0bfd66::t_f63565c7930910 602-605
+01_Services/QuantEngine.Worker/MakerFillRatioMonitorHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-304
+02_Core/Application/Strategy/FormalPromotionGate.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 124-190
+03_Infrastructure/Data.Persistence/Services/OkxExecutionService.cs
+  s_b3ca8f0e0bfd66::t_34cdf79739c805 1290-1299
+  s_b3ca8f0e0bfd66::t_ddd1f096296460 1261,1379-1385,1395-1436,1445-1448,1450-1455,1483-1484,1508-1511,1524
+  s_b3ca8f0e0bfd66::t_ff6801287de4a6 1147-1260
+  s_b3ca8f0e0bfd66::t_047820477fc865 544-555,560-563,565-570,572-575,577-592
+  s_b3ca8f0e0bfd66::t_d673b7da7e1959 678-684
+  s_b3ca8f0e0bfd66::t_bdb486b05f50e3 1112-1137
+  s_b3ca8f0e0bfd66::t_eb16f32a3453fd 1338-1342,1349,1356-1361,1371-1374
+  s_2b3b79d6b4a145::t_a8f10676f32e19 595-624,685
+  s_2b3b79d6b4a145::t_dca5608c0504ab 1531-1542
+  s_2b3b79d6b4a145::t_0ecc4ea20718c1 497-499
+  s_2b3b79d6b4a145::t_823704ccdd00e4 523-528
+  s_b3ca8f0e0bfd66::t_914a273435091b 556-559,564,571,576
+  s_b3ca8f0e0bfd66::t_09ffb2cdcad208 625-632,647-677
+  s_b3ca8f0e0bfd66::t_c59744c00e54c7 1775-1799,1801-1804
+  s_b3ca8f0e0bfd66::t_5d4d2a76c85142 633-646
+  s_d24d549a5362a4::t_c43aecda1fe025 133,139-140,253-267,269-273,275,277-290,292-340,342-344,346-347,349-353,355-358,360-411,744-755,762,775,779-782,784-792,818-874,1394,2354-2358,2378-2381,2466-2470,2493-2496
+  s_b3ca8f0e0bfd66::t_b2ec79fe8f523f 1262-1289,1300-1337,1343-1348,1350-1355,1362-1370,1375-1378
+  s_b3ca8f0e0bfd66::t_d8493fcb536359 2110-2218
+  s_b3ca8f0e0bfd66::t_361867ce459e46 101-107,110-111,114-118,121,123-124,127-132,134-138,141-142
+02_Core/Application/Strategy/EdgeLab/EdgeLabStrategyOverride.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-81
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabSyntheticPortfolioTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-154
+01_Services/QuantEngine.Worker/ExchangeBalanceSyncHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 32-36,63-80,155-162,165,176-181,184-188,191,202-221,224-226,228-229
+01_Services/QuantEngine.Worker/ShadowAuditLiveHostedService.cs
+  s_b3ca8f0e0bfd66::t_645af879766db0 138-142,146-151,153
+  s_b3ca8f0e0bfd66::t_11b810fbaa3257 143-145,152,154
+Restart-Worker.ps1
+  s_d24d549a5362a4::t_91db65c1cd9741 1-100
+04_UI/ThatsMyQuant.Web/src/pages/EdgeLabLivePage.tsx
+  s_2b3b79d6b4a145::t_ae8e1f6e870e71 86-87
+  s_2b3b79d6b4a145::t_6ac6ddb12e0bcc 1-85,88-143,168-300
+  s_2b3b79d6b4a145::t_b801a8856b8e64 144-167
+docs/PROP_FIRM_RESEARCH_2026_05_10.md
+  s_d24d549a5362a4::t_c43aecda1fe025 1-205
+01_Services/QuantEngine.Worker/EdgeLabSignalHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-131,147-537
+  s_b3ca8f0e0bfd66::t_abb6bef7791d3e 132-146
+01_Services/QuantEngine.Worker/EdgeLabFillAttributionLedger.cs
+  s_b3ca8f0e0bfd66::t_ce295dd4710b21 1-186
+06_Contracts/Options/OrderExecutionOptions.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 61-110,166-168
+  s_b3ca8f0e0bfd66::t_6c8fef1e365990 138-157
+  s_b3ca8f0e0bfd66::t_2ed3db1b2e2551 173
+  s_b3ca8f0e0bfd66::t_81b2e0a29c8ed5 111-137,169-172
+01_Services/QuantEngine.Worker/KillSwitchHostedService.cs
+  s_b3ca8f0e0bfd66::t_66f0606bfe53b4 225-239
+  s_b3ca8f0e0bfd66::t_319ab8e955137d 53-61
+  s_b3ca8f0e0bfd66::t_e009d83146e90f 1-52,62-188,197-201,203-208,243-247,250,253-327
+  s_b3ca8f0e0bfd66::t_54580b77e1cd60 189-196,202,209-224,240-242,248-249,251-252
+01_Services/QuantEngine.Worker/PairsHybridExecutor.cs
+  s_b3ca8f0e0bfd66::t_39d00889b2fea8 525-547
+02_Core/Application/Strategy/EdgeLab/MarkoutLedger.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-84
+01_Services/QuantEngine.Worker/DailyTelegramDigestHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 7,25-26,29,43-45,50-51,351-355,359-447
+  s_b3ca8f0e0bfd66::t_0c5da2bc8ebe72 97-100,116-118,120-126,128,130-137,142
+  s_b3ca8f0e0bfd66::t_a19a91f8ddcba6 30-37,54-86
+  s_b3ca8f0e0bfd66::t_d52445bac4bd80 150-161,168-170
+  s_b3ca8f0e0bfd66::t_38be79a96271ce 165-167
+  s_b3ca8f0e0bfd66::t_3a9c31420ec892 191,212-215
+01_Services/QuantEngine.Worker/BasisSanityCheckHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-108
+01_Services/Listener.Api/Program.cs
+  s_2b3b79d6b4a145::t_e6779b891ba0bf 41-49
+  s_2b3b79d6b4a145::t_d5a5c70c341a1e 450
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLabSingleAssetReaderTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-167
+01_Services/QuantEngine.Worker/EdgeLabRealizedPnLDumperHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-202
+01_Services/QuantEngine.Worker/TcaLiveAnalyzerHostedService.cs
+  s_b3ca8f0e0bfd66::t_f58ab9e3f53a98 97-101,106-108,135-139,141-142
+02_Core/Application/Risk/PortfolioRiskBlockState.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-79
+02_Core/Application/Strategy/EdgeLab/EdgeLabPromotionGate.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-104
+01_Services/QuantEngine.Worker/HrpAllocatorMonitorHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-274
+06_Contracts/Models/ExchangePositionSnapshot.cs
+  s_b3ca8f0e0bfd66::t_03db77ede58b9e 12-30
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalReader.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-186
+01_Services/QuantEngine.Worker/EdgeLabPaperShadowMonitor.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-155
+01_Services/QuantEngine.Worker/DailyTradeReconciliationHostedService.cs
+  s_b3ca8f0e0bfd66::t_c6c911c685655e 1-163,165-198
+  s_b3ca8f0e0bfd66::t_e82e23a0072ee2 164
+02_Core/Application/Strategy/EdgeLab/EdgeLabSyntheticPortfolio.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-177
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalDocument.cs
+  s_b3ca8f0e0bfd66::t_3db75a25fd8973 116-134
+  s_d24d549a5362a4::t_c43aecda1fe025 1-115,135
+02_Core/Application/Strategy/EdgeLab/EdgeLabSingleAssetReader.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-126
+01_Services/QuantEngine.Worker/DbToPortfolioSyncHostedService.cs
+  s_b3ca8f0e0bfd66::t_80f515ab52278b 94,106-123
+  s_b3ca8f0e0bfd66::t_7b32e54d85de87 259-262,266-271,277,281,286-291
+  s_b3ca8f0e0bfd66::t_cbc67aa060f803 160,164-166,175-176,182-184,186,193-194,199-206,208,212,215,223-225,227-256
+  s_b3ca8f0e0bfd66::t_d724291560d156 161-163,167-174,177-181
+  s_b3ca8f0e0bfd66::t_9f61e9b5ad2f49 52-55
+  s_b3ca8f0e0bfd66::t_bef04efed21b48 5,11,13-19,21-25,27,29-37,42,45,70-71,73,93,98-105,146,150-156,158-159,185,187-188,192,195-196,207,211,217-221,264-265,274-276,278-280,282-285
+  s_b3ca8f0e0bfd66::t_471bf943c4a320 92,95,124-142,157
+  s_b3ca8f0e0bfd66::t_dfee7fe74e313f 1-4,6-10,12,20,26,28,38-41,43-44,46-51,56-69,72,74-91,96-97,143-145,147-149,189-191,197-198,209-210,213-214,216,222,226,257-258,263,272-273,292-294
+RETURN_RUNBOOK.md
+  s_b3ca8f0e0bfd66::t_cd410fed16f56c 1-334
+02_Core/Application/Strategy/EdgeLab/EdgeLabReconciliationLedger.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-123
+02_Core/Application/Strategy/EdgeLab/EdgeLabSingleAssetOptions.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-73,99-118
+  s_f011a3ba6381ba::t_aa27dea57c00ee 74-98
+01_Services/QuantEngine.Worker/PreEntryRiskGate.cs
+  s_b3ca8f0e0bfd66::t_7457017128b399 1-73,77-108,121-145
+  s_b3ca8f0e0bfd66::t_ab31f9af652e43 74-76,109-120
+01_Services/CLI.Tool/ThatsMyQuant.CLI/Program.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 416,424-426,1614,1638-1657,1663,1680-1688,1706-1708
+check_clock_drift.ps1
+  s_b3ca8f0e0bfd66::t_633acf6bd1d8cb 1-8
+02_Core/Application/Strategy/EdgeLab/EdgeLabDryRunLedger.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-88
+01_Services/QuantEngine.Worker/MarkoutSnapshotHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-161,166-168,170-213
+  s_b3ca8f0e0bfd66::t_7ca13da8706dc1 162-165,169
+01_Services/QuantEngine.Worker/OkxClockSync.cs
+  s_b3ca8f0e0bfd66::t_93db384c0b86ea 67
+  s_b3ca8f0e0bfd66::t_32e66609268eb4 1-44,46-66,68-108,110-119,121-173
+  s_b3ca8f0e0bfd66::t_2d634832d154ae 45
+  s_b3ca8f0e0bfd66::t_58d03eff3a5ad6 120
+  s_b3ca8f0e0bfd66::t_ea642b688f91fc 109
+01_Services/QuantEngine.Worker/PerStrategyDigestHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-224
+02_Core/Application/Strategy/ReconciliationAgent.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 8-29,35,37-40,44,47-50,55,57,61-62,66,70,74-211
+02_Core/Application/Strategy/SequentialDecision.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-316
+01_Services/QuantEngine.Worker/PairwiseCorrelationMonitorHostedService.cs
+  s_b3ca8f0e0bfd66::t_8f5b5a8443476f 178-198,216-223
+  s_d24d549a5362a4::t_c43aecda1fe025 1-177,199-215,224-304
+01_Services/QuantEngine.Worker/PromotionGateLiveHostedService.cs
+  s_b3ca8f0e0bfd66::t_78fcbc3286d5d3 197-202
+docs/HIGH_FREQ_EDGE_SPRINT_2026_05_11.md
+  s_f011a3ba6381ba::t_ce5a3969427843 1-93
+06_Contracts/Models/PaperPortfolio.cs
+  s_b3ca8f0e0bfd66::t_a6141b02412de4 46-62,65-66
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabDryRunLedgerTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-94
+01_Services/QuantEngine.Worker/FundingHybridExecutor.cs
+  s_b3ca8f0e0bfd66::t_75b2127c79b926 978-1000
+05_Tests/ThatsMyQuant.Tests/Strategy/ShadowExecutionAuditServiceTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 51-60
+01_Services/QuantEngine.Worker/SqliteMaintenanceHostedService.cs
+  s_b3ca8f0e0bfd66::t_9931019e62e230 1-184,186-225
+  s_b3ca8f0e0bfd66::t_4ea16e3dc4b0bc 185
+06_Contracts/Interfaces/IExchangePositionReader.cs
+  s_b3ca8f0e0bfd66::t_2bee772d96d2ee 35-48
+  s_d24d549a5362a4::t_c43aecda1fe025 63-66
+01_Services/QuantEngine.Worker/PaperTradingHostedService.cs
+  s_2b3b79d6b4a145::t_999179d6c54113 25,34
+  s_2b3b79d6b4a145::t_5d319cbf97a507 172-186,188-189,192-194,196-197
+04_UI/ThatsMyQuant.Web/src/components/layout/Sidebar.tsx
+  s_2b3b79d6b4a145::t_a19727c1b22d88 13
+01_Services/QuantEngine.Worker/ConfigSnapshotHostedService.cs
+  s_b3ca8f0e0bfd66::t_6f37ada981efe0 1-191
+04_UI/ThatsMyQuant.Web/src/App.tsx
+  s_2b3b79d6b4a145::t_8788ad6fa89ece 137-143
+  s_2b3b79d6b4a145::t_3875d37154ceb6 28-30,136
+01_Services/QuantEngine.Worker/EdgeLabKillSwitchHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-245
+05_Tests/ThatsMyQuant.Tests/Execution/OkxExecutionServiceTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 305-313,320-323,325,327,339-345,514-603
+01_Services/QuantEngine.Worker/WorkerHeartbeatConsoleHostedService.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 2,19-23,28-30,35-37,50-51,142,160,188-200,202-209,218-251
+  s_b3ca8f0e0bfd66::t_64c8c0cee0b615 122-136
+  s_b3ca8f0e0bfd66::t_86a728ee9f6baa 38,52-91
+  s_b3ca8f0e0bfd66::t_a3818a1800939e 201
+01_Services/Listener.Api/Endpoints/EdgeLabEndpoints.cs
+  s_2b3b79d6b4a145::t_5aa6798238fc28 33-39
+  s_2b3b79d6b4a145::t_a35db93182ed83 98-100,110
+  s_2b3b79d6b4a145::t_c52e902134528b 1-32,40-97,101,104-109,111-116,119-161
+  s_2b3b79d6b4a145::t_37db18ea3d4cd4 102-103,117-118
+04_UI/ThatsMyQuant.Web/src/api/edgelab.ts
+  s_2b3b79d6b4a145::t_74644573f41caf 3-22,35
+  s_2b3b79d6b4a145::t_ac9265d4faf37a 1-2,23-34,36-87
+01_Services/QuantEngine.Worker/BootOrphanSweepHostedService.cs
+  s_b3ca8f0e0bfd66::t_c599fc0a90966f 1-5,7-150
+  s_b3ca8f0e0bfd66::t_e72cba59912a85 6
+docs/TMQ_EDGE_PLAN_v4_2026_05_10.md
+  s_d24d549a5362a4::t_c43aecda1fe025 1-197
+03_Infrastructure/Data.Persistence/Services/VenuePortfolioManager.cs
+  s_b3ca8f0e0bfd66::t_310ac1f882aeba 17-20,22
+Watchdog-PaperTrade.ps1
+  s_b3ca8f0e0bfd66::t_eddc0a3f408e54 2-3,5-8,16-21,28-58,62,64,66-69,72,75-87,91-105
+  s_b3ca8f0e0bfd66::t_9f721c805eff26 133-134,141,144
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabPromotionGateTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-141
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabPerSymbolCapEvaluatorTests.cs
+  s_f011a3ba6381ba::t_d676f347fc87c4 1-263
+docs/MASTER_PLAN_v3_2026_05_07.md
+  s_d24d549a5362a4::t_c43aecda1fe025 1-417
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabSignalReaderTests.cs
+  s_d24d549a5362a4::t_c43aecda1fe025 1-233
+01_Services/QuantEngine.Worker/EdgeLabSingleAssetHostedService.cs
+  s_b3ca8f0e0bfd66::t_c2c9ba6fc51cab 484-485,489
+  s_b3ca8f0e0bfd66::t_4481b0ca7d465a 883,885-905
+  s_b3ca8f0e0bfd66::t_51dba88f6a0d39 164-165,171-172,179,187,214-216
+  s_2b3b79d6b4a145::t_72fc94f4d7f6f9 265-266
+  s_b3ca8f0e0bfd66::t_340f64a1aa1b1d 908-930
+  s_2b3b79d6b4a145::t_48bf1ed89b4b8f 259-264,267-280
+  s_2b3b79d6b4a145::t_802cf87a909f80 1
+  s_b3ca8f0e0bfd66::t_70ffe584f8a8ff 166-170,173-178,180-186,188-213
+  s_b3ca8f0e0bfd66::t_4619500cd25a59 751-854
+  s_b3ca8f0e0bfd66::t_c2743d0cca69d3 871-882,884,906-907,935-936,941-942,958-960
+  s_f011a3ba6381ba::t_550860481acd3b 379-451
+  s_b3ca8f0e0bfd66::t_37bb90bc01a1b2 471-483,486-488,490-499
+  s_2b3b79d6b4a145::t_776c28b4f2a657 952-957,961-988,990-999
+  s_2b3b79d6b4a145::t_24b055211b5ef6 989
+03_Infrastructure/Data.Persistence/Services/ExchangeExecutionSyncHostedService.cs
+  s_b3ca8f0e0bfd66::t_5c5f908240e5ec 186-192,200-204,210-241,249-257,263-268,281,298-299,301,304-320
+Launch-Worker-Background.ps1
+  s_d24d549a5362a4::t_c43aecda1fe025 73-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.8",
+  "base_commit_sha": "47d53f5dd2c4d977ab4b87170b91407377e0f954",
+  "prompts": {},
+  "sessions": {
+    "s_2b3b79d6b4a145": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ee3e40e-68df-42ca-8a14-37e793b60e82",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    },
+    "s_b3ca8f0e0bfd66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6955b50-d304-4acd-ae2a-22b1a7ade85b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    },
+    "s_d24d549a5362a4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc81641e-f2e3-4113-8cf3-8d00ac6cfe78",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    },
+    "s_f011a3ba6381ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4dae3cfe-1791-4c4b-b200-175b673bc6bf",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
