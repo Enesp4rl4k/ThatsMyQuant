@@ -1,0 +1,46 @@
+01_Services/QuantEngine.Worker/EdgeLabSignalHostedService.cs
+  s_d113b41625f536::t_503d2b38fc1394 182-196
+  s_d113b41625f536::t_f09b5e91cf39e4 256
+  s_d113b41625f536::t_b928c629850b41 299
+01_Services/QuantEngine.Worker/Program.cs
+  s_d113b41625f536::t_3f6acc1539e070 458-461,465
+  s_d113b41625f536::t_fec82157a8bb19 462-464
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalDocument.cs
+  s_d113b41625f536::t_fe132fb42f5712 135-149
+01_Services/QuantEngine.Worker/PerStrategyRealizedPnlCsvHostedService.cs
+  s_d113b41625f536::t_f5a3a825f7f216 3,8,15-17,19-25,32-43,48,59-66,69,75,79-80,109-111,133-156,158,163-166,169-171,173-175,181-188,194-195,205,207,210-211,213-216,218-219,222,224-230,232-233,236-238,257-258,265
+  s_d113b41625f536::t_e985dddc084d71 83-95,97-98
+  s_d113b41625f536::t_e2535df322ca31 167-168
+  s_d113b41625f536::t_9f1b78746a4008 1-2,4-7,9-14,18,26-31,44-47,49-58,67-68,70-74,76-78,81-82,96,99-108,112-132,157,159-162,172,176-180,189-193,196-204,206,208-209,212,217,220-221,223,231,234-235,239-256,259-264,266-273
+01_Services/QuantEngine.Worker/EdgeLabSingleAssetHostedService.cs
+  s_d113b41625f536::t_820fe0e3f14a9c 539
+  s_d113b41625f536::t_2392c3a34f4b58 375-380
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalOptions.cs
+  s_d113b41625f536::t_9836b86b927433 71-82
+01_Services/QuantEngine.Worker/DailyTelegramDigestHostedService.cs
+  s_b3ca8f0e0bfd66::t_5ab581db845a47 318-328,330-367,370-371,377-378,381
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "1f6df8c90222bb643fb6e70863f83694be2aca38",
+  "prompts": {},
+  "sessions": {
+    "s_b3ca8f0e0bfd66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6955b50-d304-4acd-ae2a-22b1a7ade85b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    },
+    "s_d113b41625f536": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a75baa2a-bc0d-496a-a146-05df4c0011ad",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
