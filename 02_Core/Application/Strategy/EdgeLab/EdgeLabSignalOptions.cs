@@ -68,4 +68,16 @@ public sealed class EdgeLabSignalOptions
     /// Default 24h; tighten to 12 if you want faster surface.
     /// </summary>
     public int StaleAlertHours { get; set; } = 24;
+
+    /// <summary>
+    /// 2026-05-17: Fallback fractional Kelly multiplier when a signal artifact does
+    /// NOT include <c>metadata.kelly_haircut</c>. Quantlab handoff 2026-05-17:
+    ///   - Default 0.5 = half-Kelly (legacy behaviour pre-restoration).
+    ///   - Quantlab's new emitter writes per-strategy values
+    ///     (op_breakout_4h_short=0.65, eth_breakout_1h_long=0.75 as of 2026-05-17);
+    ///     those override this default when present.
+    /// Leaving this as 0.5 means a hypothetical regression on the Quantlab side
+    /// degrades GRACEFULLY to half-Kelly rather than silently sizing full-Kelly.
+    /// </summary>
+    public double DefaultKellyHaircut { get; set; } = 0.5;
 }

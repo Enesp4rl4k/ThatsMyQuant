@@ -315,31 +315,70 @@ public sealed class DailyTelegramDigestHostedService : BackgroundService
             sb.AppendLine();
 
             // ── Cost leakage tile (TCA-style) ──
-            // PaperPosition doesn't carry explicit fees; estimate at the configured RoundTripCostRate (8bp default).
-            decimal estFees = closed.Sum(p =>
+            // [2026-05-19 FIX] Two prior bugs:
+            //   1. Assumed-rate fee model (qty × px × 8bp) inflated fees when demo OKX
+            //      returns fee=0 — operator saw $5.97 "Est Fees" when real was ~$0.
+            //   2. Leakage formula divided by (realized + fees) which becomes meaningless
+            //      when realized is negative — e.g., realized=-$1.30 + fees=$5.97 = $4.65
+            //      gross → leakage 128% (saçma).
+            // Fix: prefer RealFeePaid when populated (>=80% of sample), annotate provenance
+            // like TCA does, and guard the leakage % when gross is non-positive.
+            int realFeeCount = 0, assumedFeeCount = 0;
+            decimal realFeesSum = 0m, assumedFeesSum = 0m;
+            foreach (var p in closed)
             {
-                var qty = p.Quantity > 0 ? p.Quantity : Math.Max(p.OpenedQuantity, 1m);
-                var px = p.CurrentPrice > 0 ? p.CurrentPrice : p.EntryPrice;
-                return px * qty * 0.0008m;
-            });
-            decimal grossSum = closed.Sum(p => p.RealizedPnL) + estFees;
-            decimal leakagePct = grossSum > 0 ? (estFees / grossSum) * 100m : 0m;
-            sb.AppendLine("*Cost Leakage (estimated)*");
-            sb.AppendLine($"  Gross PnL : ${grossSum:N2}");
-            sb.AppendLine($"  Est Fees  : ${estFees:N2}");
-            var leakSign = leakagePct > 40m ? "🔴" : leakagePct > 25m ? "🟡" : "🟢";
-            sb.AppendLine($"  Leakage   : {leakSign} {leakagePct:F1}%");
+                if (p.RealFeePaid.HasValue && p.RealFeePaid.Value > 0m)
+                {
+                    realFeesSum += p.RealFeePaid.Value;
+                    realFeeCount++;
+                }
+                else
+                {
+                    var qty = p.Quantity > 0 ? p.Quantity : Math.Max(p.OpenedQuantity, 1m);
+                    var px = p.CurrentPrice > 0 ? p.CurrentPrice : p.EntryPrice;
+                    assumedFeesSum += px * qty * 0.0008m;
+                    assumedFeeCount++;
+                }
+            }
+            decimal totalRealized = closed.Sum(p => p.RealizedPnL);
+            decimal totalFees = realFeesSum + assumedFeesSum;
+            decimal grossSum = totalRealized + totalFees;
+            var feeMixTag = realFeeCount > 0 && assumedFeeCount == 0 ? "real"
+                          : realFeeCount == 0 ? "assumed"
+                          : $"mixed(R={realFeeCount}/A={assumedFeeCount})";
+
+            sb.AppendLine("*Cost Leakage*");
+            sb.AppendLine($"  Realized PnL : ${totalRealized:N2}");
+            sb.AppendLine($"  Fees ({feeMixTag,-7}) : ${totalFees:N2}");
+            sb.AppendLine($"  Gross PnL    : ${grossSum:N2}");
+            if (grossSum > 0m && totalFees > 0m)
+            {
+                decimal leakagePct = (totalFees / grossSum) * 100m;
+                var leakSign = leakagePct > 40m ? "🔴" : leakagePct > 25m ? "🟡" : "🟢";
+                sb.AppendLine($"  Leakage      : {leakSign} {leakagePct:F1}%");
+            }
+            else if (totalRealized <= 0m)
+            {
+                sb.AppendLine($"  Leakage      : ⚠️ n/a (realized PnL ≤ 0 — strategy not yet profitable, leakage % undefined)");
+            }
+            else
+            {
+                sb.AppendLine($"  Leakage      : 🟢 0.0% (no fees recorded)");
+            }
             sb.AppendLine();
 
-            // Aggregate metrics
+            // Aggregate metrics — with execution-mode breakdown so operator distinguishes
+            // OLD paper-mode entries from LIVE_OKX mirror entries.
             var totalWins = closed.Count(p => p.RealizedPnL > 0);
             var grossWin = closed.Where(p => p.RealizedPnL > 0).Sum(p => p.RealizedPnL);
             var grossLoss = Math.Abs(closed.Where(p => p.RealizedPnL <= 0).Sum(p => p.RealizedPnL));
             var pf = grossLoss > 0 ? grossWin / grossLoss : (grossWin > 0 ? 999m : 0m);
             var overallWR = closed.Count > 0 ? totalWins * 100m / closed.Count : 0m;
+            var liveCount = closed.Count(p => p.ExecutionMode == "LIVE_OKX");
+            var paperCount = closed.Count - liveCount;
 
             sb.AppendLine("*Aggregate*");
-            sb.AppendLine($"  Trades  : {closed.Count} (W:{totalWins} / L:{closed.Count - totalWins})");
+            sb.AppendLine($"  Trades  : {closed.Count} (W:{totalWins} / L:{closed.Count - totalWins})  [live={liveCount} paper={paperCount}]");
             sb.AppendLine($"  WinRate : {overallWR:F1}%");
             sb.AppendLine($"  PF      : {pf:F2}");
             sb.AppendLine();

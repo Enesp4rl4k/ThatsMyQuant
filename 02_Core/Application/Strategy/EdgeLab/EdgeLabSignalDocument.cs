@@ -132,4 +132,19 @@ public sealed class EdgeLabSignalMetadata
     /// "1y realized Sharpe -0.93 vs backtest +0.52, regime decay 2024-onwards").
     /// Surfaced in TMQ logs + Telegram for operator visibility.</summary>
     [JsonPropertyName("paused_reason")] public string? PausedReason { get; set; }
+
+    // ── [2026-05-17 Quantlab Kelly restoration handoff] ──
+    // Quantlab now emits per-strategy Kelly haircut (fractional sizing multiplier in
+    // 0..1). Default historically 0.5 (half-Kelly); 2026-05-17 op_breakout_4h_short
+    // and eth_breakout_1h_long were restored to 0.65 and 0.75 respectively based on
+    // 8.7y replay (CAGR +10pp, equity 1.59×). TMQ multiplies target_weights by this
+    // value at consumption time so Quantlab can tune Kelly without re-deploying TMQ.
+    // Missing/null → fall back to host-side default (back-compat with pre-2026-05-17
+    // emitters; do NOT silently size full-Kelly).
+
+    /// <summary>Per-strategy fractional Kelly sizing multiplier (0..1). Quantlab
+    /// emits this with every cycle; TMQ multiplies each <c>target_weight</c> by it
+    /// before computing notional. Null = field absent → caller falls back to
+    /// <c>EdgeLab:DefaultKellyHaircut</c> (default 0.5).</summary>
+    [JsonPropertyName("kelly_haircut")] public double? KellyHaircut { get; set; }
 }
