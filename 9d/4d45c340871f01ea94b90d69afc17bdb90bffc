@@ -1,0 +1,19 @@
+.gitignore
+  s_b3ca8f0e0bfd66::t_9ca22b45b6a76d 108-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.11",
+  "base_commit_sha": "9d4d45c340871f01ea94b90d69afc17bdb90bffc",
+  "prompts": {},
+  "sessions": {
+    "s_b3ca8f0e0bfd66": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6955b50-d304-4acd-ae2a-22b1a7ade85b",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
