@@ -105,3 +105,6 @@ exchange_settings.json
 
 # Worktrees (claude-code agents) — ephemeral, never commit
 .claude/worktrees/
+
+# Build output bundles (never commit — exceed GitHub 100MB limit)
+dist/
