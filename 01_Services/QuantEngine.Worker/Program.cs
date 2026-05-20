@@ -455,6 +455,14 @@ switch (runMode)
         // capital cycle (master plan v2): realized vs backtest gap calibration.
         // Quantlab side reads these files via scripts/sanity_realized_vs_backtest.py.
         builder.Services.AddHostedService<EdgeLabRealizedPnLDumperHostedService>();
+        // 2026-05-17 Quantlab handoff §1 — per-strategy PER-TRADE realized PnL CSV.
+        // The Dumper above emits cycle-level synthetic PnL; live_monitor.py and
+        // track_realized.py need per-trade rows grouped by StrategyTag to drive
+        // realized-Sharpe kill-switch decisions and maker-fill-rate watch tier.
+        // Reads from paper_portfolio.json (PaperPortfolio.ClosedPositions) which is
+        // the actual fill ledger in paper mode; SQLite Trades is dormant for this
+        // path (verified 2026-05-17: portfolio JSON had 126 closed vs DB had 0).
+        builder.Services.AddHostedService<PerStrategyRealizedPnlCsvHostedService>();
         var additionalEdgeLabStrategies = builder.Configuration
             .GetSection("EdgeLab:AdditionalStrategies").Get<string[]>() ?? Array.Empty<string>();
         foreach (var strategyName in additionalEdgeLabStrategies)

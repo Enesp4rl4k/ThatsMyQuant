@@ -179,6 +179,21 @@ public sealed class EdgeLabSignalHostedService : BackgroundService
             return;
         }
 
+        // 2026-05-17: Apply per-strategy Kelly haircut from signal metadata.
+        // Quantlab handoff §2: emitter writes metadata.kelly_haircut per cycle so
+        // sizing can be tuned without re-deploying TMQ. Missing → fall back to the
+        // configured default (default 0.5 = half-Kelly) so a hypothetical Quantlab
+        // regression degrades gracefully instead of silently sizing full-Kelly.
+        var kellyHaircutRaw = doc.Metadata?.KellyHaircut ?? _options.DefaultKellyHaircut;
+        var kellyHaircut = (decimal)Math.Clamp(kellyHaircutRaw, 0.0, 1.0);
+        if (kellyHaircut <= 0m)
+        {
+            _logger.LogInformation(
+                "EdgeLab: strategy={Strategy} kelly_haircut={Kh:F2} — sizing-disabled cycle, skipping.",
+                doc.Strategy, kellyHaircut);
+            return;
+        }
+
         var mode = NormalizeMode(_options.HybridMode);
         using var scope = _serviceProvider.CreateScope();
         var exchange = scope.ServiceProvider.GetRequiredService<IExchangeService>();
@@ -238,7 +253,7 @@ public sealed class EdgeLabSignalHostedService : BackgroundService
         {
             if (ct.IsCancellationRequested) break;
 
-            var targetNotional = basis * (decimal)weight;
+            var targetNotional = basis * (decimal)weight * kellyHaircut;
             grossTarget += Math.Abs(targetNotional);
 
             // Persist target position for next cycle's period-PnL math regardless of
@@ -281,6 +296,7 @@ public sealed class EdgeLabSignalHostedService : BackgroundService
             };
             signal.Metadata["edge_lab_as_of_bar"] = doc.AsOfBar!.Value.ToString("o");
             signal.Metadata["edge_lab_target_weight"] = weight.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+            signal.Metadata["kelly_haircut"] = kellyHaircut.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             if (mode == HybridMode.DryRun)
             {

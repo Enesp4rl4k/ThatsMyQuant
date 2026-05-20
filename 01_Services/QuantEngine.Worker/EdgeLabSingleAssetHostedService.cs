@@ -372,7 +372,12 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         //   0.0  = hard kill (realized 30c Sharpe < hard threshold, e.g. -1.0). Position
         //          targets to zero → next rebalance flattens; declaredMode also forced
         //          to dry-run above to avoid sending real orders.
-        var effectiveStrategyWeight = _strategyWeight * killMultiplier;
+        // [2026-05-17 Quantlab handoff §2] Kelly haircut from signal metadata.
+        // Quantlab now tunes per-strategy fractional Kelly without re-deploying TMQ;
+        // missing field → fall back to host default (0.5 = half-Kelly, safe-low).
+        var kellyHaircutRaw = doc.Metadata?.KellyHaircut ?? 0.5;
+        var kellyHaircut = (decimal)Math.Clamp(kellyHaircutRaw, 0.0, 1.0);
+        var effectiveStrategyWeight = _strategyWeight * killMultiplier * kellyHaircut;
         var targetNotional = basis * effectiveStrategyWeight * (decimal)(weight * leverage);
         var deltaNotional = targetNotional - currentNotional;
 
@@ -531,6 +536,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                 signal.Metadata["edge_lab_factor_name"] = doc.Metadata.Factor;
             if (doc.Metadata?.Leverage is double lev)
                 signal.Metadata["Leverage"] = lev.ToString("R", inv);
+            signal.Metadata["kelly_haircut"] = kellyHaircut.ToString(inv);
             if (doc.Metadata?.FeeBpsRoundTrip is double feeBps)
                 signal.Metadata["edge_lab_fee_bps_round_trip"] = feeBps.ToString("R", inv);
 
