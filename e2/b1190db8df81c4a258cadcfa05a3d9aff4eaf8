@@ -1,0 +1,19 @@
+Launch-Worker-Background.ps1
+  s_32d7217dc0c0ed::t_e355d9e432409e 84-91
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "e2b1190db8df81c4a258cadcfa05a3d9aff4eaf8",
+  "prompts": {},
+  "sessions": {
+    "s_32d7217dc0c0ed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d3d9532-995a-44d3-83d4-1ae2807c32b0",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
