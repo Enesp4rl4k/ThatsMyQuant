@@ -34,11 +34,31 @@ var builder = Host.CreateApplicationBuilder(args);
     var tmqModeStartup = (Environment.GetEnvironmentVariable("TMQ_MODE") ?? string.Empty).ToLowerInvariant();
     if (tmqModeStartup == "paper")
     {
-        var explicitPaperJson = Path.Combine(builder.Environment.ContentRootPath, "appsettings.Paper.json");
-        if (File.Exists(explicitPaperJson))
+        // 2026-06-12: ContentRootPath-only probe was a silent kill switch.
+        // Restart-Worker.ps1 -> Launch-Worker-Background.ps1 execs the built exe with
+        // CWD = repo root, where appsettings.Paper.json does NOT exist -> File.Exists
+        // guard silently skipped the overlay -> worker booted with ZERO EdgeLab
+        // strategies and idled ("no symbols discovered" / "EdgeLab:InputDir not
+        // configured"). Probe ContentRootPath first (dotnet run path), then the exe
+        // directory (build output carries a copy). Paper mode with no Paper overlay
+        // anywhere = config error -> fail fast (EX_CONFIG, same policy as the
+        // credentials guard below).
+        var paperJsonCandidates = new[]
         {
-            builder.Configuration.AddJsonFile(explicitPaperJson, optional: false, reloadOnChange: true);
+            Path.Combine(builder.Environment.ContentRootPath, "appsettings.Paper.json"),
+            Path.Combine(AppContext.BaseDirectory, "appsettings.Paper.json"),
+        };
+        var foundPaperJson = paperJsonCandidates.FirstOrDefault(File.Exists);
+        if (foundPaperJson is null)
+        {
+            Console.Error.WriteLine(
+                "[FATAL] REFUSING TO START: TMQ_MODE=paper but appsettings.Paper.json was not found at " +
+                string.Join(" nor ", paperJsonCandidates) +
+                " — without it the worker runs with zero strategies. Launch via Launch-PaperTrade-Clean.ps1 " +
+                "or fix the working directory.");
+            Environment.Exit(78); // EX_CONFIG
         }
+        builder.Configuration.AddJsonFile(foundPaperJson, optional: false, reloadOnChange: true);
     }
 }
 builder.Configuration.AddJsonFile("exchange_settings.json", optional: true, reloadOnChange: true);
@@ -625,6 +645,13 @@ switch (runMode)
         // PaperPortfolio.OpenPositions/ClosedPositions every 60s with ExecutionMode
         // marker "LIVE_DB". Paper-only entries preserved.
         builder.Services.AddHostedService<DbToPortfolioSyncHostedService>();
+        // [2026-06-12 ledger drift — the "proper fix" DbToPortfolioSync flagged as
+        // Sprint-Post-Vacation #1] EdgeLab/hybrid/OKX closes land in PaperPortfolio.ClosedPositions
+        // but nothing wrote db.Trades, leaving the kill switch + per-strategy digest blind
+        // (they read db.Trades). This service mirrors closed positions → db.Trades every 5min,
+        // forward-only from a persisted cutoff (keeps pre-registered-test sample clean),
+        // idempotent by content hash. Consumers unchanged.
+        builder.Services.AddHostedService<ClosedPositionToTradeMirrorHostedService>();
         // [2026-05-16 per-strategy attribution] OKX positions-history doesn't carry strategy
         // attribution. This ledger captures (time, symbol, strategy) on every EdgeLab live fill;
         // DbToPortfolioSync looks up by time+symbol when mirroring closed positions so the
