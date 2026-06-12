@@ -81,4 +81,11 @@ Write-Host "[BUILD]"
 if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] build"; exit 1 }
 
 Write-Host "[RUN]"
-& '01_Services\QuantEngine.Worker\bin\Release\net9.0\ThatsMyQuant.Bot.exe'
+# 2026-06-12 FIX: exec the exe with CWD = worker PROJECT dir so ContentRootPath
+# resolves appsettings.json + appsettings.Paper.json exactly like the
+# `dotnet run --project` path does. Running from repo root made the host miss
+# BOTH files silently -> worker booted with ZERO EdgeLab strategies and idled
+# (log: 'no symbols discovered', 0/336 maker fills). Program.cs now also
+# fail-fasts (exit 78) if the Paper overlay cannot be found.
+Set-Location '01_Services\QuantEngine.Worker'
+& 'bin\Release\net9.0\ThatsMyQuant.Bot.exe'
