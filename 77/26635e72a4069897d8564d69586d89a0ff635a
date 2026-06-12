@@ -1,0 +1,28 @@
+01_Services/QuantEngine.Worker/Program.cs
+  s_32d7217dc0c0ed::t_9c2463bb75348c 37-46,48-59,61
+  s_bf7cc06cfe6517::t_c93de5958be0da 648-654
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.6",
+  "base_commit_sha": "7726635e72a4069897d8564d69586d89a0ff635a",
+  "prompts": {},
+  "sessions": {
+    "s_32d7217dc0c0ed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d3d9532-995a-44d3-83d4-1ae2807c32b0",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    },
+    "s_bf7cc06cfe6517": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfd77dcb-2ed5-4593-a955-a64fdc75eeff",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
