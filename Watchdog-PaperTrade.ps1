@@ -1,147 +1,212 @@
-# Paper-trade watchdog. Runs every 1 minute via Task Scheduler. If the worker process is
-# missing OR the worker_heartbeat.txt file is older than 5 minutes (silent death),
-# OR the process is Not Responding for >2min, kills + relaunches.
-# Idempotent: does nothing when worker is healthy.
+# Paper-trade watchdog - runs every 1 min via Task Scheduler (ThatsMyQuant-Watchdog).
+# Detects worker death / hang / silent integration failures, relaunches, and ALERTS.
 #
-# 2026-05-14 unattended hardening: added worker_heartbeat.txt as primary signal
-# (HB hosted service writes it every 60s), Telegram alert on every restart, and
-# Not Responding detection. CLEF log heartbeat retained as fallback.
-[CmdletBinding()] param()
+# 2026-06-27 rewrite - fixes the defects that let the worker stay silently dead for 13 days:
+#   1. Telegram alerts now read telegram_settings.json directly. The previous version read
+#      $env:Telegram__BotToken, which is NEVER set in the scheduled-task context, so every
+#      alert silently returned at the guard -> outages were invisible.
+#   2. Relaunch now uses the canonical Launch-PaperTrade-Clean.ps1 (fresh DPAPI decrypt; the
+#      task runs as parlak Interactive so CurrentUser DPAPI works). Drops the stale May-11
+#      run-worker.bat that carried PLAINTEXT OKX secret+passphrase+token and could relaunch
+#      a broken/mock worker.
+#   3. Restart-loop escalation: if relaunch keeps failing, stop hammering and escalate.
+#   4. Integration alarm: repeated edge-rejection / ERR in the live log -> alert (no restart),
+#      so producer-contract drift (Malformed / WeightAsymmetry / not actionable) is surfaced
+#      instead of failing closed in silence.
+#   5. Watchdog self-heartbeat: writes its own liveness file every run.
+#
+# ASCII-only on purpose (PS 5.1 + Turkish locale mangles non-ASCII source bytes).
+[CmdletBinding()] param(
+    [string]$WorkDir           = "C:\Users\parlak\Downloads\ThatsMyQuant",
+    [int]$HeartbeatStaleMin    = 5,
+    [int]$IntegrationWindowMin = 10,
+    [int]$IntegrationThreshold = 3,
+    [int]$RestartLoopWindowMin = 15,
+    [int]$RestartLoopMax       = 3
+)
 
 $ErrorActionPreference = 'Continue'
-$workDir = "C:\Users\parlak\Downloads\ThatsMyQuant"
-$logDir = Join-Path $workDir "_runtime_logs"
-if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
-$watchdogLog = Join-Path $logDir "watchdog.log"
 $stateDir = Join-Path $env:LOCALAPPDATA "ThatsMyQuant"
-$heartbeatFile = Join-Path $stateDir "worker_heartbeat.txt"
+if (-not (Test-Path $stateDir)) { New-Item -ItemType Directory -Path $stateDir -Force | Out-Null }
+$logDir = Join-Path $WorkDir "_runtime_logs"
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 
-# Telegram debounce: max 1 alert per 5 min for the same reason (Task Scheduler runs every
-# 1 min, so without debounce a single crash → 5+ alerts during recovery).
-$telegramDebounceFile = Join-Path $stateDir "watchdog_last_alert.txt"
+$watchdogLog      = Join-Path $logDir "watchdog.log"
+$selfHeartbeat    = Join-Path $stateDir "watchdog_heartbeat.txt"
+$heartbeatFile    = Join-Path $stateDir "worker_heartbeat.txt"
+$alertStateFile   = Join-Path $stateDir "watchdog_last_alert.txt"
+$restartStateFile = Join-Path $stateDir "watchdog_restarts.json"
+$workerLogDir     = Join-Path $stateDir "worker_logs"
 
 function Write-Log($msg) {
-    $line = "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] $msg"
+    $line = "[" + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "] " + $msg
     $line | Add-Content -LiteralPath $watchdogLog -Encoding utf8
 }
 
-function Send-TelegramAlert {
-    param([string]$Reason)
-    $token = $env:Telegram__BotToken
-    $chatId = $env:Telegram__ChatId
-    if (-not $token -or -not $chatId) { return }
+$script:TgToken = $null
+$script:TgChat  = $null
+$tgFile = Join-Path $WorkDir "telegram_settings.json"
+if (Test-Path $tgFile) {
+    try {
+        $tg = Get-Content $tgFile -Raw | ConvertFrom-Json
+        $script:TgToken = [string]$tg.BotToken
+        $script:TgChat  = [string]$tg.ChatId
+    } catch {}
+}
+if (-not $script:TgToken -and $env:Telegram__BotToken) {
+    $script:TgToken = $env:Telegram__BotToken
+    $script:TgChat  = $env:Telegram__ChatId
+}
 
-    # Debounce: skip if same reason fired within 5 min
-    if (Test-Path $telegramDebounceFile) {
+function Send-Telegram {
+    param([string]$Text, [string]$DebounceKey, [int]$DebounceMin = 5)
+    if (-not $script:TgToken -or -not $script:TgChat) {
+        Write-Log ("[TG] no token/chat - alert dropped: " + $Text)
+        return
+    }
+    if ($DebounceKey -and (Test-Path $alertStateFile)) {
         try {
-            $last = Get-Content $telegramDebounceFile -ErrorAction Stop
-            $lastTime = [DateTime]::Parse(($last -split '\|')[0])
-            $lastReason = ($last -split '\|')[1]
-            if ($lastReason -eq $Reason -and ((Get-Date) - $lastTime).TotalMinutes -lt 5) {
-                Write-Log "[Telegram] suppressed (debounce 5min for reason=$Reason)"
-                return
+            foreach ($line in Get-Content $alertStateFile) {
+                $p = $line -split '\|', 2
+                if ($p[1] -eq $DebounceKey -and ((Get-Date) - [DateTime]::Parse($p[0])).TotalMinutes -lt $DebounceMin) {
+                    Write-Log ("[TG] suppressed (debounce " + $DebounceMin + "min key=" + $DebounceKey + ")")
+                    return
+                }
             }
         } catch {}
     }
-
     try {
-        $body = "*Watchdog: worker restarted*`nReason: $Reason`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-        $payload = @{ chat_id = $chatId; text = $body; parse_mode = 'Markdown' } | ConvertTo-Json -Compress
-        $uri = "https://api.telegram.org/bot$token/sendMessage"
+        $payload = @{ chat_id = $script:TgChat; text = $Text } | ConvertTo-Json -Compress
+        $uri = "https://api.telegram.org/bot" + $script:TgToken + "/sendMessage"
         $null = Invoke-RestMethod -Uri $uri -Method Post -Body $payload -ContentType 'application/json' -TimeoutSec 8
-        Set-Content -LiteralPath $telegramDebounceFile -Value "$(Get-Date -Format o)|$Reason" -Encoding utf8 -Force
-        Write-Log "[Telegram] alert sent (reason=$Reason)"
+        Write-Log ("[TG] sent: " + ($Text -replace '\r?\n', ' '))
+        if ($DebounceKey) {
+            $keep = @()
+            if (Test-Path $alertStateFile) {
+                $keep = @(Get-Content $alertStateFile | Where-Object { ($_ -split '\|', 2)[1] -ne $DebounceKey })
+            }
+            $entry = (Get-Date -Format o) + '|' + $DebounceKey
+            $out = @($keep) + $entry
+            $out | Set-Content -LiteralPath $alertStateFile -Encoding utf8
+        }
     } catch {
-        Write-Log "[Telegram] alert failed: $_"
+        Write-Log ("[TG] send failed: " + $_)
     }
 }
 
-# 1. Process check
+# Self-heartbeat every run so a dead watchdog is detectable.
+$selfHbLine = (Get-Date -Format o) + '|pid=' + $PID
+$selfHbLine | Set-Content -LiteralPath $selfHeartbeat -Encoding utf8 -Force
+
+function Get-RecentRestarts {
+    if (-not (Test-Path $restartStateFile)) { return @() }
+    try { $a = Get-Content $restartStateFile -Raw | ConvertFrom-Json } catch { return @() }
+    $cut = (Get-Date).AddMinutes(-$RestartLoopWindowMin)
+    return @($a | Where-Object { [DateTime]::Parse($_) -gt $cut })
+}
+function Record-Restart {
+    $list = @(Get-RecentRestarts) + (Get-Date -Format o)
+    $list | ConvertTo-Json -Compress | Set-Content -LiteralPath $restartStateFile -Encoding utf8 -Force
+}
+
+function Restart-Worker {
+    param([string]$Reason)
+    $recent = @(Get-RecentRestarts)
+    if ($recent.Count -ge $RestartLoopMax) {
+        Write-Log ("RESTART LOOP: " + $recent.Count + " restarts in " + $RestartLoopWindowMin + "min - backing off, NOT relaunching (" + $Reason + ")")
+        $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $msg = "[CRITICAL] Watchdog: RESTART LOOP" + "`nWorker failed to stay up (" + $recent.Count + "x in " + $RestartLoopWindowMin + "min)." + "`nReason: " + $Reason + "`nAuto-restart paused - MANUAL INTERVENTION needed." + "`n" + $now
+        Send-Telegram -Text $msg -DebounceKey 'restartloop' -DebounceMin 30
+        return
+    }
+    $launcher = Join-Path $WorkDir "Launch-PaperTrade-Clean.ps1"
+    if (-not (Test-Path $launcher)) {
+        Write-Log ("ABORT: launcher missing at " + $launcher)
+        Send-Telegram -Text "[CRITICAL] Watchdog: launcher MISSING, cannot relaunch worker." -DebounceKey 'nolauncher' -DebounceMin 30
+        return
+    }
+    if (-not (Test-Path $workerLogDir)) { New-Item -ItemType Directory -Path $workerLogDir -Force | Out-Null }
+    $out = Join-Path $workerLogDir ("worker_" + (Get-Date -Format yyyyMMdd_HHmmss) + ".out.log")
+    try {
+        $p = Start-Process powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$launcher,'-SkipBuild') -RedirectStandardOutput $out -RedirectStandardError ($out + ".err") -WindowStyle Hidden -PassThru
+        "$out" | Set-Content -LiteralPath (Join-Path $WorkDir ".last_worker_log.txt") -Encoding utf8 -Force
+        Record-Restart
+        Write-Log ("RELAUNCHED via launcher (host PID=" + $p.Id + ") reason='" + $Reason + "' log=" + $out)
+        $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        $msg = "[WARN] Watchdog: worker restarted" + "`nReason: " + $Reason + "`nLog: " + (Split-Path $out -Leaf) + "`n" + $now
+        Send-Telegram -Text $msg -DebounceKey 'restart' -DebounceMin 5
+    } catch {
+        Write-Log ("RELAUNCH FAILED: " + $_)
+        $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        Send-Telegram -Text ("[CRITICAL] Watchdog: RELAUNCH FAILED" + "`nReason: " + $Reason + "`nError: " + $_ + "`n" + $now) -DebounceKey 'relaunchfail' -DebounceMin 15
+    }
+}
+
+# 1. Process + heartbeat health
 $proc = Get-CimInstance Win32_Process -Filter "Name='ThatsMyQuant.Bot.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
-$processAlive = $null -ne $proc
+$alive = $null -ne $proc
 $reason = $null
 
-# 2. Heartbeat check — PRIMARY: worker_heartbeat.txt (written by HB hosted service every 60s)
-if ($processAlive) {
+if (-not $alive) {
+    $reason = "Worker process not running"
+} else {
     if (Test-Path $heartbeatFile) {
         $hbAge = ((Get-Date) - (Get-Item $heartbeatFile).LastWriteTime).TotalMinutes
-        if ($hbAge -gt 5) {
-            Write-Log "WORKER STALE: PID=$($proc.ProcessId) worker_heartbeat.txt age=${hbAge:F1}min (>5min). Killing + relaunching."
-            try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop } catch { Write-Log "Stop-Process failed: $_" }
-            $processAlive = $false
-            $reason = "Heartbeat stale (${hbAge:F1}min old)"
+        if ($hbAge -gt $HeartbeatStaleMin) {
+            $reason = "Heartbeat stale (" + ("{0:F1}" -f $hbAge) + "min, limit " + $HeartbeatStaleMin + "min)"
+            Write-Log ("WORKER HUNG: PID=" + $proc.ProcessId + " " + $reason + " - killing.")
+            try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop } catch { Write-Log ("Stop-Process failed: " + $_) }
+            $alive = $false
             Start-Sleep -Seconds 2
         }
-    } else {
-        # HB file doesn't exist yet — could be fresh boot. Fall back to CLEF check.
-        $clef = "$env:LOCALAPPDATA\ThatsMyQuant\logs\quantengine-$(Get-Date -Format yyyyMMdd).clef"
-        if (Test-Path $clef) {
-            $clefAge = ((Get-Date) - (Get-Item $clef).LastWriteTime).TotalMinutes
-            if ($clefAge -gt 5) {
-                Write-Log "WORKER STALE (CLEF fallback): PID=$($proc.ProcessId) lastLog=${clefAge:F1}min ago."
-                try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop } catch { Write-Log "Stop-Process failed: $_" }
-                $processAlive = $false
-                $reason = "CLEF log stale (${clefAge:F1}min old)"
+    }
+    if ($alive) {
+        try {
+            $pp = Get-Process -Id $proc.ProcessId -ErrorAction Stop
+            if (-not $pp.Responding -and ((Get-Date) - $pp.StartTime).TotalSeconds -gt 120) {
+                $reason = "Process not responding"
+                Write-Log ("WORKER HUNG: PID=" + $pp.Id + " not responding - killing.")
+                try { Stop-Process -Id $pp.Id -Force -ErrorAction Stop } catch { Write-Log ("Stop-Process failed: " + $_) }
+                $alive = $false
                 Start-Sleep -Seconds 2
             }
-        }
+        } catch {}
     }
 }
 
-# 3. Not Responding check — process exists but Windows message pump is hung
-if ($processAlive) {
-    try {
-        $p = Get-Process -Id $proc.ProcessId -ErrorAction Stop
-        $uptimeSec = ((Get-Date) - $p.StartTime).TotalSeconds
-        if (-not $p.Responding -and $uptimeSec -gt 120) {
-            Write-Log "WORKER HUNG: PID=$($p.Id) not responding (uptime=${uptimeSec}s). Killing."
-            try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { Write-Log "Stop-Process failed: $_" }
-            $processAlive = $false
-            $reason = "Process not responding"
-            Start-Sleep -Seconds 2
-        }
-    } catch {}
-}
-
-if ($processAlive) {
-    # Healthy — exit silently (no log spam)
+if (-not $alive) {
+    Restart-Worker -Reason $reason
     exit 0
 }
 
-# 3. Relaunch via the embedded-credentials batch file. The original launcher PS1 does
-# DPAPI decryption — fine when run interactively, but unreliable in hidden/scheduled
-# context where DPAPI throws "PlatformNotSupportedException". The batch file at
-# _runtime_logs\run-worker.bat already has credentials baked in by an interactive
-# launch and is safe to call repeatedly from a hidden cmd.exe.
-$batch = Join-Path $logDir "run-worker.bat"
-if (-not (Test-Path $batch)) {
-    # Fallback: try the legacy launcher (will work if scheduled task user has DPAPI access).
-    Write-Log "BATCH MISSING at $batch — falling back to Launch-PaperTrade-Clean.ps1"
-    $launcher = Join-Path $workDir "Launch-PaperTrade-Clean.ps1"
-    if (-not (Test-Path $launcher)) { Write-Log "ABORT: both batch and launcher missing"; exit 1 }
-    $launchArgs = @("-NoProfile","-ExecutionPolicy","Bypass","-WindowStyle","Hidden","-File",$launcher)
-    try {
-        $stdout = Join-Path $logDir "paper-stdout.log"
-        $stderr = Join-Path $logDir "paper-stderr.log"
-        foreach ($f in @($stdout, $stderr)) { if (Test-Path $f) { try { Remove-Item $f -Force -ErrorAction Stop } catch {} } }
-        $newProc = Start-Process -FilePath "powershell.exe" -ArgumentList $launchArgs -WorkingDirectory $workDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
-        Write-Log "Fallback launched PID=$($newProc.Id)"
-    } catch { Write-Log "Fallback launch failed: $_"; exit 1 }
-    exit 0
-}
-
-if (-not $reason) { $reason = "Worker process not running" }
-Write-Log "WORKER DOWN ($reason) — relaunching via run-worker.bat"
-$stdout = Join-Path $logDir "paper-stdout.log"
-$stderr = Join-Path $logDir "paper-stderr.log"
-foreach ($f in @($stdout, $stderr)) { if (Test-Path $f) { try { Remove-Item $f -Force -ErrorAction Stop } catch {} } }
+# 2. Integration health - scan the live log for silent edge failures (the class of all 3
+# bugs found 2026-06-27: producer-contract drift the reader rejects every cycle).
 try {
-    $newProc = Start-Process -FilePath "cmd.exe" -ArgumentList @("/c", $batch) -WorkingDirectory $workDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
-    Write-Log "Launched cmd PID=$($newProc.Id) (batch=$batch)"
-    Send-TelegramAlert -Reason $reason
-} catch {
-    Write-Log "Batch launch failed: $_"
-    Send-TelegramAlert -Reason "$reason + LAUNCH FAILED: $_"
-    exit 1
-}
+    $newest = Get-ChildItem $workerLogDir -Filter 'worker_*.out.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($newest) {
+        $cut = (Get-Date).AddMinutes(-$IntegrationWindowMin)
+        $tail = Get-Content $newest.FullName -Tail 400 -ErrorAction SilentlyContinue
+        $rx = 'Malformed|WeightAsymmetry|not actionable|UNIQUE constraint failed|could not be converted|\bERR\b'
+        $rxSkip = 'Telegram|DPAPI|PlatformNotSupported|OkxClockSync'
+        $hits = 0
+        foreach ($line in $tail) {
+            if ($line -match $rx -and $line -notmatch $rxSkip) {
+                if ($line -match '^\[(\d{2}):(\d{2}):(\d{2})') {
+                    $t = (Get-Date).Date.AddHours([int]$Matches[1]).AddMinutes([int]$Matches[2]).AddSeconds([int]$Matches[3])
+                    if ($t -lt $cut) { continue }
+                }
+                $hits++
+            }
+        }
+        if ($hits -ge $IntegrationThreshold) {
+            Write-Log ("INTEGRATION ALARM: " + $hits + " rejection/error lines in last " + $IntegrationWindowMin + "min of " + $newest.Name)
+            $sample = ($tail | Where-Object { $_ -match $rx -and $_ -notmatch $rxSkip } | Select-Object -Last 1)
+            if ($sample) { $sample = $sample -replace '[*_]', ' '; if ($sample.Length -gt 180) { $sample = $sample.Substring(0, 180) } }
+            $now = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            $msg = "[WARN] Watchdog: integration alarm" + "`n" + $hits + " rejection/error lines in " + $IntegrationWindowMin + "min (worker UP, no restart)." + "`nLatest: " + $sample + "`n" + $now
+            Send-Telegram -Text $msg -DebounceKey 'integration' -DebounceMin 30
+        }
+    }
+} catch { Write-Log ("Integration scan failed: " + $_) }
+
 exit 0
