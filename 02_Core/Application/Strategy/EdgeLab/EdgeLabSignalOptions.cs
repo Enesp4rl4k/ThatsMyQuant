@@ -80,4 +80,17 @@ public sealed class EdgeLabSignalOptions
     /// degrades GRACEFULLY to half-Kelly rather than silently sizing full-Kelly.
     /// </summary>
     public double DefaultKellyHaircut { get; set; } = 0.5;
+
+    /// <summary>
+    /// 2026-06-27: Expected gross exposure Σ|w| the producer targets for this strategy.
+    /// The reader checks Σ|w| matches this (within 1e-2) so a dropped/duplicated/zeroed leg
+    /// is still caught; the dollar-neutral Σw≈0 safety check stays strict regardless.
+    ///   - Classic XS edges (realized_vol_4h_xs_reverse): 200% gross, k long + k short at
+    ///     1/k each → 2.0 (the default; every legacy block validates unchanged).
+    ///   - $2K-cycle <c>xs_momentum_neutral_panel</c>: a deliberately smaller 50%-gross book
+    ///     (k=8 names at ±0.0625) → 0.5. Quantlab 2026-06 sizing decision; emitting 0.5 gross
+    ///     made the old hardcoded-2.0 check reject every cycle as WeightAsymmetry.
+    /// Must be &gt; 0. Set per strategy block in appsettings to match the producer's gross.
+    /// </summary>
+    public double ExpectedGross { get; set; } = 2.0;
 }

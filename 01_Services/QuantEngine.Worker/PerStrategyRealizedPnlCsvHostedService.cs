@@ -5,6 +5,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ThatsMyQuant.Contracts.Enums;
+using ThatsMyQuant.Contracts.Helpers;
 using ThatsMyQuant.Contracts.Models;
 
 namespace ThatsMyQuant.Bot;
@@ -37,8 +38,10 @@ namespace ThatsMyQuant.Bot;
 ///   - <c>maker_or_taker</c> reflects ENTRY side only
 ///     (<see cref="PaperPosition.IsMakerEntry"/>). Exit-side maker flag isn't
 ///     persisted yet; revisit when ExchangeFillSnapshot exit captures land.
-///   - <c>clOrdId</c> is empty for paper-portfolio rows — PaperPosition has no
-///     SignalId. Quantlab joins on (strategy, entry_ts, symbol) as fallback key.
+///   - <c>clOrdId</c> is populated from <see cref="PaperPosition.SignalId"/> when the
+///     opening executor recorded it (= the OKX clOrdId, "N"-format). Legacy/mirror
+///     rows without a SignalId leave it blank; Quantlab then joins on
+///     (strategy, entry_ts, symbol) as fallback key.
 ///   - Idempotent: re-running overwrites the day's CSV with the latest snapshot
 ///     of closed positions. Cheap (dataset small, ~hundreds of rows).
 /// </summary>
@@ -234,7 +237,14 @@ public sealed class PerStrategyRealizedPnlCsvHostedService : BackgroundService
                 sb.Append(pnlPct.ToString("0.########", CultureInfo.InvariantCulture)).Append(',');
                 sb.Append(feesBps.ToString("0.##", CultureInfo.InvariantCulture)).Append(',');
                 sb.Append(makerOrTaker).Append(',');
-                // clOrdId — PaperPosition carries no SignalId; leave blank.
+                // clOrdId — venue-joinable when the opening executor recorded the
+                // originating SignalId (bot sends ExecutionOrderIdentity = SignalId
+                // in "N" format as the OKX clOrdId). Blank for legacy/mirror rows;
+                // Quantlab falls back to (strategy, entry_ts, symbol).
+                if (p.SignalId is Guid sid && sid != Guid.Empty)
+                {
+                    sb.Append(ExecutionOrderIdentity.CreateClientOrderId(sid));
+                }
                 sb.AppendLine();
                 n++;
             }

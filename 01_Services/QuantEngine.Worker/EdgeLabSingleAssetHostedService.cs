@@ -43,6 +43,11 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
     // [Sprint 2 — 2026-05-10] Per-strategy state.
     private readonly decimal _strategyWeight;
     private readonly int _staleAlertHours;
+
+    // [2026-05-21 handoff §3] Aggregate alt-short exposure cap (fraction of basis) +
+    // the symbol set counted toward it. Null cap = disabled (back-compat no-op).
+    private readonly decimal? _altShortCap;
+    private readonly HashSet<string> _altShortSymbols;
     private EdgeLabPromotionGate.Decision _lastGateDecision = new(EdgeLabHybridMode.DryRun, "init");
 
     // Optional: present iff Signal Diagnostics module is wired in DI. Operator-facing
@@ -83,6 +88,10 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         if (_strategyWeight < 0m) _strategyWeight = 0m;
         if (_strategyWeight > 1m) _strategyWeight = 1m;
         _staleAlertHours = _override.StaleAlertHours ?? options.StaleAlertHours;
+
+        _altShortCap = options.AltShortCap;
+        _altShortSymbols = new HashSet<string>(
+            options.AltShortSymbols ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -454,6 +463,80 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
             return;
         }
 
+        // [2026-05-21 handoff §3] Alt-short AGGREGATE exposure cap. When this strategy is
+        // in the alt_short correlation group AND the rebalance would INCREASE short
+        // exposure, bound the COMBINED short notional across all alt_short symbols (op +
+        // fil + future basket short leg). Quantlab proved these are one correlated factor
+        // (-82% basket DD naive). Live blocks the submit; DryRun warns only. LONG legs and
+        // short-reducing orders are never affected (evaluator guards targetAbs <= thisAbs).
+        var exposureGroup = doc.Metadata?.ExposureGroup;
+        if (_altShortCap is decimal altCap
+            && string.Equals(exposureGroup, "alt_short", StringComparison.OrdinalIgnoreCase)
+            && targetNotional < 0m)
+        {
+            var thisShortNotional = currentNotional < 0m ? -currentNotional : 0m;
+            var targetShortNotional = -targetNotional; // targetNotional < 0 in this branch
+            decimal groupShortNotional;
+            if (mode == HybridMode.Live && _altShortSymbols.Count > 0)
+            {
+                // Sum |short notional| across the configured alt_short symbols from the
+                // exchange (single source of truth). This strategy's own symbol is valued
+                // at the live mark; peers at their avg entry price (close enough for a cap).
+                var positions = scope.ServiceProvider.GetRequiredService<IExchangePositionReader>();
+                var allOpen = await positions.GetOpenPositionsAsync(ct).ConfigureAwait(false);
+                groupShortNotional = 0m;
+                foreach (var p in allOpen)
+                {
+                    if (p.IsLong) continue;
+                    if (!_altShortSymbols.Contains(p.Symbol)) continue;
+                    var px = string.Equals(p.Symbol, symbol, StringComparison.OrdinalIgnoreCase)
+                        ? mark
+                        : (p.AvgEntryPrice ?? 0m);
+                    groupShortNotional += p.Quantity * px;
+                }
+            }
+            else
+            {
+                // DryRun (or no symbols configured): cross-strategy aggregate isn't available,
+                // so use this strategy's own short as a conservative proxy — warns only when
+                // this leg alone would breach. Informative ahead of live promotion.
+                groupShortNotional = thisShortNotional;
+            }
+
+            var altDecision = EdgeLabAltShortCapEvaluator.Evaluate(
+                capFraction: altCap,
+                basis: basis,
+                targetShortNotionalUsd: targetShortNotional,
+                thisStrategyCurrentShortNotionalUsd: thisShortNotional,
+                groupTotalShortNotionalUsd: groupShortNotional,
+                isLive: mode == HybridMode.Live);
+
+            if (altDecision.Action == EdgeLabAltShortCapAction.WouldBreachInDryRun
+                || altDecision.Action == EdgeLabAltShortCapAction.InvalidCap)
+            {
+                _logger.LogWarning(
+                    "EdgeLabSingleAsset[{Strategy}] alt_short-cap WARN sym={Sym} action={Action} reason={Reason}",
+                    _strategy, symbol, altDecision.Action, altDecision.Reason);
+            }
+
+            if (altDecision.ShouldBlockSubmit)
+            {
+                _logger.LogWarning(
+                    "EdgeLabSingleAsset[{Strategy}] alt_short-cap SKIP sym={Sym} cap=${Cap:F2} would_be=${Would:F2} group_now=${Group:F2} target_short=${Tgt:F2} headroom=${Head:F2}",
+                    _strategy, symbol, altDecision.CapUsd, altDecision.WouldBeGroupAbsUsd,
+                    altDecision.CurrentGroupAbsUsd, targetShortNotional, altDecision.HeadroomUsd);
+                if (_alerts is not null)
+                {
+                    _ = _alerts.PublishAsync(
+                        "warn", $"EdgeLab[{_strategy}]",
+                        $"AltShortCap skip — {symbol}",
+                        $"combined alt-short would be ${altDecision.WouldBeGroupAbsUsd:F2} > cap ${altDecision.CapUsd:F2}. {altDecision.Reason}",
+                        ct);
+                }
+                return;
+            }
+        }
+
         // Update synthetic position regardless of whether we issue an order
         // (held position with no churn still earns hypothetical PnL).
         var newSynthetic = new Dictionary<string, EdgeLabSyntheticPosition>(StringComparer.Ordinal);
@@ -537,6 +620,8 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
             if (doc.Metadata?.Leverage is double lev)
                 signal.Metadata["Leverage"] = lev.ToString("R", inv);
             signal.Metadata["kelly_haircut"] = kellyHaircut.ToString(inv);
+            if (!string.IsNullOrWhiteSpace(doc.Metadata?.ExposureGroup))
+                signal.Metadata["edge_lab_exposure_group"] = doc.Metadata.ExposureGroup;
             if (doc.Metadata?.FeeBpsRoundTrip is double feeBps)
                 signal.Metadata["edge_lab_fee_bps_round_trip"] = feeBps.ToString("R", inv);
 

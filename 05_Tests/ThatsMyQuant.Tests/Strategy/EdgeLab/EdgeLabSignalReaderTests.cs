@@ -145,6 +145,36 @@ public class EdgeLabSignalReaderTests
     }
 
     [Fact]
+    public void FiftyPctGross_panel_Ok_when_ExpectedGross_configured() // xs_momentum_neutral_panel shape
+    {
+        var asOf = DateTimeOffset.Parse("2026-04-30T20:00:00+00:00");
+        var doc = ValidDoc(asOf);
+        // Dollar-neutral but deliberately 50% gross (the $2K-cycle panel: ±0.125 legs).
+        doc.TargetWeights!["BTCUSDT"] = 0.125; doc.TargetWeights["BNBUSDT"] = 0.125;
+        doc.TargetWeights["DOGEUSDT"] = -0.125; doc.TargetWeights["UNIUSDT"] = -0.125;
+
+        var opts = DefaultOpts();
+        opts.ExpectedGross = 0.5;
+
+        var result = EdgeLabSignalReader.Validate(doc, opts, asOf.AddHours(2));
+        result.IsOk.Should().BeTrue(result.FailureReason);
+    }
+
+    [Fact]
+    public void FiftyPctGross_panel_rejected_under_default_200pct_expectation()
+    {
+        var asOf = DateTimeOffset.Parse("2026-04-30T20:00:00+00:00");
+        var doc = ValidDoc(asOf);
+        doc.TargetWeights!["BTCUSDT"] = 0.125; doc.TargetWeights["BNBUSDT"] = 0.125;
+        doc.TargetWeights["DOGEUSDT"] = -0.125; doc.TargetWeights["UNIUSDT"] = -0.125;
+
+        // DefaultOpts() leaves ExpectedGross at the 2.0 default → must reject (back-compat).
+        var result = EdgeLabSignalReader.Validate(doc, DefaultOpts(), asOf.AddHours(2));
+        result.Status.Should().Be(EdgeLabReadStatus.WeightAsymmetry);
+        result.FailureReason.Should().Contain("|weights|");
+    }
+
+    [Fact]
     public void WeightSanity_tolerates_floating_point_rounding()
     {
         var asOf = DateTimeOffset.Parse("2026-04-30T20:00:00+00:00");

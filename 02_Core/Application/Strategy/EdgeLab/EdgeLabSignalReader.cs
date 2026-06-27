@@ -135,13 +135,16 @@ public static class EdgeLabSignalReader
             sumAbsW += Math.Abs(v);
         }
         const double netTolerance = 1e-3;     // |Σw| ≤ 0.001 → at $5k basis, max $5 implicit directional bias
-        const double grossTolerance = 1e-2;   // ||Σ|w|-2| ≤ 0.01 → at most ±$50 of 200%-gross slippage
+        const double grossTolerance = 1e-2;   // ||Σ|w|-expected| ≤ 0.01 → at most ±$50 of gross slippage
+        // Expected gross is per-strategy (200% for classic XS, 50% for the $2K xs_momentum
+        // panel). Sanity-floor a misconfigured non-positive value back to the 2.0 default.
+        var expectedGross = options.ExpectedGross > 0 ? options.ExpectedGross : 2.0;
         if (Math.Abs(sumW) > netTolerance)
             return new EdgeLabReadResult(EdgeLabReadStatus.WeightAsymmetry, doc,
                 $"sum(weights)={sumW:+0.000000;-0.000000;0} exceeds tolerance {netTolerance} (asymmetric, implies beta exposure)");
-        if (Math.Abs(sumAbsW - 2.0) > grossTolerance)
+        if (Math.Abs(sumAbsW - expectedGross) > grossTolerance)
             return new EdgeLabReadResult(EdgeLabReadStatus.WeightAsymmetry, doc,
-                $"sum(|weights|)={sumAbsW:0.000000} not within {grossTolerance} of 2.0 (gross exposure off contract)");
+                $"sum(|weights|)={sumAbsW:0.000000} not within {grossTolerance} of {expectedGross:0.###} (gross exposure off contract)");
 
         // Contract pt 5 — staleness window. Original spec: 2 * timeframe. Updated 2026-05-03
         // to honour metadata.rebalance_every: max_age = 2 * rebalance_every * timeframe.

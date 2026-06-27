@@ -95,6 +95,17 @@ public class PaperPosition
     public int BarsHeld { get; set; }
     public int MaxHoldingBars { get; set; }
     public string StrategyTag { get; set; } = "TrendConfluence";
+
+    /// <summary>
+    /// Originating Signal.Id, when the position was opened from a strategy signal.
+    /// Lets the per-strategy realized-PnL CSV emit a venue-joinable <c>clOrdId</c>
+    /// (the bot sends <see cref="Helpers.ExecutionOrderIdentity.CreateClientOrderId"/>
+    /// = SignalId in "N" format as the OKX clOrdId). Null on legacy/mirror positions
+    /// that don't carry a signal id; those fall back to the (strategy, entry_ts,
+    /// symbol) join key on the Quantlab side.
+    /// </summary>
+    public Guid? SignalId { get; set; }
+
     public string RegimeTag { get; set; } = "Unknown";
     public string ExecutionMode { get; set; } = "PAPER";
     public string PromotionStage { get; set; } = "Paper";

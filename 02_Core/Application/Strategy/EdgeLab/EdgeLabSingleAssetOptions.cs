@@ -96,6 +96,27 @@ public sealed class EdgeLabSingleAssetOptions
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// [2026-05-21 handoff §3] Aggregate alt-short exposure cap as a fraction of basis.
+    /// Bounds the COMBINED gross-short notional of every strategy whose signal carries
+    /// <c>metadata.exposure_group == "alt_short"</c> (op/fil breakout shorts + the
+    /// xs-neutral basket's short leg). Quantlab proved these are one correlated factor
+    /// (-82% basket DD naive); this caps total alt-short beta to ≈ one single edge's
+    /// worth. Null = no cap (back-compat). Enforced in Live mode only; DryRun warns.
+    /// "1 unit" ≈ one full single-asset short notional (e.g. op weight 0.11 × lev 1.5
+    /// ≈ 0.165 of basis), so a default around 0.18 leaves minimal headroom.
+    /// </summary>
+    public decimal? AltShortCap { get; set; }
+
+    /// <summary>
+    /// Symbols counted toward the <see cref="AltShortCap"/> aggregate (case-insensitive).
+    /// In Live mode the cap sums |short notional| over these symbols from the exchange.
+    /// Static list covers the fixed single-asset shorts (OPUSDT, FILUSDT); the xs-neutral
+    /// basket, whose short legs rotate daily, enforces the cap on its own leg via the same
+    /// evaluator. Empty → no symbols aggregated → cap is a no-op.
+    /// </summary>
+    public List<string> AltShortSymbols { get; set; } = new();
+
+    /// <summary>
     /// Resolves the effective override for a strategy by name. Returns the
     /// configured override if present, otherwise a synthesized default with
     /// equal-share weight.

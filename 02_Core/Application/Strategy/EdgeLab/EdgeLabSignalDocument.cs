@@ -21,9 +21,11 @@ public sealed class EdgeLabSignalDocument
     public string? Strategy { get; set; }
 
     [JsonPropertyName("generated_at")]
+    [JsonConverter(typeof(LenientDateTimeOffsetConverter))]
     public DateTimeOffset? GeneratedAt { get; set; }
 
     [JsonPropertyName("as_of_bar")]
+    [JsonConverter(typeof(LenientDateTimeOffsetConverter))]
     public DateTimeOffset? AsOfBar { get; set; }
 
     [JsonPropertyName("target_weights")]
@@ -147,4 +149,17 @@ public sealed class EdgeLabSignalMetadata
     /// before computing notional. Null = field absent → caller falls back to
     /// <c>EdgeLab:DefaultKellyHaircut</c> (default 0.5).</summary>
     [JsonPropertyName("kelly_haircut")] public double? KellyHaircut { get; set; }
+
+    // ── [2026-05-21 Quantlab universe-expansion handoff §3] ──
+    // Quantlab proved alt-shorts are NOT independent edges but ONE correlated factor
+    // ("alts fall together"). A naive stack of op_breakout_4h_short + fil_breakout_4h_short
+    // + the xs-neutral SHORT leg backtested to -82% basket DD. Quantlab tags every such
+    // signal with exposure_group="alt_short"; TMQ caps their COMBINED gross-short notional
+    // (see EdgeLabAltShortCapEvaluator) so total alt-short beta ≈ one single edge's worth.
+
+    /// <summary>Risk-correlation bucket for portfolio-level exposure capping
+    /// (e.g. <c>"alt_short"</c>). Null/absent = ungrouped (no aggregate cap applies).
+    /// Used by <see cref="EdgeLabAltShortCapEvaluator"/> to bound the combined
+    /// short notional of all co-correlated alt-short legs.</summary>
+    [JsonPropertyName("exposure_group")] public string? ExposureGroup { get; set; }
 }
