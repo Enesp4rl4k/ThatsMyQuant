@@ -1,0 +1,73 @@
+02_Core/Application/Strategy/EdgeLab/ClosedPositionTradeMapper.cs
+  s_bf7cc06cfe6517::t_8ca6c55e52c336 1-50,59-89
+  s_3bc22fb8f5ebde::t_7892c57d3c55fc 51-58
+01_Services/QuantEngine.Worker/ClosedPositionToTradeMirrorHostedService.cs
+  s_bf7cc06cfe6517::t_9893cb80d87f44 6
+  s_bf7cc06cfe6517::t_0e16558a802212 138
+  s_bf7cc06cfe6517::t_7c57280488b39f 1-5,7-69,76-122,124-137,139-184
+  s_bf7cc06cfe6517::t_6a02c4aa70a8af 70-75
+  s_bf7cc06cfe6517::t_70da6e662c856d 123
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/LenientDateTimeOffsetConverterTests.cs
+  s_3bc22fb8f5ebde::t_a2d0d86b4e9808 1-67
+02_Core/Application/Strategy/EdgeLab/LenientDateTimeOffsetConverter.cs
+  s_3bc22fb8f5ebde::t_a54eb7c4c3cd8f 1-61
+01_Services/QuantEngine.Worker/PerStrategyRealizedPnlCsvHostedService.cs
+  s_a1b4c85983be08::t_23b061b86a8c3d 41-44
+  s_a1b4c85983be08::t_f7181a97c521c4 240-247
+  s_a1b4c85983be08::t_053f08e621b917 8
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/ClosedPositionToTradeMirrorTests.cs
+  s_bf7cc06cfe6517::t_fc3161660f2a0f 2
+  s_bf7cc06cfe6517::t_039586ae2f8131 1,3-9,11-30,32-51,54-58,60-63,66-71,73,75-96,99-109,112,114,154
+  s_bf7cc06cfe6517::t_b5b621d0168af4 113
+  s_3bc22fb8f5ebde::t_83950b4dc47d5a 115-153
+  s_bf7cc06cfe6517::t_dae3c80dcdbd0e 52-53,59,64-65,72,98,111
+  s_bf7cc06cfe6517::t_32f5cff07a2719 74,97,110
+  s_bf7cc06cfe6517::t_c7697d4f053214 10
+  s_bf7cc06cfe6517::t_e299f1445ab98d 31
+01_Services/QuantEngine.Worker/EdgeLabSingleAssetHostedService.cs
+  s_a1b4c85983be08::t_8b2d2dedef02f5 46-50
+02_Core/Application/Strategy/EdgeLab/EdgeLabAltShortCapEvaluator.cs
+  s_a1b4c85983be08::t_e518ee84fc7fec 1-108
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabAltShortCapEvaluatorTests.cs
+  s_a1b4c85983be08::t_0637ab12ee3e31 1-139
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalDocument.cs
+  s_3bc22fb8f5ebde::t_438b00db5cde67 24,28,152-164
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalOptions.cs
+  s_3bc22fb8f5ebde::t_7df21d28af3250 83-95
+02_Core/Application/Strategy/EdgeLab/EdgeLabSignalReader.cs
+  s_3bc22fb8f5ebde::t_2004894016487f 138-141,145,147
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabSignalReaderTests.cs
+  s_3bc22fb8f5ebde::t_bd073ac078aa08 143-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "f19cdb03b0b0b6fa9508ecd07c2cb84cabca9576",
+  "prompts": {},
+  "sessions": {
+    "s_3bc22fb8f5ebde": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069f9478-3c42-4e9e-94c7-034562b5fff5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    },
+    "s_a1b4c85983be08": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "059457a6-cbd1-43d1-8d92-72405b090e42",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    },
+    "s_bf7cc06cfe6517": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfd77dcb-2ed5-4593-a955-a64fdc75eeff",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
