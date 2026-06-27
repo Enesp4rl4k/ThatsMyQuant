@@ -1,0 +1,27 @@
+05_Tests/ThatsMyQuant.Tests/Strategy/EdgeLab/EdgeLabSignalContractTests.cs
+  s_3bc22fb8f5ebde::t_22ee911c7f6027 1-121
+docs/POSTGRES_CUTOVER.md
+  s_3bc22fb8f5ebde::t_a8a7b28d02466b 1-62
+01_Services/QuantEngine.Worker/SqliteMaintenanceHostedService.cs
+  s_3bc22fb8f5ebde::t_aef446ff36dd66 40-47,51-52
+  s_3bc22fb8f5ebde::t_a75b4a17db2f7e 120-131
+  s_3bc22fb8f5ebde::t_45119bdda14b92 251-338
+  s_3bc22fb8f5ebde::t_b957d38ffe2b0c 1
+  s_3bc22fb8f5ebde::t_a4edef41eafd88 67-81,83-85
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "1ea87ba2fddc0f88e1ceda6d3cf77ba2858fd3e3",
+  "prompts": {},
+  "sessions": {
+    "s_3bc22fb8f5ebde": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "069f9478-3c42-4e9e-94c7-034562b5fff5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
