@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -36,9 +37,19 @@ public sealed class SqliteMaintenanceHostedService : BackgroundService
     private static readonly TimeSpan DiskSpaceCheckInterval = TimeSpan.FromHours(1);
     private const long DiskSpaceCriticalBytes = 2L * 1024 * 1024 * 1024;  // 2 GB
 
+    // [2026-06-27 SQLite hardening] Automated consistent backups + corruption detection.
+    // A single .db file is the whole system's memory; before this there was no snapshot to
+    // recover from and no detection if it silently corrupted. VACUUM INTO produces a fully
+    // consistent copy (folds in committed WAL); quick_check catches page/index corruption.
+    private static readonly TimeSpan BackupInterval = TimeSpan.FromHours(6);
+    private static readonly TimeSpan IntegrityInterval = TimeSpan.FromHours(24);
+    private const int BackupsToKeep = 24;   // 24 x 6h = 6 days of rolling snapshots
+
     private DateTime _lastWalCheckpointUtc = DateTime.MinValue;
     private DateTime _lastOptimizeUtc = DateTime.MinValue;
     private DateTime _lastDiskCheckUtc = DateTime.MinValue;
+    private DateTime _lastBackupUtc = DateTime.MinValue;
+    private DateTime _lastIntegrityUtc = DateTime.MinValue;
     private bool _diskSpaceAlertedRecently;
 
     public SqliteMaintenanceHostedService(
@@ -53,10 +64,25 @@ public sealed class SqliteMaintenanceHostedService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        // Provider guard — every operation here is SQLite-specific (PRAGMA / VACUUM /
+        // SqliteConnection cast). On Postgres this service must do nothing, so the same
+        // worker binary runs cleanly once Persistence:Provider is flipped to postgres.
+        using (var guardScope = _serviceProvider.CreateScope())
+        {
+            var providerName = guardScope.ServiceProvider.GetRequiredService<QuantDbContext>().Database.ProviderName ?? "";
+            if (providerName.IndexOf("Sqlite", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                _logger.LogInformation(
+                    "SqliteMaintenance: DB provider is '{Provider}' (not SQLite); WAL/optimize/backup/integrity maintenance disabled.",
+                    providerName);
+                return;
+            }
+        }
+
         _logger.LogInformation(
-            "SqliteMaintenanceHostedService starting. WAL checkpoint every {W}h, optimize every {O}h, disk check every {D}h (critical < {C}GB).",
-            WalCheckpointInterval.TotalHours, OptimizeInterval.TotalHours, DiskSpaceCheckInterval.TotalHours,
-            DiskSpaceCriticalBytes / (1024 * 1024 * 1024));
+            "SqliteMaintenanceHostedService starting. WAL checkpoint every {W}h, optimize every {O}h, backup every {B}h (keep {K}), integrity every {I}h, disk check every {D}h (critical < {C}GB).",
+            WalCheckpointInterval.TotalHours, OptimizeInterval.TotalHours, BackupInterval.TotalHours, BackupsToKeep,
+            IntegrityInterval.TotalHours, DiskSpaceCheckInterval.TotalHours, DiskSpaceCriticalBytes / (1024 * 1024 * 1024));
 
         // Initial 30s grace for boot, then settle into hourly tick that owns scheduling.
         try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken).ConfigureAwait(false); }
@@ -89,6 +115,18 @@ public sealed class SqliteMaintenanceHostedService : BackgroundService
         {
             await DoOptimizeAsync(ct).ConfigureAwait(false);
             _lastOptimizeUtc = nowUtc;
+        }
+
+        if (nowUtc - _lastBackupUtc >= BackupInterval)
+        {
+            await DoBackupAsync(ct).ConfigureAwait(false);
+            _lastBackupUtc = nowUtc;
+        }
+
+        if (nowUtc - _lastIntegrityUtc >= IntegrityInterval)
+        {
+            await DoIntegrityCheckAsync(ct).ConfigureAwait(false);
+            _lastIntegrityUtc = nowUtc;
         }
 
         if (nowUtc - _lastDiskCheckUtc >= DiskSpaceCheckInterval)
@@ -208,6 +246,94 @@ public sealed class SqliteMaintenanceHostedService : BackgroundService
         {
             _logger.LogWarning(ex, "Disk space check failed.");
         }
+    }
+
+    private async Task DoBackupAsync(CancellationToken ct)
+    {
+        try
+        {
+            await using var scope = _serviceProvider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
+            var conn = (SqliteConnection)db.Database.GetDbConnection();
+            if (conn.State != System.Data.ConnectionState.Open)
+                await conn.OpenAsync(ct).ConfigureAwait(false);
+
+            var backupDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "ThatsMyQuant", "backups");
+            Directory.CreateDirectory(backupDir);
+            var backupPath = Path.Combine(backupDir, $"quant_{DateTime.UtcNow:yyyyMMdd_HHmmss}.db");
+
+            // VACUUM INTO writes a fully consistent snapshot (folds in committed WAL) without
+            // blocking writers for long. No parameter binding on this statement → inline the
+            // path as an escaped string literal.
+            await using (var cmd = conn.CreateCommand())
+            {
+                cmd.CommandText = $"VACUUM INTO '{backupPath.Replace("'", "''")}';";
+                await cmd.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            }
+
+            var sizeMB = new FileInfo(backupPath).Length / (1024.0 * 1024.0);
+
+            // Rotate — keep the newest N (filenames are timestamp-sortable).
+            var stale = Directory.GetFiles(backupDir, "quant_*.db")
+                .OrderByDescending(f => f)
+                .Skip(BackupsToKeep)
+                .ToList();
+            foreach (var f in stale) { try { File.Delete(f); } catch { /* best effort */ } }
+
+            _logger.LogInformation(
+                "SQLite backup written: {Path} ({SizeMB:F2}MB). Rotation removed {N} old (keep {Keep}).",
+                backupPath, sizeMB, stale.Count, BackupsToKeep);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SQLite backup (VACUUM INTO) failed.");
+            FireAlert("sqlite_backup_failed", AlertSeverity.Warning, "SQLite backup failed",
+                $"VACUUM INTO failed: {ex.Message}. The DB has no fresh snapshot to recover from.");
+        }
+    }
+
+    private async Task DoIntegrityCheckAsync(CancellationToken ct)
+    {
+        try
+        {
+            await using var scope = _serviceProvider.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<QuantDbContext>();
+            var conn = (SqliteConnection)db.Database.GetDbConnection();
+            if (conn.State != System.Data.ConnectionState.Open)
+                await conn.OpenAsync(ct).ConfigureAwait(false);
+
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "PRAGMA quick_check;";
+            var result = (await cmd.ExecuteScalarAsync(ct).ConfigureAwait(false))?.ToString() ?? "<null>";
+
+            if (string.Equals(result, "ok", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("SQLite integrity check (quick_check): ok.");
+            }
+            else
+            {
+                _logger.LogCritical("SQLite integrity check FAILED (quick_check): {Result}", result);
+                FireAlert("sqlite_integrity_failed", AlertSeverity.Critical, "SQLite integrity check FAILED",
+                    $"PRAGMA quick_check returned: {result}\n" +
+                    "DB may be corrupt. Restore from the newest snapshot in %LOCALAPPDATA%\\ThatsMyQuant\\backups.");
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "SQLite integrity check failed to run.");
+        }
+    }
+
+    private void FireAlert(string key, AlertSeverity severity, string title, string body)
+    {
+        if (_alerter is null) return;
+        _ = Task.Run(async () =>
+        {
+            try { await _alerter.SendAsync(key, severity, title, body, CancellationToken.None).ConfigureAwait(false); }
+            catch { /* best-effort */ }
+        });
     }
 
     private static double TryGetWalSizeMB(QuantDbContext db)
