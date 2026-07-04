@@ -1,0 +1,19 @@
+.gitignore
+  s_69f9229f07c3d5::t_e55e4e29394ce5 111-124
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7dc9c6544cd4f5390670c14ae7c99e16c82d3098",
+  "prompts": {},
+  "sessions": {
+    "s_69f9229f07c3d5": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "d94ea5d5-08e5-4a83-9757-cc3c94f8dcc3",
+        "model": "default"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
