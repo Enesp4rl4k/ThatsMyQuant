@@ -1,0 +1,19 @@
+.gitignore
+  s_4213c1663045dc::t_2b8d22628addf7 25,28,47,50,56,58-60,62,64-65,67,69-80,84,99,109-110,112-132,136-138,140-141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "13c16544167e0be7f42ee3e9e59b389d24379572",
+  "prompts": {},
+  "sessions": {
+    "s_4213c1663045dc": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "6744a1c5-0799-4aba-b499-ca9b4eecd84d",
+        "model": "unknown"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
