@@ -108,3 +108,17 @@ exchange_settings.json
 
 # Build output bundles (never commit â€” exceed GitHub 100MB limit)
 dist/
+
+# Runtime secrets — NEVER commit
+**/appsettings.runtime.json
+appsettings.runtime.json
+**/.env
+**/.env.local
+**/.env.*.local
+*.dpapi
+.last_worker_log.txt
+.tmp_*.ps1
+logs/
+*.xlsx
+premortem-*.html
+premortem-*.md
