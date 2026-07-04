@@ -1,0 +1,19 @@
+README.md
+  s_4213c1663045dc::t_eeb0f9f4ced477 1,3,5,9,11-19,21-32,35-71,74-78,81-89,91,93-105,108-125,127,130-131,134,136-144,147-149,152-161,165-178,182,184-202,204,206
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "03fdbda9be61f3c8b116a321f2c97d0b0a5a01ac",
+  "prompts": {},
+  "sessions": {
+    "s_4213c1663045dc": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "6744a1c5-0799-4aba-b499-ca9b4eecd84d",
+        "model": "unknown"
+      },
+      "human_author": "Enes Parlak <eparlak996@gmail.com>"
+    }
+  }
+}
