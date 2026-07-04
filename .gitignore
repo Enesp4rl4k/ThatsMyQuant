@@ -22,29 +22,19 @@ _Chutzpah*
 *.userosscache
 *.sln.docstates
 
-# Visual Studio 2015/2017/2019/2022 cache/options directory
+# Visual Studio cache/options
 .vs/
-# Uncomment if you want to ignore settings per machine
-# [Ss]ettings.zip
 
-# Visual Studio Code
+# Visual Studio Code / JetBrains / OmniSharp
 .vscode/
-
-# OmniSharp
 .omnisharp/
-
-# JetBrains Rider
 .idea/
 *.sln.iml
 
 # NuGet Packages
 *.nupkg
-# The packages folder can be ignored because of Package Restore
 **/[Pp]ackages/*
-# except build/, which is used as an MSBuild target.
 !**/[Pp]ackages/build/
-# Uncomment if using NuGet Focus mode
-# **/packages/
 
 # User-specific files
 *.rsuser
@@ -52,39 +42,46 @@ _Chutzpah*
 *.user
 *.userosscache
 *.sln.docstates
-
-# User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
-# Mono auto generated files
+# Mono
 mono_crash.*
 
-# Windows image-cache files
+# Windows
 Thumbs.db
 ehthumbs.db
-
-# Folder config file
 Desktop.ini
-
-# Recycle Bin used on separate drives
 $RECYCLE.BIN/
 
-# VS Studio folders
-.vs/
-
-# Databases
+# Databases (local runtime state)
 *.db
+*.db-shm
+*.db-wal
+*.db.backup-*
 
-# Logs
+# Logs and build diagnostics
 *.log
+*.log.err
+*.binlog
 worker_log.txt
+worker_*.log*
 tmq-tests.log
+*_build*.log
+*-build.log
+*-diag.txt
+build_output*.txt
+app-build-diag.txt
+msbuild.log
+errors.log
+phase*-errors.log
+phase*-tests.binlog
+phase8a*
 
-# Test output (local / CI artifacts)
+# Test output
 **/TestResults/
 *.trx
 
-# Environment overlays â€” contain OKX / Telegram / broker credentials.
+# Environment overlays — contain OKX / Telegram / broker credentials.
 # NEVER commit these. Use the committed template as a reference only.
 **/appsettings.Paper.json
 **/appsettings.Live.json
@@ -99,15 +96,7 @@ paper_portfolio.json
 telegram_settings.json
 exchange_credentials.dpapi
 exchange_settings.json
-
-# WPF temp build artifacts (Visual Studio autogen, see archeology audit 2026-05-01)
-**/*_wpftmp.csproj
-
-# Worktrees (claude-code agents) â€” ephemeral, never commit
-.claude/worktrees/
-
-# Build output bundles (never commit â€” exceed GitHub 100MB limit)
-dist/
+*.dpapi
 
 # Runtime secrets — NEVER commit
 **/appsettings.runtime.json
@@ -115,14 +104,38 @@ appsettings.runtime.json
 **/.env
 **/.env.local
 **/.env.*.local
-*.dpapi
 .last_worker_log.txt
 .tmp_*.ps1
+
+# Runtime / local-only directories
 logs/
+_runtime_logs/
+scratch/
+dist/
+
+# WPF temp build artifacts
+**/*_wpftmp.csproj
+
+# AI / agent tooling (local only — not part of the product)
+.agent/
+.claude/
+.gemini/
+.kiro/
+.cursor/
+.codex/
+CLAUDE.md
+AGENTS.md
+.github/prompts/
+**/__pycache__/
+*.pyc
+
+# Unrelated / personal artifacts
 *.xlsx
 premortem-*.html
 premortem-*.md
+mermaid-*.png
+tmp_*.txt
+Etsy_*
 
-worker_*.log*
-*.log.err
-
+# Orphaned legacy sources (not in solution)
+/src/
