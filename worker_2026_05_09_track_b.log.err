@@ -1,0 +1,10 @@
+[ExchangeConfig] TryUnprotect('BinanceApiKey') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] TryUnprotect('BinanceApiSecret') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] TryUnprotect('ApiKey') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] TryUnprotect('SecretKey') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] TryUnprotect('Passphrase') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] TryUnprotect('DemoApiKey') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] TryUnprotect('DemoSecretKey') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] TryUnprotect('DemoPassphrase') threw PlatformNotSupportedException: Windows Data Protection API (DPAPI) is not supported on this platform.
+[ExchangeConfig] OKX credential slot selected: DEMO (live set configured=False, demo set configured=False)
+[ExchangeConfig] Credentials file parsed but NO keys decrypted. Likely cause: DPAPI blob was encrypted by a DIFFERENT Windows user account. Re-encrypt credentials on this user, OR set TMQ_EXCHANGE_MODE=Mock for paper trading.
