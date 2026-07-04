@@ -122,3 +122,7 @@ logs/
 *.xlsx
 premortem-*.html
 premortem-*.md
+
+worker_*.log*
+*.log.err
+
