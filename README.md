@@ -1,100 +1,206 @@
-# Thats My Quant 
+# ThatsMyQuant
 
-Advanced Agentic Trading Bot with Microservices Architecture, Borsa-MCP Integration, and AI Reasoning.
+Quantitative crypto trading system for OKX (demo / live), with a .NET 9 worker, WPF command center, and pre-registered strategy tests.
 
-## Project Structure
-- **01_Services**: Webhooks (Listener), Intelligence (QuantEngine), Execution (Hand).
-- **02_Core**: Domain Entities and Application Logic.
-- **03_Infrastructure**: Borsa Data, DeepSeek AI, Persistence.
-- **04_UI**: Windows Dashboard (WPF Command Center).
+Paper trading is the supported path today. Live mode is gated behind the same credential and risk controls.
 
 ---
 
-## Quick Start: Running the App
+## Stack
 
-**CRITICAL**: You must be in the project root directory to run these commands.
-```powershell
-cd C:\Users\parlak\Downloads\ThatsMyQuant
+| Layer | Tech |
+| --- | --- |
+| Runtime | .NET 9 |
+| Worker | `ThatsMyQuant.Bot` (hosted services) |
+| Exchange | OKX REST / WebSocket (demo or live) |
+| UI | WPF Dashboard + Launcher |
+| Persistence | SQLite (Postgres-ready) |
+| Observability | Prometheus `/metrics`, health endpoints, Serilog |
+| Optional AI | DeepSeek / Semantic Kernel (analysis assist, not required for core strategies) |
+
+---
+
+## Repository layout
+
+```
+01_Services/          Worker, Listener API, Execution, Gateway, CLI
+02_Core/              Domain + application logic
+03_Infrastructure/    Persistence, exchange adapters, AI.DeepSeek
+04_UI/                WPF Dashboard and Launcher
+05_Tests/             Unit / integration / dashboard tests
+06_Contracts/         Shared interfaces and options
+docs/                 Runbooks, hypotheses, observability configs
 ```
 
-### 1. Run the Dashboard (UI)
-The best way to see the bot in action is to start the Windows Dashboard.
+| Path | Role |
+| --- | --- |
+| `01_Services/QuantEngine.Worker` | Main bot (`ThatsMyQuant.Bot`) — strategies, risk, paper/live execution |
+| `01_Services/Listener.Api` | Signed webhook ingress (e.g. TradingView) |
+| `01_Services/Execution.Worker` | Order execution service |
+| `01_Services/Gateway.Api` | API gateway |
+| `04_UI/ThatsMyQuant.Dashboard` | Operator UI |
+| `04_UI/ThatsMyQuant.Launcher` | Desktop launcher |
+
+---
+
+## Requirements
+
+- Windows 10/11 (DPAPI credential store and WPF UI)
+- [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
+- OKX API keys (demo recommended for paper)
+- Optional: Telegram bot token for alerts
+
+---
+
+## Quick start (paper trade)
+
+Credentials are stored locally as DPAPI-protected blobs (`exchange_credentials.dpapi`). They are **not** committed. Decrypting them requires an interactive Windows session, so the worker must be started through the launcher — not with bare `dotnet run`.
+
+### 1. Configure credentials
+
+Use the Dashboard / Launcher to save OKX demo keys and optional Telegram settings. Files written at the repo root (gitignored):
+
+- `exchange_credentials.dpapi`
+- `exchange_settings.json`
+- `telegram_settings.json`
+
+See [docs/PAPER_TRADE_LAUNCH_CHECKLIST.md](docs/PAPER_TRADE_LAUNCH_CHECKLIST.md) for the full checklist.
+
+### 2. Build and launch
+
+From the repository root:
+
+```powershell
+# First run (builds Release, then starts paper mode)
+.\Launch-PaperTrade-Clean.ps1
+
+# Already built
+.\Launch-PaperTrade-Clean.ps1 -SkipBuild
+```
+
+The launcher:
+
+1. Decrypts OKX credentials via Windows DPAPI
+2. Exports `OKX__ApiKey`, `OKX__SecretKey`, `OKX__Passphrase`, Telegram env vars
+3. Sets `TMQ_MODE=paper` and `DOTNET_ENVIRONMENT=Paper`
+4. Starts `ThatsMyQuant.Bot` in Release
+
+**Do not** start the worker with:
+
+```powershell
+# Wrong — falls back to mock fills (or exits with code 78)
+dotnet run --project 01_Services\QuantEngine.Worker
+Start-Process .\01_Services\QuantEngine.Worker\bin\Release\net9.0\ThatsMyQuant.Bot.exe
+```
+
+If you see `REFUSING TO START: TMQ_MODE=paper but no real-exchange credentials`, you bypassed the launcher.
+
+### 3. Confirm the worker is alive
+
+Within ~10 seconds of launch you should see credential and heartbeat lines:
+
+```text
+[CRED] OKX ApiKey=...c
+OKX execution service registered (Demo=True)
+[HB BOOT]
+```
+
+Heartbeat (`[HB]`) continues every 60 seconds.
+
+### 4. Ops helpers
+
+| Script | Purpose |
+| --- | --- |
+| `Get-PaperTradeStatus.ps1` | Process / status snapshot |
+| `Show-PaperTradeLogs.ps1` | Tail worker logs |
+| `Restart-Worker.ps1` | Stop and relaunch cleanly |
+| `Watchdog-PaperTrade.ps1` | Auto-recover on worker death |
+| `Kill-OkxPositions.ps1` | Emergency flatten (use with care) |
+
+Full runbook: [docs/PAPER_TRADE_RUNBOOK_2026_04_24.md](docs/PAPER_TRADE_RUNBOOK_2026_04_24.md).
+
+---
+
+## Dashboard
+
 ```powershell
 dotnet run --project 04_UI\ThatsMyQuant.Dashboard
 ```
 
-### 2. Run the Microservices
-Open separate terminals for each service to see the logs:
+Or use `Launch-Dashboard.bat` / `Launch-Launcher.bat` from the repo root.
 
-**Listen for Signals (Webhook):**
+---
+
+## Build and test
+
 ```powershell
-dotnet run --project 01_Services\Listener.Api
+dotnet restore ThatsMyQuant.sln
+dotnet build ThatsMyQuant.sln -c Release
+dotnet test 05_Tests\ThatsMyQuant.Tests\ThatsMyQuant.Tests.csproj -c Release
 ```
 
-**Analyze and Reason (The Brain):**
-```powershell
-dotnet run --project 01_Services\QuantEngine.Worker
-```
+CI (GitHub Actions) restores, builds the dashboard, and runs core + dashboard tests on `windows-latest`.
 
-**Execute Orders (The Hand):**
+**Note:** Stop `ThatsMyQuant.Bot` before rebuilding — it locks referenced DLLs.
+
 ```powershell
-dotnet run --project 01_Services\Execution.Worker
+Stop-Process -Name 'ThatsMyQuant.Bot' -Force -ErrorAction SilentlyContinue
+dotnet build .\01_Services\QuantEngine.Worker\ThatsMyQuant.Bot.csproj -c Release
+.\Launch-PaperTrade-Clean.ps1 -SkipBuild
 ```
 
 ---
 
-## Testing with a Sample Signal
+## Strategies (pre-registered)
 
-Once the `Listener.Api` is running, you can send a mock signal using PowerShell:
+Active paper tests use fixed thresholds. Do not retune mid-test — that invalidates the statistical gate.
 
-```powershell
- $body = '{"Symbol":"THYAO","Side":"Buy","Price":285.50,"Source":"TradingView"}'
- $secret = $env:TMQ_WEBHOOK_SECRET   # Set this via user-secrets or environment variables
- $timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds().ToString()
- $nonce = [Guid]::NewGuid().ToString()
- $idempotency = [Guid]::NewGuid().ToString()
- $hmac = New-Object System.Security.Cryptography.HMACSHA256
- $hmac.Key = [Text.Encoding]::UTF8.GetBytes($secret)
- $signatureBytes = $hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($body))
- $signature = "sha256=" + ([Convert]::ToHexString($signatureBytes).ToLower())
-
-Invoke-RestMethod -Method Post -Uri https://localhost:7054/webhook `
-  -ContentType "application/json" `
-  -Headers @{
-    "X-Signature-256" = $signature
-    "X-Timestamp" = $timestamp
-    "X-Nonce" = $nonce
-    "X-Idempotency-Key" = $idempotency
-  } `
-  -Body $body
-```
-
-### What to Expect:
-1. **Listener.Api**: Receives the signal and dispatches a command.
-2. **QuantEngine.Worker**: 
-   - Fetches live BIST data/news for THYAO via Borsa-MCP.
-   - DeepSeek-R1 (Mock) reasons through the signal.
-   - Approves the trade.
-3. **Execution.Worker**: Executes the order via the Mock Broker.
-4. **Dashboard**: Updates the logs and trade list.
+| Strategy | Notes | Spec |
+| --- | --- | --- |
+| Funding-Long | Entry thresholds pre-registered; N=200 stopping rule | [docs/PRE_REGISTERED_HYPOTHESIS_funding_long.md](docs/PRE_REGISTERED_HYPOTHESIS_funding_long.md) |
+| Pairs-Long | Z-score entry on 4h; allowlisted pairs; N=50 | [docs/PRE_REGISTERED_HYPOTHESIS_pairs_long.md](docs/PRE_REGISTERED_HYPOTHESIS_pairs_long.md) |
 
 ---
 
-## Dependencies
-- .NET 9 SDK
-- Borsa-MCP (Configured in Claude/Antigravity)
-- Semantic Kernel (For AI Integration)
+## Secrets and configuration
+
+Never commit:
+
+- API keys, passphrases, webhook HMAC secrets
+- `exchange_credentials.dpapi`, `exchange_settings.json`, `telegram_settings.json`
+- `appsettings.Paper.json`, `appsettings.Live.json`, `appsettings.runtime.json`, `.env*`
+
+Prefer:
+
+- Dashboard-written DPAPI blobs (paper path above), or
+- [User secrets](https://learn.microsoft.com/dotnet/core/tools/dotnet-user-secrets) / environment variables for service-specific keys
+
+`Listener.Api` validates webhooks with `TMQ_WEBHOOK_SECRET` (HMAC). Use the same secret when signing outbound test requests.
 
 ---
 
-## Secrets and multi-process deployment
+## Observability
 
-- **Do not commit** API keys, webhook HMAC secrets, or exchange credentials. Use per-machine [user-secrets](https://learn.microsoft.com/dotnet/core/tools/dotnet-user-secrets) (`dotnet user-secrets set "KEY" "value"`), environment variables, or a secret store in production.
-- **Listener.Api** expects `TMQ_WEBHOOK_SECRET` (or equivalent in configuration) for HMAC validation; set the same value wherever you generate webhook signatures.
-- **Typical layout**: run `Listener.Api`, `QuantEngine.Worker`, and `Execution.Worker` as **separate processes** (three terminals or three services). Each loads its own `appsettings.json` / `exchange_settings.json` and optional user-secrets; they share the database URL via configuration, not via the repo.
-- **Observability**: workers expose `/metrics` (Prometheus text) and `/health` where `MapObservabilityEndpoints` is wired; use a single scrape config per service instance with distinct labels (e.g. service name). For product priorities (edge, execution quality, risk), see [docs/STRATEGIC_FOCUS.md](docs/STRATEGIC_FOCUS.md).
+Workers expose Prometheus text metrics and health endpoints where wired. Sample configs:
 
-### Correlation IDs
+- [docs/observability/prometheus-scrape.yml](docs/observability/prometheus-scrape.yml)
+- [docs/observability/grafana-dashboard.json](docs/observability/grafana-dashboard.json)
 
-- **Listener.Api** assigns a correlation id per HTTP request (`CorrelationIdMiddleware`) and may copy it into signal metadata for downstream tracing.
-- **Execution.Worker** ties structured log scopes to each signal via `TradingLogScope` (signal id / symbol / correlation id from metadata when present).
+---
+
+## Documentation
+
+| Doc | Contents |
+| --- | --- |
+| [Paper launch checklist](docs/PAPER_TRADE_LAUNCH_CHECKLIST.md) | Credentials and first start |
+| [Paper runbook](docs/PAPER_TRADE_RUNBOOK_2026_04_24.md) | Day-to-day operations |
+| [Live readiness audit](docs/LIVE_READINESS_AUDIT_2026_04_24.md) | Pre-live checklist |
+| [Postgres migration](docs/POSTGRES_MIGRATION.md) / [cutover](docs/POSTGRES_CUTOVER.md) | SQLite → Postgres |
+| [Funding hypothesis](docs/PRE_REGISTERED_HYPOTHESIS_funding_long.md) | Pre-registered Funding-Long test |
+| [Pairs hypothesis](docs/PRE_REGISTERED_HYPOTHESIS_pairs_long.md) | Pre-registered Pairs-Long test |
+
+---
+
+## License
+
+Private repository. All rights reserved.
