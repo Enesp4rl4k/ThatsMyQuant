@@ -178,7 +178,7 @@ builder.Services.AddMediatR(cfg =>
 builder.Services.AddDbContextPool<QuantDbContext>(options =>
     options.UseConfiguredQuantDatabase(builder.Configuration), poolSize: 128);
 builder.Services.AddSingleton<SignalWriterChannel>();
-// builder.Services.AddHostedService<QuantPersistenceWorker>(); // DISABLED: tüm taskler kapalı
+builder.Services.AddHostedService<QuantPersistenceWorker>();
 builder.Services.AddScoped<ISignalRepository, SignalRepository>();
 builder.Services.AddSingleton<IPortfolioStateCache, PortfolioStateCache>();
 // Signal Diagnostics — singleton in-memory registry shared across all hybrid executors
@@ -193,11 +193,11 @@ builder.Services.AddScoped<ReconciliationAgent>();
 // Listener.Api's OperatorAlertDbReaderWorker republishes via SignalR.
 builder.Services.AddSingleton<IOperatorAlertPublisher, DbOperatorAlertPublisher>();
 // Phase 13 — heartbeat for the System Health page in the dashboard
-// builder.Services.AddHostedService<ServiceHeartbeatHostedService>(); // DISABLED: tüm taskler kapalı
+builder.Services.AddHostedService<ServiceHeartbeatHostedService>();
 // 2026-05-01 — operator-visible CMD heartbeat (single-line, every 60s, prefix [HB])
 // Different from ServiceHeartbeatHostedService (silent DB write for dashboard);
 // this one is for the human staring at the terminal: "is the bot ÇALIŞIYOR right now?"
-// builder.Services.AddHostedService<WorkerHeartbeatConsoleHostedService>(); // DISABLED: tüm taskler kapalı
+builder.Services.AddHostedService<WorkerHeartbeatConsoleHostedService>();
 
 var hasOkxCredentials =
     !string.IsNullOrWhiteSpace(builder.Configuration["OKX:ApiKey"]) &&
@@ -358,8 +358,8 @@ builder.Services.AddTransient<ISignalValidator, MarketHoursValidator>();
 builder.Services.AddTransient<ISignalValidator, MinVolumeValidator>();
 builder.Services.AddTransient<ISignalValidator, PriceSanityValidator>();
 
-// builder.Services.AddHostedService<WorkerManagementApiHostedService>(); // DISABLED: tüm taskler kapalı
-// builder.Services.AddHostedService<ExchangeExecutionSyncHostedService>(); // DISABLED: tüm taskler kapalı
+builder.Services.AddHostedService<WorkerManagementApiHostedService>();
+builder.Services.AddHostedService<ExchangeExecutionSyncHostedService>();
 
 // TMQ_MODE dispatch: paper | live (default). `backtest` runs via the CLI tool instead.
 var runMode = (builder.Configuration["TMQ_MODE"] ?? "live").ToLowerInvariant();
@@ -383,7 +383,7 @@ switch (runMode)
         // backup folder. Disk failure / corruption mid-trade is the single risk that can
         // zero account history overnight (Risk #5 from 2026-05-01 playbook). Postgres flip
         // is "ready" but un-deployed; until then this is the canonical safety net.
-        // builder.Services.AddHostedService<DailyBackupHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<DailyBackupHostedService>();
         // CandidatePool — Tier B+ foundation. EdgeLab discovers candidates, this service
         // holds the registry of currently-running parallel paper validations. Singleton:
         // multiple components consult/update the pool (CLI commands, future GenericStrategyRunner,
@@ -398,15 +398,13 @@ switch (runMode)
         builder.Services.AddSingleton<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore,
             ThatsMyQuant.Application.MachineLearning.StrategySampleStore>();
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>();
-        // builder.Services.AddHostedService<ExchangeBalanceSyncHostedService>(); // DISABLED: tüm taskler kapalı
-        // builder.Services.AddHostedService<PaperTradingHostedService>(); // DISABLED: tüm taskler kapalı
-        // builder.Services.AddHostedService<PairsTradingPaperHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<ExchangeBalanceSyncHostedService>();
+        builder.Services.AddHostedService<PaperTradingHostedService>();
+        builder.Services.AddHostedService<PairsTradingPaperHostedService>();
         // Barbell pairs: Long tier = high-conviction (entry |z|≥2.5, multi-day hold, big size, low lev)
         //                Short tier = scalp (entry |z|≥1.5, hours hold, small size, high lev)
         // NOTE: use AddSingleton<IHostedService> directly because AddHostedService<T>(factory)
         // dedupes by concrete type via TryAddEnumerable — second registration becomes a no-op.
-        // DISABLED: tüm taskler kapalı — PairsHybridExecutor Long + Short
-        /*
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new PairsHybridExecutor(
             sp.GetRequiredService<ILogger<PairsHybridExecutor>>(),
             sp,
@@ -431,7 +429,6 @@ switch (runMode)
             drawdownLadder: sp.GetService<DrawdownLadderGate>(),
             persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>(),
             mlSampleStore: sp.GetService<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore>()));
-        */
         // Funding execution path:
         //   - When Funding:HybridMode=off → legacy FundingAlphaPaperHostedService mirrors closed
         //     backtest trades into PaperPortfolio (local sim only, no OKX orders).
@@ -439,7 +436,7 @@ switch (runMode)
         //     evaluation per tick, real OKX demo order placement (live) or order-intent logging
         //     (dry-run). The legacy mirror service stays registered but its config check skips
         //     execution when HybridMode != off.
-        // builder.Services.AddHostedService<FundingAlphaPaperHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<FundingAlphaPaperHostedService>();
         // EdgeLabSignalHostedService — consumes EdgeLab's signals/<strategy>/latest.json
         // bridge file (Quantlab repo) and rebalances the OKX paper book to match
         // target_weights. Contract: signals/README.md §"Bot Integration Contract".
@@ -458,7 +455,7 @@ switch (runMode)
         // promotion gate (future) reads it to evaluate live readiness.
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSyntheticPortfolio>();
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabReconciliationLedger>();
-        // builder.Services.AddHostedService<EdgeLabSignalHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<EdgeLabSignalHostedService>();
         // Additional EdgeLab strategies (dry-run only, never auto-promoted). Quantlab adds new
         // signal streams under signals/<strategy>/; each one needs its own hosted-service instance
         // with its OWN per-strategy ledger files so synthetic position / dry-run log / reconciliation
@@ -472,12 +469,12 @@ switch (runMode)
         // summary line per strategy — operator can grep `[paper-shadow]` to track real
         // Sharpe converging vs. backtest figures, especially for the 2026-05-03 strategies
         // whose reported Sharpes (5.27 / 7.68 / 3.13) need real-execution validation.
-        // builder.Services.AddHostedService<EdgeLabPaperShadowMonitor>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<EdgeLabPaperShadowMonitor>();
         // EdgeLabRealizedPnLDumper — daily CSV dump of cycle-level realized PnL to
         // Quantlab/data/realized_pnl/<strategy>/<date>.csv. Critical for the $2K
         // capital cycle (master plan v2): realized vs backtest gap calibration.
         // Quantlab side reads these files via scripts/sanity_realized_vs_backtest.py.
-        // builder.Services.AddHostedService<EdgeLabRealizedPnLDumperHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<EdgeLabRealizedPnLDumperHostedService>();
         // 2026-05-17 Quantlab handoff §1 — per-strategy PER-TRADE realized PnL CSV.
         // The Dumper above emits cycle-level synthetic PnL; live_monitor.py and
         // track_realized.py need per-trade rows grouped by StrategyTag to drive
@@ -485,9 +482,7 @@ switch (runMode)
         // Reads from paper_portfolio.json (PaperPortfolio.ClosedPositions) which is
         // the actual fill ledger in paper mode; SQLite Trades is dormant for this
         // path (verified 2026-05-17: portfolio JSON had 126 closed vs DB had 0).
-        // builder.Services.AddHostedService<PerStrategyRealizedPnlCsvHostedService>(); // DISABLED: periyodik monitoring
-        // DISABLED: tüm taskler kapalı — AdditionalEdgeLabStrategies dynamic registrations
-        /*
+        builder.Services.AddHostedService<PerStrategyRealizedPnlCsvHostedService>();
         var additionalEdgeLabStrategies = builder.Configuration
             .GetSection("EdgeLab:AdditionalStrategies").Get<string[]>() ?? Array.Empty<string>();
         foreach (var strategyName in additionalEdgeLabStrategies)
@@ -526,7 +521,6 @@ switch (runMode)
                     sp.GetService<ThatsMyQuant.Contracts.Interfaces.IOperatorAlertPublisher>());
             });
         }
-        */
 
         // EdgeLabSingleAsset — single-asset (directional) signal consumer added 2026-05-08
         // for the $2K capital cycle (master plan: Quantlab/hypotheses/MASTER_PLAN_2K_2026_05_08.md).
@@ -539,10 +533,12 @@ switch (runMode)
             ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions.SectionName);
         var singleAssetOpts = singleAssetSection.Get<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions>()
                               ?? new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions();
-        // DISABLED: tüm taskler kapalı — EdgeLabSingleAsset dynamic registrations
-        /*
         if (singleAssetOpts.Enabled && singleAssetOpts.Strategies != null)
         {
+            // Per-strategy timeframe parsing — single-asset strategies may run on
+            // different cadences (1h for ada/funding_zscore variants, daily for
+            // unlock-event strategies). For now, use a fixed 1h fallback; operator
+            // can extend to per-strategy timeframe map in future.
             var defaultTimeframe = TimeSpan.FromHours(1);
             foreach (var saName in singleAssetOpts.Strategies)
             {
@@ -558,6 +554,10 @@ switch (runMode)
                         System.IO.Path.Combine(dataDir, $"edgelab_synthetic_{saNameCaptured}.json"));
                     var saRecon = new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabReconciliationLedger(
                         System.IO.Path.Combine(dataDir, $"edgelab_dryrun_pnl_{saNameCaptured}.jsonl"));
+                    // [Sprint 2 — 2026-05-10] Per-strategy override resolved at DI-registration
+                    // time so each hosted-service instance carries its own weight + promotion gate
+                    // independently. Falls back to equal-share defaults if the operator did not
+                    // configure an override for this strategy.
                     var saOverride = singleAssetOpts.GetEffectiveOverride(saNameCaptured);
                     return new EdgeLabSingleAssetHostedService(
                         sp.GetRequiredService<ILogger<EdgeLabSingleAssetHostedService>>(),
@@ -572,7 +572,6 @@ switch (runMode)
                 });
             }
         }
-        */
 
         // Barbell tier registrations:
         //   - Long  : conviction bucket (high threshold, big size, low lev, low frequency)
@@ -580,8 +579,6 @@ switch (runMode)
         // Both share runner/portfolio/exchange but maintain separate state files + position caps.
         // Each tier reads Funding:Long:* / Funding:Short:* config (falls back to Funding:* legacy).
         // To run single-tier mode: set HybridMode=off on one tier and the other tier carries the strategy alone.
-        // DISABLED: tüm taskler kapalı — FundingHybridExecutor Long + Short
-        /*
         builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp => new FundingHybridExecutor(
             sp.GetRequiredService<ILogger<FundingHybridExecutor>>(),
             sp,
@@ -608,16 +605,15 @@ switch (runMode)
             drawdownLadder: sp.GetService<DrawdownLadderGate>(),
             persistence: sp.GetService<ThatsMyQuant.Application.Strategy.PaperPortfolioPersistenceService>(),
             mlSampleStore: sp.GetService<ThatsMyQuant.Application.MachineLearning.IStrategySampleStore>()));
-        */
-        // builder.Services.AddHostedService<HybridReconciliationHostedService>(); // DISABLED: periyodik monitoring
-        // builder.Services.AddHostedService<DailyTelegramDigestHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<HybridReconciliationHostedService>();
+        builder.Services.AddHostedService<DailyTelegramDigestHostedService>();
         // [2026-05-14 unattended hardening] Daily 24h ledger reconciliation: count + volume + fee
         // match between local DB closed trades and OKX fills-history. Fires Telegram if drift > tol.
-        // builder.Services.AddHostedService<DailyTradeReconciliationHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<DailyTradeReconciliationHostedService>();
         // [2026-05-14 unattended hardening] Hard kill-switch: force-flatten on -8% drawdown
         // OR -3% daily PnL. Singleton so executors can read IsKilled before opening entries.
-        // builder.Services.AddSingleton<KillSwitchHostedService>(); // DISABLED: tüm taskler kapalı
-        // builder.Services.AddHostedService(sp => sp.GetRequiredService<KillSwitchHostedService>()); // DISABLED: tüm taskler kapalı
+        builder.Services.AddSingleton<KillSwitchHostedService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<KillSwitchHostedService>());
         // [2026-05-14 unattended hardening] Pre-entry risk gate: per-entry safety checks
         // (fat-finger 15%, position-count 10, funding-drift 100bp). Singleton consulted by
         // executors via constructor injection. Optional — checks return Allow() when disabled.
@@ -626,36 +622,36 @@ switch (runMode)
         // config to a timestamped JSON snapshot at every boot. Index file tracks which
         // snapshots changed config vs prior boot. Helps answer "what config was running
         // on day X?" 15 days later.
-        // builder.Services.AddHostedService<ConfigSnapshotHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<ConfigSnapshotHostedService>();
         // [2026-05-14 unattended hardening — Layer 4 from cancel-verify FSM plan]
         // At boot (after 60s grace), reconcile OKX open orders with local active trades.
         // Orphan venue orders trigger Telegram alert. Periodic sync handles ongoing drift.
-        // builder.Services.AddHostedService<BootOrphanSweepHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<BootOrphanSweepHostedService>();
         // [2026-05-14 bug-hunt round 5 — Bug #6] SQLite WAL grows unbounded under
         // continuous-INSERT load (telemetry, alerts, trade events). Periodic
         // wal_checkpoint(TRUNCATE) every 6h, optimize every 24h, disk-space alarm < 2GB.
-        // builder.Services.AddHostedService<SqliteMaintenanceHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<SqliteMaintenanceHostedService>();
         // [2026-05-17 CRITICAL fix — clock drift] Windows W32Time may be disabled/mis-
         // configured (Source: Local CMOS Clock). When local clock drifts >30s from OKX
         // server, every OKX REST call fails with 50102 "Timestamp request expired".
         // This service fetches OKX server time at boot + every 5min, applies the offset
         // to OkxExecutionService.GetIsoTimestamp() so requests stay accepted even when
         // Windows clock is drifting. Critical Telegram alert on > 25s drift.
-        // builder.Services.AddHostedService<OkxClockSync>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<OkxClockSync>();
         // [2026-05-15 ledger drift fix — Option C] EdgeLab strategies fill via
         // OkxExecutionService → DB.Trades but never touch PaperPortfolio. All monitors
         // (heartbeat, TCA, ShadowAudit, KillSwitch, digest) read PaperPortfolio →
         // operator-blind to live OKX state. This service mirrors DB Trades into
         // PaperPortfolio.OpenPositions/ClosedPositions every 60s with ExecutionMode
         // marker "LIVE_DB". Paper-only entries preserved.
-        // builder.Services.AddHostedService<DbToPortfolioSyncHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<DbToPortfolioSyncHostedService>();
         // [2026-06-12 ledger drift — the "proper fix" DbToPortfolioSync flagged as
         // Sprint-Post-Vacation #1] EdgeLab/hybrid/OKX closes land in PaperPortfolio.ClosedPositions
         // but nothing wrote db.Trades, leaving the kill switch + per-strategy digest blind
         // (they read db.Trades). This service mirrors closed positions → db.Trades every 5min,
         // forward-only from a persisted cutoff (keeps pre-registered-test sample clean),
         // idempotent by content hash. Consumers unchanged.
-        // builder.Services.AddHostedService<ClosedPositionToTradeMirrorHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<ClosedPositionToTradeMirrorHostedService>();
         // [2026-05-16 per-strategy attribution] OKX positions-history doesn't carry strategy
         // attribution. This ledger captures (time, symbol, strategy) on every EdgeLab live fill;
         // DbToPortfolioSync looks up by time+symbol when mirroring closed positions so the
@@ -664,14 +660,14 @@ switch (runMode)
         builder.Services.AddSingleton<EdgeLabFillAttributionLedger>();
         // TelegramCommandHostedService — two-way bot: long-polls /status /pnl /positions /help.
         // Independent of digest service; replies only to the configured chat id.
-        // builder.Services.AddHostedService<TelegramCommandHostedService>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<TelegramCommandHostedService>();
         // ManualCloseRequestProcessor — polls cross-process ManualCloseRequests table every 3s
         // for operator-initiated close requests from the Cockpit UI.
-        // builder.Services.AddHostedService<ManualCloseRequestProcessor>(); // DISABLED: tüm taskler kapalı
+        builder.Services.AddHostedService<ManualCloseRequestProcessor>();
         // PairsDiscoveryHostedService — every 6h scans 30-symbol crypto universe for fresh
         // cointegrating pair candidates, writes to LocalAppData/ThatsMyQuant/pairs_discovery_candidates.json
         // for human review. NEVER auto-promotes; operator manually edits AllowedPairsCsv.
-        // builder.Services.AddHostedService<PairsDiscoveryHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<PairsDiscoveryHostedService>();
         // [P1.1] LiquidationCascadeHostedService — consumes OKX liquidation-orders WS channel,
         // detects cascades (default 5M BTC / 1M alt notional in 5min @ 70% dominance) and
         // dispatches a fade ExecuteTradeCommand. Disabled by default
@@ -680,30 +676,30 @@ switch (runMode)
         {
             builder.Services.AddOptions<ThatsMyQuant.Contracts.Options.LiquidationCascadeOptions>()
                 .BindConfiguration(ThatsMyQuant.Contracts.Options.LiquidationCascadeOptions.SectionName);
-            // builder.Services.AddHostedService<LiquidationCascadeHostedService>(); // DISABLED: tüm taskler kapalı
+            builder.Services.AddHostedService<LiquidationCascadeHostedService>();
         }
         // FundingScoutHostedService — every 5m polls watchlist funding rates, fires Telegram
         // alert when |rate| crosses 0.5bp (half of hybrid entry threshold). Heads-up so the
         // operator sees funding building before a real entry signal triggers.
-        // builder.Services.AddHostedService<FundingScoutHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<FundingScoutHostedService>();
         // MacroEventCalendarService — polls economic calendar (FOMC, CPI, NFP) and exposes a
         // global pause flag (MacroEventCalendarService.Current). Hybrid executors check this
         // and block NEW entries within the [pre-event, +post-event] window. Existing
         // positions still managed. Auto-resumes after the post-window.
-        // builder.Services.AddHostedService<MacroEventCalendarService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<MacroEventCalendarService>();
         // Real-time TCA — every 30min runs cost-leakage analysis on rolling closed-trade window.
         // Read-only; alerts when leakage > threshold (default 30%).
-        // builder.Services.AddHostedService<TcaLiveAnalyzerHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<TcaLiveAnalyzerHostedService>();
         // 2026-05-07 (Sprint 1.1): Funding-edge decay early-warning. Per-symbol rolling-N
         // (funding_received / fees_paid) ratio. Alerts when ratio < 1.5 (carry edge eroding
         // before Sharpe shows it). Premortem #1 detector. Read-only; downstream PromotionGate
         // (Sprint 2 SPRT) consumes the state file as a hard veto on live promotion.
-        // builder.Services.AddHostedService<FundingFeeRatioMonitorHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<FundingFeeRatioMonitorHostedService>();
         // 2026-05-07 (Sprint 1.2): Demo→live execution drift early-warning. Pulls last 30d
         // fills from OKX /trade/fills-history and computes maker/(maker+taker) using the
         // execType field. Alerts when ratio < 0.75 (queue race lost, fees ~2x assumed).
         // Premortem #4 detector.
-        // builder.Services.AddHostedService<MakerFillRatioMonitorHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<MakerFillRatioMonitorHostedService>();
         // 2026-05-11: Maker-fill-ratio root-cause fix. OkxWebSocketService was registered
         // but never connected — books5 subscription empty → OkxExecutionService had no
         // top-of-book snapshot → post-only fell back to mid → 0% maker fill across 336
@@ -712,13 +708,13 @@ switch (runMode)
         // the post-only nudge path.
         if (isOkxMode)
         {
-            // builder.Services.AddHostedService<OrderBookSubscriptionHostedService>(); // DISABLED: tüm taskler kapalı
+            builder.Services.AddHostedService<OrderBookSubscriptionHostedService>();
         }
         // 2026-05-07 (Sprint 1.3): Diversification-myth detector. Pairwise Pearson correlation
         // across daily-bucketed PnL of every active StrategyTag (rolling 60d). Off-diagonal
         // > 0.4 = factor concentration disguised as diversification. Premortem #5 detector.
         // Sprint 3.1 HRP allocator consumes the matrix as input weights.
-        // builder.Services.AddHostedService<PairwiseCorrelationMonitorHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<PairwiseCorrelationMonitorHostedService>();
         // 2026-05-07 (Sprint 3.2): Convert PortfolioRiskLive from observational to enforcing.
         // Singleton flag tripped when VaR/CVaR breach observed; executor pre-entry path
         // refuses new positions until cleared by next snapshot.
@@ -726,31 +722,31 @@ switch (runMode)
         // 2026-05-07 (Sprint 3.1 Phase 1): HRP allocator compute & log. Reads daily PnL
         // covariance, runs Lopez de Prado 2016 HRP, persists weights to state file.
         // Phase 2 (next sprint) wires weights into executor sizing.
-        // builder.Services.AddHostedService<HrpAllocatorMonitorHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<HrpAllocatorMonitorHostedService>();
         // Shadow execution audit — every 60min, re-prices closed trades through square-root impact
         // model + spread + commission and compares to paper PnL. Tells us if alpha is decaying
         // because EDGE is failing or EXECUTION is failing.
-        // builder.Services.AddHostedService<ShadowAuditLiveHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<ShadowAuditLiveHostedService>();
         // Portfolio risk analytics — every 15min publishes Kelly recommendation + VaR/CVaR.
         // Alerts when tail risk exceeds % of basis. Read-only.
-        // builder.Services.AddHostedService<PortfolioRiskLiveHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<PortfolioRiskLiveHostedService>();
         // Daily 23:55 UTC paper→live promotion gate verdict (objective criteria, not gut feel).
-        // builder.Services.AddHostedService<PromotionGateLiveHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<PromotionGateLiveHostedService>();
         // [Sprint 3 — 2026-05-10] Daily 23:30 UTC per-strategy realized-PnL digest.
         // With 11 EdgeLab strategies + Sprint 2 attribution fix, the operator needs daily
         // visibility on which edges are earning vs decaying.
-        // builder.Services.AddHostedService<PerStrategyDigestHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<PerStrategyDigestHostedService>();
         // [Sprint 4 — 2026-05-10] Markout snapshot service — every fill gets +1s/+10s/+60s/+300s
         // mark-price snapshots for adverse-selection TCA. Singleton ledger so restart-safe append.
         builder.Services.AddSingleton<ThatsMyQuant.Application.Strategy.EdgeLab.MarkoutLedger>(
             _ => new ThatsMyQuant.Application.Strategy.EdgeLab.MarkoutLedger());
-        // builder.Services.AddHostedService<MarkoutSnapshotHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<MarkoutSnapshotHostedService>();
         // [Sprint 5 — 2026-05-10] B1 partial: boot-time basis sanity check. ExchangeBalanceSync
         // overwrites PaperPortfolio.Cash + InitialBalance with the real OKX demo balance after
         // ~5s. The historical "$96K vs $5K" mismatch was a stale persistence snapshot from before
         // the $2K-cycle pivot. We log the trio (config, OKX-demo-after-sync, runtime) once on
         // first heartbeat so operator + future post-mortems can verify they agreed at boot.
-        // builder.Services.AddHostedService<BasisSanityCheckHostedService>(); // DISABLED: periyodik monitoring
+        builder.Services.AddHostedService<BasisSanityCheckHostedService>();
 
         // [Sprint 6 — 2026-05-10] Quantlab integration contract: per-strategy realized-Sharpe
         // kill switch. KillSwitchState is a singleton JSON-backed mutex; the hosted service
@@ -760,8 +756,8 @@ switch (runMode)
             _ => new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabKillSwitchState());
         // Register concrete + as IHostedService so EdgeLabSingleAssetHostedService can inject the
         // concrete to push threshold updates without polluting the IHostedService interface.
-        // builder.Services.AddSingleton<EdgeLabKillSwitchHostedService>(); // DISABLED: tüm taskler kapalı
-        // builder.Services.AddHostedService(sp => sp.GetRequiredService<EdgeLabKillSwitchHostedService>()); // DISABLED: tüm taskler kapalı
+        builder.Services.AddSingleton<EdgeLabKillSwitchHostedService>();
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<EdgeLabKillSwitchHostedService>());
         Log.Information(
             "QuantEngine.Worker: TMQ_MODE=paper. Hosted services: ExchangeBalanceSync, PaperTrading (directional disabled), Pairs, FundingMirror+FundingHybrid, PairsDiscovery, TcaLiveAnalyzer, ShadowAuditLive, PortfolioRiskLive, PromotionGateLive, DailyTelegramDigest, PerStrategyDigest, MarkoutSnapshot.");
         break;
