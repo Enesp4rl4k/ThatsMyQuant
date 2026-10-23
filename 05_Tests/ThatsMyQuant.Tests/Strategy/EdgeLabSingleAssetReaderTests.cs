@@ -164,4 +164,46 @@ public class EdgeLabSingleAssetReaderTests
             doc, "ada_funding_zscore_meanrev_singlename", now, TimeSpan.FromHours(4));
         Assert.True(r.IsOk, $"validate failed: {r.Status}: {r.FailureReason}");
     }
+
+    [Theory]
+    [InlineData("1h", 60)]
+    [InlineData("4h", 240)]
+    [InlineData("1d", 1440)]
+    [InlineData("15m", 15)]
+    public void ParseTimeframe_KnownUnits(string tf, int minutes)
+    {
+        Assert.Equal(TimeSpan.FromMinutes(minutes), EdgeLabSingleAssetReader.ParseTimeframe(tf));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("h")]
+    [InlineData("4x")]
+    [InlineData("0h")]
+    public void ParseTimeframe_Invalid_ReturnsNull(string? tf)
+    {
+        Assert.Null(EdgeLabSingleAssetReader.ParseTimeframe(tf));
+    }
+
+    [Fact]
+    public void ResolveTimeframe_ReadsSignalMetadata_FallsBackWhenMissing()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "tmq-tf-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, Strategy));
+            var doc = BuildValidSingleAssetDoc(DateTimeOffset.UtcNow); // Timeframe = "4h"
+            File.WriteAllText(EdgeLabSingleAssetReader.ResolveLatestPath(dir, Strategy),
+                JsonSerializer.Serialize(doc));
+
+            var fallback = TimeSpan.FromHours(1);
+            Assert.Equal(TimeSpan.FromHours(4), EdgeLabSingleAssetReader.ResolveTimeframe(dir, Strategy, fallback));
+            Assert.Equal(fallback, EdgeLabSingleAssetReader.ResolveTimeframe(dir, "no_such_strategy", fallback));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }
