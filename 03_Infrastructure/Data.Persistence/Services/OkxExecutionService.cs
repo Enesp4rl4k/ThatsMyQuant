@@ -1565,6 +1565,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         using var doc = JsonDocument.Parse(json);
 
         decimal usdtBalance = 0;
+        decimal usdtEquity = 0;
         var data = doc.RootElement.GetProperty("data");
         if (data.GetArrayLength() > 0)
         {
@@ -1574,9 +1575,11 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 var ccy = detail.GetProperty("ccy").GetString();
                 if (ccy == "USDT")
                 {
-                    usdtBalance = decimal.Parse(
-                        detail.GetProperty("availBal").GetString() ?? "0",
-                        System.Globalization.CultureInfo.InvariantCulture);
+                    usdtBalance = ParseDecimalStr(detail, "availBal");
+                    // `eq` = USDT equity incl. unrealized PnL and margin locked in positions.
+                    // availBal drops when margin is locked, so it must never be used as equity
+                    // (it made RiskSupervisor read every position open as a drawdown).
+                    usdtEquity = ParseDecimalStr(detail, "eq", usdtBalance);
                     break;
                 }
             }
@@ -1589,7 +1592,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             Id = "OKX-LIVE",
             Provider = "OKX",
             Balance = usdtBalance,
-            Equity = usdtBalance
+            Equity = usdtEquity
         };
     }
 

@@ -263,4 +263,88 @@ public class RiskSupervisorServiceTests
         // GetAvailableBalance must have been called at least once (startup recording)
         portfolio.Received().GetAvailableBalance("USDT");
     }
+
+    // ── Equity-based drawdown (2026-10-25 fix) ───────────────────────────────
+
+    [Theory]
+    [InlineData(1000.0, 800.0, null, 20.0)]        // no basis: classic peak-relative drawdown
+    [InlineData(96000.0, 95500.0, 2000.0, 25.0)]   // $500 loss inside a $96K account trading a $2K basis
+    [InlineData(1500.0, 1200.0, 2000.0, 20.0)]     // account smaller than the basis: judged against the peak
+    [InlineData(1000.0, 1100.0, 2000.0, 0.0)]      // above peak: no drawdown
+    public void ComputeDrawdownPercent_UsesBasisWhenConfigured(double peak, double current, double? basis, double expected)
+    {
+        var dd = RiskSupervisorService.ComputeDrawdownPercent((decimal)peak, (decimal)current, basis is null ? null : (decimal)basis);
+        Assert.Equal((decimal)expected, Math.Round(dd, 6));
+    }
+
+    [Fact]
+    public async Task MonitoringLoop_LockedMargin_IsNotADrawdown_WhenEquityProviderIsSet()
+    {
+        // Available balance falls from 2000 to 1650 as positions lock margin; equity is unchanged.
+        var portfolio = Substitute.For<IPortfolioManager>();
+        var exchange  = Substitute.For<IExchangeService>();
+        exchange.CancelAllOrdersAsync().Returns(Task.FromResult(0));
+        var calls = 0;
+        portfolio.GetAvailableBalance("USDT").Returns(_ => calls++ == 0 ? 2000m : 1650m);
+
+        var svc = new RiskSupervisorService(
+            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 3m, TestMonitoringInterval,
+            equityProvider: _ => Task.FromResult<decimal?>(2000m), basisUsd: 2000m, equityPollInterval: TimeSpan.Zero);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await svc.StartAsync(cts.Token);
+        await Task.Delay(250);
+        await cts.CancelAsync();
+        await svc.StopAsync(CancellationToken.None);
+
+        Assert.Equal(0m, svc.CurrentDrawdownPercent);
+        await exchange.DidNotReceive().CancelAllOrdersAsync();
+        portfolio.DidNotReceive().GetAvailableBalance("USDT");
+    }
+
+    [Fact]
+    public async Task MonitoringLoop_EquityLossBeyondBasisThreshold_TriggersHalt()
+    {
+        // $96K demo account, $2K trading basis, 25% limit: a $600 equity loss (30% of basis) must halt.
+        var portfolio = Substitute.For<IPortfolioManager>();
+        var exchange  = Substitute.For<IExchangeService>();
+        exchange.CancelAllOrdersAsync().Returns(Task.FromResult(0));
+        var reads = 0;
+
+        var svc = new RiskSupervisorService(
+            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 25m, TestMonitoringInterval,
+            equityProvider: _ => Task.FromResult<decimal?>(reads++ == 0 ? 96000m : 95400m),
+            basisUsd: 2000m, equityPollInterval: TimeSpan.Zero);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await svc.StartAsync(cts.Token);
+        await Task.Delay(250);
+        await cts.CancelAsync();
+        await svc.StopAsync(CancellationToken.None);
+
+        await exchange.Received(1).CancelAllOrdersAsync();
+    }
+
+    [Fact]
+    public async Task MonitoringLoop_EquityProviderThrows_SkipsCheckWithoutHalting()
+    {
+        var portfolio = Substitute.For<IPortfolioManager>();
+        var exchange  = Substitute.For<IExchangeService>();
+        exchange.CancelAllOrdersAsync().Returns(Task.FromResult(0));
+        portfolio.GetAvailableBalance("USDT").Returns(1m);   // would read as ~100% drawdown if used
+
+        var svc = new RiskSupervisorService(
+            NullLogger<RiskSupervisorService>.Instance, exchange, portfolio, maxDrawdownPercent: 5m, TestMonitoringInterval,
+            equityProvider: _ => throw new HttpRequestException("exchange down"),
+            basisUsd: 2000m, equityPollInterval: TimeSpan.Zero);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        await svc.StartAsync(cts.Token);
+        await Task.Delay(250);
+        await cts.CancelAsync();
+        await svc.StopAsync(CancellationToken.None);
+
+        await exchange.DidNotReceive().CancelAllOrdersAsync();
+        portfolio.DidNotReceive().GetAvailableBalance("USDT");
+    }
 }
