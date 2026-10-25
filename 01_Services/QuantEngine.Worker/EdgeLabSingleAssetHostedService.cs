@@ -368,7 +368,16 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         else if (mode == HybridMode.Live)
         {
             var positions = scope.ServiceProvider.GetRequiredService<IExchangePositionReader>();
-            var openSnapshots = await positions.GetOpenPositionsAsync(ct).ConfigureAwait(false);
+            var (positionsOk, openSnapshots) = await positions.TryGetOpenPositionsAsync(ct).ConfigureAwait(false);
+            if (!positionsOk)
+            {
+                // A failed read is NOT "flat": sizing against 0 re-opened full positions on top
+                // of existing ones (seen on HTTP 429). Skip and retry on the next poll.
+                _logger.LogWarning(
+                    "EdgeLabSingleAsset[{Strategy}]: exchange positions unavailable, skipping cycle (will retry).",
+                    _strategy);
+                return false;
+            }
             var exchangeQty = 0m;
             foreach (var p in openSnapshots)
             {
