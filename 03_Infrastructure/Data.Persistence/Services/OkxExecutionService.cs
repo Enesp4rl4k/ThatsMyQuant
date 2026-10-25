@@ -62,7 +62,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     // ctVal: base-asset units per contract (e.g. 1 AVAX, 100 XRP, 100 ADA)
     // lotSz: sz must be a multiple of lotSz
     // minSz: minimum order size (in contracts)
-    private record OkxContractSpec(decimal CtVal, decimal LotSz, decimal MinSz);
+    private record OkxContractSpec(decimal CtVal, decimal LotSz, decimal MinSz, decimal TickSz = 0m);
     private readonly ConcurrentDictionary<string, OkxContractSpec> _contractSpecCache = new();
 
     public OkxExecutionService(
@@ -261,9 +261,15 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         // after LimitOrderTimeoutSeconds and fell through to the Market fallback.
         var pxForLimit = signal.Price;
         var postOnlyAttempted = false;
+        // Tick size lets the maker price sit INSIDE the spread (queue priority) and keeps every
+        // post_only price on the instrument's tick grid.
+        var makerTick = (!isMarket && _execOptions.PostOnlyMode && IsSwapMode)
+            ? (await GetContractSpecAsync(okxSymbol).ConfigureAwait(false)).TickSz
+            : 0m;
         if (!isMarket && _execOptions.PostOnlyMode)
         {
-            var (adjusted, source) = ResolvePostOnlyLimitPrice(okxSymbol, signal, _execOptions.MakerEdgeBps);
+            var (adjusted, source) = ResolvePostOnlyLimitPrice(okxSymbol, signal, _execOptions.MakerEdgeBps,
+                makerTick, _execOptions.MakerInsideSpreadTicks);
             if (adjusted is decimal px)
             {
                 pxForLimit = px;
@@ -390,7 +396,8 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             {
                 attempt++;
                 currentEdgeBps += _execOptions.PostOnlyRejectRetryWideningBps;
-                var (retryPx, retrySrc) = ResolvePostOnlyLimitPrice(okxSymbol, signal, currentEdgeBps);
+                // after a would-match reject, back off behind the touch (no inside-spread step)
+                var (retryPx, retrySrc) = ResolvePostOnlyLimitPrice(okxSymbol, signal, currentEdgeBps, makerTick, 0);
                 if (retryPx is decimal newPx)
                 {
                     pxForLimit = newPx;
@@ -832,7 +839,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     /// <see cref="OrderExecutionOptions.RequireOrderBookForPostOnly"/>).
     /// </summary>
     internal (decimal? Price, string Source) ResolvePostOnlyLimitPrice(
-        string okxSymbol, Signal signal, decimal edgeBps)
+        string okxSymbol, Signal signal, decimal edgeBps, decimal tickSz = 0m, int insideSpreadTicks = 0)
     {
         if (!TryGetLatestOrderBook(okxSymbol, out var book) &&
             !TryGetLatestOrderBook(signal.Symbol, out book))
@@ -840,7 +847,36 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             return (null, "no-book");
         }
 
-        return ComputePostOnlyLimitPrice(book, signal.Side, edgeBps);
+        return ComputeMakerLimitPrice(book, signal.Side, edgeBps, tickSz, insideSpreadTicks);
+    }
+
+    /// <summary>
+    /// Maker price with queue priority: when the spread is at least 2 ticks wide, step
+    /// <paramref name="insideSpreadTicks"/> ticks INSIDE the spread from our side (never reaching
+    /// the opposite touch, so post_only still rests); otherwise fall back to
+    /// <see cref="ComputePostOnlyLimitPrice"/> (join / back off by edgeBps). With a known tick the
+    /// result is snapped to the tick grid away from the opposite side (buy floor, sell ceil).
+    /// </summary>
+    internal static (decimal? Price, string Source) ComputeMakerLimitPrice(
+        OrderBookSnapshot book, TradeSide side, decimal edgeBps, decimal tickSz, int insideSpreadTicks)
+    {
+        var (basePx, source) = ComputePostOnlyLimitPrice(book, side, edgeBps);
+        if (basePx is not decimal px || tickSz <= 0m)
+            return (basePx, source);
+
+        var bestBid = book.Bids[0].Price;
+        var bestAsk = book.Asks[0].Price;
+        var spreadTicks = (int)Math.Floor((bestAsk - bestBid) / tickSz + 1e-9m);
+        if (insideSpreadTicks > 0 && spreadTicks >= 2)
+        {
+            var step = Math.Min(insideSpreadTicks, spreadTicks - 1) * tickSz;
+            px = side == TradeSide.Buy ? bestBid + step : bestAsk - step;
+            source += $" inside={step / tickSz}t spread={spreadTicks}t";
+        }
+        px = side == TradeSide.Buy
+            ? Math.Floor(px / tickSz) * tickSz
+            : Math.Ceiling(px / tickSz) * tickSz;
+        return (px, source + $" tick={tickSz.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
     }
 
     /// <summary>
@@ -1896,9 +1932,10 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             var ctVal  = ParseDecimalStr(row, "ctVal",  1m);
             var lotSz  = ParseDecimalStr(row, "lotSz",  1m);
             var minSz  = ParseDecimalStr(row, "minSz",  1m);
-            var spec = new OkxContractSpec(ctVal, lotSz, minSz);
-            _logger.LogInformation("OKX contract spec {InstId}: ctVal={CtVal} lotSz={LotSz} minSz={MinSz}",
-                instId, ctVal, lotSz, minSz);
+            var tickSz = ParseDecimalStr(row, "tickSz", 0m);
+            var spec = new OkxContractSpec(ctVal, lotSz, minSz, tickSz);
+            _logger.LogInformation("OKX contract spec {InstId}: ctVal={CtVal} lotSz={LotSz} minSz={MinSz} tickSz={TickSz}",
+                instId, ctVal, lotSz, minSz, tickSz);
             return CacheAndReturn(instId, spec);
         }
         catch (Exception ex)

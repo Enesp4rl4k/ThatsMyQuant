@@ -526,6 +526,59 @@ public class OkxFillTrackingTests
             asks: new[] { new OrderBookLevel(bestAsk, 1m) });
     }
 
+    // ── 2026-10-25: ComputeMakerLimitPrice (inside-spread queue priority + tick grid) ──
+
+    [Fact]
+    public void ComputeMakerLimitPrice_WideSpread_BuyStepsOneTickInside()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.05m);        // 5 ticks of 0.01
+        var (px, src) = OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 0m, 0.01m, 1);
+        px.Should().Be(100.01m);
+        px!.Value.Should().BeLessThan(100.05m);                          // still rests (post_only)
+        src.Should().Contain("inside=1t");
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_WideSpread_SellStepsOneTickInside()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.05m);
+        var (px, _) = OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Sell, 0m, 0.01m, 1);
+        px.Should().Be(100.04m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_OneTickSpread_JoinsTheTouch()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.01m);        // no room inside
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 0m, 0.01m, 1).Price.Should().Be(100.00m);
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Sell, 0m, 0.01m, 1).Price.Should().Be(100.01m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_InsideStepNeverReachesOppositeTouch()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.02m);        // 2 ticks: at most 1 inside
+        var (px, _) = OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 0m, 0.01m, 5);
+        px.Should().Be(100.01m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_EdgeNudge_IsSnappedToTickAwayFromOppositeSide()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.50m);
+        // 1bp below 100 = 99.99 exactly on a 0.03 grid? floor(99.99/0.03)*0.03 = 99.99 -> pick an off-grid tick
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 1m, 0.07m, 0).Price.Should().Be(99.96m);
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Sell, 1m, 0.07m, 0).Price.Should().Be(100.52m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_UnknownTick_FallsBackToLegacyPrice()
+    {
+        var book = MakeBook(bestBid: 100m, bestAsk: 100.5m);
+        var legacy = OkxExecutionService.ComputePostOnlyLimitPrice(book, TradeSide.Buy, 1m).Price;
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 1m, 0m, 1).Price.Should().Be(legacy);
+    }
+
     [Fact]
     public void ComputePostOnlyLimitPrice_BuyAt1bp_SitsBelowBestBid()
     {
