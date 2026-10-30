@@ -90,6 +90,11 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         {
             owss.OnOrderBookUpdated += snapshot =>
             {
+                // The public WS is the LIVE market; demo orders match on the separate demo
+                // engine whose prices drift from live (TRX demo 4% above live on 2026-10-30 →
+                // post_only rejected with 51006 "price not within the price limit"). In demo
+                // mode the maker price comes from the demo REST book instead (RefreshDemoBookAsync).
+                if (IsDemoMode) return;
                 var keyInstrument = ResolveOkxInstrumentId(snapshot.Symbol);
                 _latestOrderBooks[keyInstrument] = snapshot;
                 if (!string.Equals(keyInstrument, snapshot.Symbol, StringComparison.OrdinalIgnoreCase))
@@ -104,6 +109,44 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     // or rests far from it (never fills). 30s is comfortably long for normal book updates
     // (typically <1s between snapshots) but short enough to fail closed when the feed dies.
     private const long OrderBookMaxAgeMs = 30_000;
+
+    // After a market fallback is accepted: extra fill polls before reporting Unknown (never re-submit).
+    private const int MarketFallbackFillPolls = 5;
+    private const int MarketFallbackFillPollDelayMs = 500;
+
+    /// <summary>
+    /// Demo mode only: load the top of the DEMO book over REST into the snapshot cache right
+    /// before pricing a post_only order. Failures leave the cache as is (pricing then falls back
+    /// to signal.Price, or refuses when RequireOrderBookForPostOnly is set).
+    /// </summary>
+    private async Task RefreshDemoBookAsync(string okxSymbol)
+    {
+        if (!IsDemoMode) return;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/api/v5/market/books?instId={okxSymbol}&sz=5");
+            req.Headers.Add("x-simulated-trading", "1");
+            using var resp = await _httpClient.SendAsync(req).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return;
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync().ConfigureAwait(false));
+            var data = doc.RootElement.GetProperty("data");
+            if (data.GetArrayLength() == 0) return;
+            static OrderBookLevel[] Levels(JsonElement arr) => arr.EnumerateArray()
+                .Select(l => new OrderBookLevel(
+                    decimal.Parse(l[0].GetString()!, System.Globalization.CultureInfo.InvariantCulture),
+                    decimal.Parse(l[1].GetString()!, System.Globalization.CultureInfo.InvariantCulture)))
+                .ToArray();
+            var bids = Levels(data[0].GetProperty("bids"));
+            var asks = Levels(data[0].GetProperty("asks"));
+            if (bids.Length == 0 || asks.Length == 0) return;
+            _latestOrderBooks[okxSymbol] = new OrderBookSnapshot(okxSymbol,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), bids, asks);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or FormatException or TaskCanceledException)
+        {
+            _logger.LogDebug(ex, "OKX demo book refresh failed for {Symbol}", okxSymbol);
+        }
+    }
 
     public bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book)
     {
@@ -268,6 +311,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             : 0m;
         if (!isMarket && _execOptions.PostOnlyMode)
         {
+            await RefreshDemoBookAsync(okxSymbol).ConfigureAwait(false);
             var (adjusted, source) = ResolvePostOnlyLimitPrice(okxSymbol, signal, _execOptions.MakerEdgeBps,
                 makerTick, _execOptions.MakerInsideSpreadTicks);
             if (adjusted is decimal px)
@@ -396,6 +440,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             {
                 attempt++;
                 currentEdgeBps += _execOptions.PostOnlyRejectRetryWideningBps;
+                await RefreshDemoBookAsync(okxSymbol).ConfigureAwait(false);
                 // after a would-match reject, back off behind the touch (no inside-spread step)
                 var (retryPx, retrySrc) = ResolvePostOnlyLimitPrice(okxSymbol, signal, currentEdgeBps, makerTick, 0);
                 if (retryPx is decimal newPx)
@@ -1560,7 +1605,20 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             if (string.IsNullOrEmpty(fbOrdId))
                 return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
 
-            return await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            // The venue ACCEPTED this order, so from here on it must never be re-submitted.
+            // A market order can still read "live" on the first poll (seen on demo: the fill
+            // printed seconds after acceptance), and returning Live made the retry wrapper send
+            // two more market orders — BNB and ADA were filled 3x on 2026-10-30. Poll briefly;
+            // if it still is not filled, report Unknown and let reconciliation sync the position.
+            var polled = await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            for (var i = 0; i < MarketFallbackFillPolls && polled.Outcome == FillPollOutcome.Live; i++)
+            {
+                await Task.Delay(MarketFallbackFillPollDelayMs, cancellationToken).ConfigureAwait(false);
+                polled = await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            }
+            return polled.Outcome == FillPollOutcome.Live
+                ? polled with { Outcome = FillPollOutcome.Unknown }
+                : polled;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)

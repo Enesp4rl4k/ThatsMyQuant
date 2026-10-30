@@ -679,3 +679,70 @@ public class OkxFillTrackingTests
         trade.Status.Should().Be(TradeStatus.Pending);
     }
 }
+
+/// <summary>
+/// 2026-10-30 regression: an ACCEPTED market fallback that still reads "live" on the first fill
+/// poll must never be re-submitted (BNB and ADA were filled 3x on the OKX demo account).
+/// </summary>
+public class OkxMarketFallbackNoResubmitTests
+{
+    private sealed class RoutingHandler : HttpMessageHandler
+    {
+        public int LimitPlacements, MarketPlacements, Cancels;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
+            string json;
+            if (path.EndsWith("/trade/order") && request.Method == HttpMethod.Post)
+            {
+                var market = body.Contains("\"ordType\":\"market\"");
+                if (market) MarketPlacements++; else LimitPlacements++;
+                json = $$"""{"code":"0","data":[{"ordId":"{{(market ? "mkt" : "lmt")}}","sCode":"0"}]}""";
+            }
+            else if (path.EndsWith("/trade/cancel-order"))
+            {
+                Cancels++;
+                json = """{"code":"0","data":[{"ordId":"lmt","sCode":"0"}]}""";
+            }
+            else if (path.EndsWith("/trade/order"))
+            {
+                // limit: never fills, reads canceled once cancelled; market: stays "live"
+                var q = request.RequestUri.Query;
+                var state = q.Contains("ordId=mkt") ? "live" : (Cancels > 0 ? "canceled" : "live");
+                json = $$"""{"code":"0","data":[{"ordId":"x","state":"{{state}}","fillSz":"0","accFillSz":"0","sz":"0.01","fillFee":"0"}]}""";
+            }
+            else
+            {
+                json = """{"code":"0","data":[]}""";
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        }
+    }
+
+    [Fact]
+    public async Task AcceptedMarketFallback_ReadingLive_IsNotResubmitted_AndReportsUnfilled()
+    {
+        var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["OKX:SecretKey"] = "s", ["OKX:ApiKey"] = "k", ["OKX:Passphrase"] = "p", ["OKX:IsDemoMode"] = "true",
+            ["OrderExecution:LimitOrderTimeoutSeconds"] = "1",
+            ["OrderExecution:LimitFillPollIntervalMs"] = "250",
+            ["OrderExecution:MarketFallbackRetryAttempts"] = "3",
+        }).Build();
+        var portfolio = Substitute.For<ISharedPortfolioStateManager>();
+        portfolio.TryReserve(Arg.Any<VenueKind>(), Arg.Any<string>(), Arg.Any<decimal>()).Returns(true);
+        var handler = new RoutingHandler();
+        var svc = new OkxExecutionService(Substitute.For<ILogger<OkxExecutionService>>(), new HttpClient(handler), cfg, portfolio);
+
+        var trade = await svc.ExecuteOrderAsync(new Signal
+        {
+            Symbol = "BTCUSDT", Side = TradeSide.Buy, Price = 50_000m, Quantity = 0.01m, OrderType = OrderType.Limit
+        });
+
+        handler.LimitPlacements.Should().Be(1);
+        handler.MarketPlacements.Should().Be(1, "an accepted market order must never be re-sent");
+        trade.FilledQuantity.Should().Be(0m);
+    }
+}
