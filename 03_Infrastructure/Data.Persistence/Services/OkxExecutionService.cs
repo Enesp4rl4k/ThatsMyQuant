@@ -1616,9 +1616,17 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 await Task.Delay(MarketFallbackFillPollDelayMs, cancellationToken).ConfigureAwait(false);
                 polled = await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
             }
-            return polled.Outcome == FillPollOutcome.Live
-                ? polled with { Outcome = FillPollOutcome.Unknown }
-                : polled;
+            if (polled.Outcome != FillPollOutcome.Live)
+                return polled;
+            // Still resting: cancel it so it cannot fill hours later on top of whatever the next
+            // cycle does (three BNB demo market orders sat "live" for two days). Re-read once for
+            // any partial fill, then report Unknown either way — never re-submit.
+            if (await TryCancelOrderAsync(okxSymbol, fbOrdId, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogWarning("OKX: market fallback {OrdId} for {Symbol} still unfilled after polling — cancelled.", fbOrdId, okxSymbol);
+                polled = await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            }
+            return polled with { Outcome = FillPollOutcome.Unknown };
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)

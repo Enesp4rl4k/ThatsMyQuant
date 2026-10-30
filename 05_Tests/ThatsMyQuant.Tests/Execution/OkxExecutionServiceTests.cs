@@ -688,7 +688,7 @@ public class OkxMarketFallbackNoResubmitTests
 {
     private sealed class RoutingHandler : HttpMessageHandler
     {
-        public int LimitPlacements, MarketPlacements, Cancels;
+        public int LimitPlacements, MarketPlacements, Cancels, MarketCancels;
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -704,6 +704,7 @@ public class OkxMarketFallbackNoResubmitTests
             else if (path.EndsWith("/trade/cancel-order"))
             {
                 Cancels++;
+                if (body.Contains("\"mkt\"")) MarketCancels++;
                 json = """{"code":"0","data":[{"ordId":"lmt","sCode":"0"}]}""";
             }
             else if (path.EndsWith("/trade/order"))
@@ -743,6 +744,7 @@ public class OkxMarketFallbackNoResubmitTests
 
         handler.LimitPlacements.Should().Be(1);
         handler.MarketPlacements.Should().Be(1, "an accepted market order must never be re-sent");
+        handler.MarketCancels.Should().Be(1, "a market order still resting after polling is cancelled, not left live");
         trade.FilledQuantity.Should().Be(0m);
     }
 }
