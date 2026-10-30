@@ -62,7 +62,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     // ctVal: base-asset units per contract (e.g. 1 AVAX, 100 XRP, 100 ADA)
     // lotSz: sz must be a multiple of lotSz
     // minSz: minimum order size (in contracts)
-    private record OkxContractSpec(decimal CtVal, decimal LotSz, decimal MinSz);
+    private record OkxContractSpec(decimal CtVal, decimal LotSz, decimal MinSz, decimal TickSz = 0m);
     private readonly ConcurrentDictionary<string, OkxContractSpec> _contractSpecCache = new();
 
     public OkxExecutionService(
@@ -90,6 +90,11 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         {
             owss.OnOrderBookUpdated += snapshot =>
             {
+                // The public WS is the LIVE market; demo orders match on the separate demo
+                // engine whose prices drift from live (TRX demo 4% above live on 2026-10-30 →
+                // post_only rejected with 51006 "price not within the price limit"). In demo
+                // mode the maker price comes from the demo REST book instead (RefreshDemoBookAsync).
+                if (IsDemoMode) return;
                 var keyInstrument = ResolveOkxInstrumentId(snapshot.Symbol);
                 _latestOrderBooks[keyInstrument] = snapshot;
                 if (!string.Equals(keyInstrument, snapshot.Symbol, StringComparison.OrdinalIgnoreCase))
@@ -104,6 +109,44 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     // or rests far from it (never fills). 30s is comfortably long for normal book updates
     // (typically <1s between snapshots) but short enough to fail closed when the feed dies.
     private const long OrderBookMaxAgeMs = 30_000;
+
+    // After a market fallback is accepted: extra fill polls before reporting Unknown (never re-submit).
+    private const int MarketFallbackFillPolls = 5;
+    private const int MarketFallbackFillPollDelayMs = 500;
+
+    /// <summary>
+    /// Demo mode only: load the top of the DEMO book over REST into the snapshot cache right
+    /// before pricing a post_only order. Failures leave the cache as is (pricing then falls back
+    /// to signal.Price, or refuses when RequireOrderBookForPostOnly is set).
+    /// </summary>
+    private async Task RefreshDemoBookAsync(string okxSymbol)
+    {
+        if (!IsDemoMode) return;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}/api/v5/market/books?instId={okxSymbol}&sz=5");
+            req.Headers.Add("x-simulated-trading", "1");
+            using var resp = await _httpClient.SendAsync(req).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return;
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync().ConfigureAwait(false));
+            var data = doc.RootElement.GetProperty("data");
+            if (data.GetArrayLength() == 0) return;
+            static OrderBookLevel[] Levels(JsonElement arr) => arr.EnumerateArray()
+                .Select(l => new OrderBookLevel(
+                    decimal.Parse(l[0].GetString()!, System.Globalization.CultureInfo.InvariantCulture),
+                    decimal.Parse(l[1].GetString()!, System.Globalization.CultureInfo.InvariantCulture)))
+                .ToArray();
+            var bids = Levels(data[0].GetProperty("bids"));
+            var asks = Levels(data[0].GetProperty("asks"));
+            if (bids.Length == 0 || asks.Length == 0) return;
+            _latestOrderBooks[okxSymbol] = new OrderBookSnapshot(okxSymbol,
+                DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), bids, asks);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or FormatException or TaskCanceledException)
+        {
+            _logger.LogDebug(ex, "OKX demo book refresh failed for {Symbol}", okxSymbol);
+        }
+    }
 
     public bool TryGetLatestOrderBook(string symbol, out OrderBookSnapshot book)
     {
@@ -261,14 +304,21 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         // after LimitOrderTimeoutSeconds and fell through to the Market fallback.
         var pxForLimit = signal.Price;
         var postOnlyAttempted = false;
+        // Tick size lets the maker price sit INSIDE the spread (queue priority) and keeps every
+        // post_only price on the instrument's tick grid.
+        var makerTick = (!isMarket && _execOptions.PostOnlyMode && IsSwapMode)
+            ? (await GetContractSpecAsync(okxSymbol).ConfigureAwait(false)).TickSz
+            : 0m;
         if (!isMarket && _execOptions.PostOnlyMode)
         {
-            var (adjusted, source) = ResolvePostOnlyLimitPrice(okxSymbol, signal, _execOptions.MakerEdgeBps);
+            await RefreshDemoBookAsync(okxSymbol).ConfigureAwait(false);
+            var (adjusted, source) = ResolvePostOnlyLimitPrice(okxSymbol, signal, _execOptions.MakerEdgeBps,
+                makerTick, _execOptions.MakerInsideSpreadTicks);
             if (adjusted is decimal px)
             {
                 pxForLimit = px;
                 postOnlyAttempted = true;
-                _logger.LogDebug(
+                _logger.LogInformation(
                     "OKX maker-side price nudge for {Symbol} {Side}: signal.Price={SignalPx} → px={Px} (edge={Edge}bp, src={Src})",
                     okxSymbol, signal.Side, signal.Price, pxForLimit, _execOptions.MakerEdgeBps, source);
             }
@@ -390,7 +440,9 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             {
                 attempt++;
                 currentEdgeBps += _execOptions.PostOnlyRejectRetryWideningBps;
-                var (retryPx, retrySrc) = ResolvePostOnlyLimitPrice(okxSymbol, signal, currentEdgeBps);
+                await RefreshDemoBookAsync(okxSymbol).ConfigureAwait(false);
+                // after a would-match reject, back off behind the touch (no inside-spread step)
+                var (retryPx, retrySrc) = ResolvePostOnlyLimitPrice(okxSymbol, signal, currentEdgeBps, makerTick, 0);
                 if (retryPx is decimal newPx)
                 {
                     pxForLimit = newPx;
@@ -540,8 +592,11 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                     "OKX: limit order {OrdId} for {Symbol} did not fill within {Timeout}s — cancelling and re-submitting remaining {Qty} as MARKET.",
                     ordId, okxSymbol, _execOptions.LimitOrderTimeoutSeconds, remainingQty);
 
-                var cancelled = await TryCancelOrderAsync(okxSymbol, ordId);
-                if (cancelled && _execOptions.CancelVerifyPollAttempts > 0)
+                // Venue-cancelled orders (post_only auto-cancel) need no cancel round-trip: a second
+                // cancel fails ("order does not exist") and used to skip the market fallback.
+                var venueCancelled = fillOutcome == FillPollOutcome.Canceled;
+                var cancelled = venueCancelled || await TryCancelOrderAsync(okxSymbol, ordId);
+                if (cancelled && !venueCancelled && _execOptions.CancelVerifyPollAttempts > 0)
                 {
                     // [2026-05-13 cancel-verify FSM] Cancel HTTP 200 ≠ cancel applied.
                     // Without this verification, demo congestion (or rare live race) leaves
@@ -832,7 +887,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     /// <see cref="OrderExecutionOptions.RequireOrderBookForPostOnly"/>).
     /// </summary>
     internal (decimal? Price, string Source) ResolvePostOnlyLimitPrice(
-        string okxSymbol, Signal signal, decimal edgeBps)
+        string okxSymbol, Signal signal, decimal edgeBps, decimal tickSz = 0m, int insideSpreadTicks = 0)
     {
         if (!TryGetLatestOrderBook(okxSymbol, out var book) &&
             !TryGetLatestOrderBook(signal.Symbol, out book))
@@ -840,7 +895,36 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             return (null, "no-book");
         }
 
-        return ComputePostOnlyLimitPrice(book, signal.Side, edgeBps);
+        return ComputeMakerLimitPrice(book, signal.Side, edgeBps, tickSz, insideSpreadTicks);
+    }
+
+    /// <summary>
+    /// Maker price with queue priority: when the spread is at least 2 ticks wide, step
+    /// <paramref name="insideSpreadTicks"/> ticks INSIDE the spread from our side (never reaching
+    /// the opposite touch, so post_only still rests); otherwise fall back to
+    /// <see cref="ComputePostOnlyLimitPrice"/> (join / back off by edgeBps). With a known tick the
+    /// result is snapped to the tick grid away from the opposite side (buy floor, sell ceil).
+    /// </summary>
+    internal static (decimal? Price, string Source) ComputeMakerLimitPrice(
+        OrderBookSnapshot book, TradeSide side, decimal edgeBps, decimal tickSz, int insideSpreadTicks)
+    {
+        var (basePx, source) = ComputePostOnlyLimitPrice(book, side, edgeBps);
+        if (basePx is not decimal px || tickSz <= 0m)
+            return (basePx, source);
+
+        var bestBid = book.Bids[0].Price;
+        var bestAsk = book.Asks[0].Price;
+        var spreadTicks = (int)Math.Floor((bestAsk - bestBid) / tickSz + 1e-9m);
+        if (insideSpreadTicks > 0 && spreadTicks >= 2)
+        {
+            var step = Math.Min(insideSpreadTicks, spreadTicks - 1) * tickSz;
+            px = side == TradeSide.Buy ? bestBid + step : bestAsk - step;
+            source += $" inside={step / tickSz}t spread={spreadTicks}t";
+        }
+        px = side == TradeSide.Buy
+            ? Math.Floor(px / tickSz) * tickSz
+            : Math.Ceiling(px / tickSz) * tickSz;
+        return (px, source + $" tick={tickSz.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
     }
 
     /// <summary>
@@ -968,7 +1052,9 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     /// callers treat both as Pending and may submit a duplicate market fallback while the
     /// original limit is silently filling on the venue — classic ghost-fill double-spend.
     /// </summary>
-    private enum FillPollOutcome { Filled, Live, Unknown }
+    // Canceled = the venue cancelled the order (e.g. a post_only that would have crossed is
+    // auto-cancelled by OKX). Safe for the market fallback without another cancel round-trip.
+    private enum FillPollOutcome { Filled, Live, Unknown, Canceled }
 
     private readonly record struct FillPollResult(
         decimal FilledQty,
@@ -1038,6 +1124,8 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 {
                     "filled"           => new FillPollResult(fillSz, 0m, TradeStatus.Executed, fillFeeSigned, FillPollOutcome.Filled),
                     "partially_filled" => new FillPollResult(fillSz, requestedQty - fillSz, TradeStatus.Pending, fillFeeSigned, FillPollOutcome.Filled),
+                    "canceled" or "mmp_canceled"
+                                       => new FillPollResult(fillSz, requestedQty - fillSz, TradeStatus.Pending, fillFeeSigned, FillPollOutcome.Canceled),
                     _                  => new FillPollResult(0m, requestedQty, TradeStatus.Pending, 0m, FillPollOutcome.Live)
                 };
             }
@@ -1076,6 +1164,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             // If poll repeatedly comes back Unknown the venue is unreachable — exit early
             // and surface the Unknown outcome so the caller refuses to act.
             if (last.Outcome == FillPollOutcome.Unknown) break;
+            if (last.Outcome == FillPollOutcome.Canceled) break;   // venue already cancelled (e.g. post_only would cross)
             try { await Task.Delay(pollMs, cancellationToken).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
         }
@@ -1516,7 +1605,28 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             if (string.IsNullOrEmpty(fbOrdId))
                 return new FillPollResult(0m, remainingQty, TradeStatus.Pending, 0m, FillPollOutcome.Unknown);
 
-            return await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            // The venue ACCEPTED this order, so from here on it must never be re-submitted.
+            // A market order can still read "live" on the first poll (seen on demo: the fill
+            // printed seconds after acceptance), and returning Live made the retry wrapper send
+            // two more market orders — BNB and ADA were filled 3x on 2026-10-30. Poll briefly;
+            // if it still is not filled, report Unknown and let reconciliation sync the position.
+            var polled = await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            for (var i = 0; i < MarketFallbackFillPolls && polled.Outcome == FillPollOutcome.Live; i++)
+            {
+                await Task.Delay(MarketFallbackFillPollDelayMs, cancellationToken).ConfigureAwait(false);
+                polled = await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            }
+            if (polled.Outcome != FillPollOutcome.Live)
+                return polled;
+            // Still resting: cancel it so it cannot fill hours later on top of whatever the next
+            // cycle does (three BNB demo market orders sat "live" for two days). Re-read once for
+            // any partial fill, then report Unknown either way — never re-submit.
+            if (await TryCancelOrderAsync(okxSymbol, fbOrdId, cancellationToken).ConfigureAwait(false))
+            {
+                _logger.LogWarning("OKX: market fallback {OrdId} for {Symbol} still unfilled after polling — cancelled.", fbOrdId, okxSymbol);
+                polled = await PollFillStatusAsync(fbOrdId, okxSymbol, remainingQty, cancellationToken).ConfigureAwait(false);
+            }
+            return polled with { Outcome = FillPollOutcome.Unknown };
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -1896,9 +2006,10 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             var ctVal  = ParseDecimalStr(row, "ctVal",  1m);
             var lotSz  = ParseDecimalStr(row, "lotSz",  1m);
             var minSz  = ParseDecimalStr(row, "minSz",  1m);
-            var spec = new OkxContractSpec(ctVal, lotSz, minSz);
-            _logger.LogInformation("OKX contract spec {InstId}: ctVal={CtVal} lotSz={LotSz} minSz={MinSz}",
-                instId, ctVal, lotSz, minSz);
+            var tickSz = ParseDecimalStr(row, "tickSz", 0m);
+            var spec = new OkxContractSpec(ctVal, lotSz, minSz, tickSz);
+            _logger.LogInformation("OKX contract spec {InstId}: ctVal={CtVal} lotSz={LotSz} minSz={MinSz} tickSz={TickSz}",
+                instId, ctVal, lotSz, minSz, tickSz);
             return CacheAndReturn(instId, spec);
         }
         catch (Exception ex)
@@ -2219,7 +2330,39 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
     }
 
+    // Positions reads are serialized and spaced (OKX: 10 req / 2 s on /account/positions).
+    // 20+ EdgeLab strategies poll at the same second; unthrottled reads hit HTTP 429.
+    private readonly SemaphoreSlim _positionsGate = new(1, 1);
+    private DateTime _lastPositionsCallUtc = DateTime.MinValue;
+    private static readonly TimeSpan PositionsMinSpacing = TimeSpan.FromMilliseconds(250);
+
     public async Task<IReadOnlyList<ExchangePositionSnapshot>> GetOpenPositionsAsync(CancellationToken cancellationToken = default)
+        => (await TryGetOpenPositionsAsync(cancellationToken).ConfigureAwait(false)).Positions;
+
+    public async Task<(bool Ok, IReadOnlyList<ExchangePositionSnapshot> Positions)> TryGetOpenPositionsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await _positionsGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            for (var attempt = 0; ; attempt++)
+            {
+                var wait = _lastPositionsCallUtc + PositionsMinSpacing - DateTime.UtcNow;
+                if (wait > TimeSpan.Zero) await Task.Delay(wait, cancellationToken).ConfigureAwait(false);
+                _lastPositionsCallUtc = DateTime.UtcNow;
+                var (ok, list, rateLimited) = await FetchOpenPositionsAsync(cancellationToken).ConfigureAwait(false);
+                if (ok || !rateLimited || attempt >= 1) return (ok, list);
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _positionsGate.Release();
+        }
+    }
+
+    private async Task<(bool Ok, IReadOnlyList<ExchangePositionSnapshot> Positions, bool RateLimited)> FetchOpenPositionsAsync(
+        CancellationToken cancellationToken)
     {
         // OKX v5: GET /api/v5/account/positions returns SWAP/FUTURES/MARGIN positions.
         // Spot holdings live under /account/balance and are not surfaced here —
@@ -2242,7 +2385,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             {
                 TrackHttpFailure(response);
                 _logger.LogWarning("OKX positions fetch failed: HTTP {Status}", response.StatusCode);
-                return Array.Empty<ExchangePositionSnapshot>();
+                return (false, Array.Empty<ExchangePositionSnapshot>(), (int)response.StatusCode == 429);
             }
 
             var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
@@ -2251,7 +2394,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             {
                 _logger.LogWarning("OKX positions returned non-zero code: {Msg}",
                     doc.RootElement.TryGetProperty("msg", out var m) ? m.GetString() : "<no msg>");
-                return Array.Empty<ExchangePositionSnapshot>();
+                return (false, Array.Empty<ExchangePositionSnapshot>(), false);
             }
 
             var data = doc.RootElement.GetProperty("data");
@@ -2291,7 +2434,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 }
                 list.Add(new ExchangePositionSnapshot(canonicalSym, qtyBase, isLong, avg > 0m ? avg : null));
             }
-            return list;
+            return (true, list, false);
         }
         catch (OperationCanceledException)
         {
@@ -2300,7 +2443,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         catch (Exception ex)
         {
             _logger.LogError(ex, "OKX: GetOpenPositionsAsync failed.");
-            return Array.Empty<ExchangePositionSnapshot>();
+            return (false, Array.Empty<ExchangePositionSnapshot>(), false);
         }
     }
 

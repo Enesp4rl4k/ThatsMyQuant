@@ -526,6 +526,59 @@ public class OkxFillTrackingTests
             asks: new[] { new OrderBookLevel(bestAsk, 1m) });
     }
 
+    // ── 2026-10-25: ComputeMakerLimitPrice (inside-spread queue priority + tick grid) ──
+
+    [Fact]
+    public void ComputeMakerLimitPrice_WideSpread_BuyStepsOneTickInside()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.05m);        // 5 ticks of 0.01
+        var (px, src) = OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 0m, 0.01m, 1);
+        px.Should().Be(100.01m);
+        px!.Value.Should().BeLessThan(100.05m);                          // still rests (post_only)
+        src.Should().Contain("inside=1t");
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_WideSpread_SellStepsOneTickInside()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.05m);
+        var (px, _) = OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Sell, 0m, 0.01m, 1);
+        px.Should().Be(100.04m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_OneTickSpread_JoinsTheTouch()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.01m);        // no room inside
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 0m, 0.01m, 1).Price.Should().Be(100.00m);
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Sell, 0m, 0.01m, 1).Price.Should().Be(100.01m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_InsideStepNeverReachesOppositeTouch()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.02m);        // 2 ticks: at most 1 inside
+        var (px, _) = OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 0m, 0.01m, 5);
+        px.Should().Be(100.01m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_EdgeNudge_IsSnappedToTickAwayFromOppositeSide()
+    {
+        var book = MakeBook(bestBid: 100.00m, bestAsk: 100.50m);
+        // 1bp below 100 = 99.99 exactly on a 0.03 grid? floor(99.99/0.03)*0.03 = 99.99 -> pick an off-grid tick
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 1m, 0.07m, 0).Price.Should().Be(99.96m);
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Sell, 1m, 0.07m, 0).Price.Should().Be(100.52m);
+    }
+
+    [Fact]
+    public void ComputeMakerLimitPrice_UnknownTick_FallsBackToLegacyPrice()
+    {
+        var book = MakeBook(bestBid: 100m, bestAsk: 100.5m);
+        var legacy = OkxExecutionService.ComputePostOnlyLimitPrice(book, TradeSide.Buy, 1m).Price;
+        OkxExecutionService.ComputeMakerLimitPrice(book, TradeSide.Buy, 1m, 0m, 1).Price.Should().Be(legacy);
+    }
+
     [Fact]
     public void ComputePostOnlyLimitPrice_BuyAt1bp_SitsBelowBestBid()
     {
@@ -624,5 +677,74 @@ public class OkxFillTrackingTests
         trade.FilledQuantity.Should().Be(0m);
         trade.RemainingQuantity.Should().Be(qty);
         trade.Status.Should().Be(TradeStatus.Pending);
+    }
+}
+
+/// <summary>
+/// 2026-10-30 regression: an ACCEPTED market fallback that still reads "live" on the first fill
+/// poll must never be re-submitted (BNB and ADA were filled 3x on the OKX demo account).
+/// </summary>
+public class OkxMarketFallbackNoResubmitTests
+{
+    private sealed class RoutingHandler : HttpMessageHandler
+    {
+        public int LimitPlacements, MarketPlacements, Cancels, MarketCancels;
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
+            string json;
+            if (path.EndsWith("/trade/order") && request.Method == HttpMethod.Post)
+            {
+                var market = body.Contains("\"ordType\":\"market\"");
+                if (market) MarketPlacements++; else LimitPlacements++;
+                json = $$"""{"code":"0","data":[{"ordId":"{{(market ? "mkt" : "lmt")}}","sCode":"0"}]}""";
+            }
+            else if (path.EndsWith("/trade/cancel-order"))
+            {
+                Cancels++;
+                if (body.Contains("\"mkt\"")) MarketCancels++;
+                json = """{"code":"0","data":[{"ordId":"lmt","sCode":"0"}]}""";
+            }
+            else if (path.EndsWith("/trade/order"))
+            {
+                // limit: never fills, reads canceled once cancelled; market: stays "live"
+                var q = request.RequestUri.Query;
+                var state = q.Contains("ordId=mkt") ? "live" : (Cancels > 0 ? "canceled" : "live");
+                json = $$"""{"code":"0","data":[{"ordId":"x","state":"{{state}}","fillSz":"0","accFillSz":"0","sz":"0.01","fillFee":"0"}]}""";
+            }
+            else
+            {
+                json = """{"code":"0","data":[]}""";
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        }
+    }
+
+    [Fact]
+    public async Task AcceptedMarketFallback_ReadingLive_IsNotResubmitted_AndReportsUnfilled()
+    {
+        var cfg = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["OKX:SecretKey"] = "s", ["OKX:ApiKey"] = "k", ["OKX:Passphrase"] = "p", ["OKX:IsDemoMode"] = "true",
+            ["OrderExecution:LimitOrderTimeoutSeconds"] = "1",
+            ["OrderExecution:LimitFillPollIntervalMs"] = "250",
+            ["OrderExecution:MarketFallbackRetryAttempts"] = "3",
+        }).Build();
+        var portfolio = Substitute.For<ISharedPortfolioStateManager>();
+        portfolio.TryReserve(Arg.Any<VenueKind>(), Arg.Any<string>(), Arg.Any<decimal>()).Returns(true);
+        var handler = new RoutingHandler();
+        var svc = new OkxExecutionService(Substitute.For<ILogger<OkxExecutionService>>(), new HttpClient(handler), cfg, portfolio);
+
+        var trade = await svc.ExecuteOrderAsync(new Signal
+        {
+            Symbol = "BTCUSDT", Side = TradeSide.Buy, Price = 50_000m, Quantity = 0.01m, OrderType = OrderType.Limit
+        });
+
+        handler.LimitPlacements.Should().Be(1);
+        handler.MarketPlacements.Should().Be(1, "an accepted market order must never be re-sent");
+        handler.MarketCancels.Should().Be(1, "a market order still resting after polling is cancelled, not left live");
+        trade.FilledQuantity.Should().Be(0m);
     }
 }

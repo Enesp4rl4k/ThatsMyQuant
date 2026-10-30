@@ -82,6 +82,14 @@ public sealed class OrderExecutionOptions
     public decimal MakerEdgeBps { get; set; } = 1.0m;
 
     /// <summary>
+    /// [2026-10-25] Queue priority for post_only orders: when the spread is at least 2 ticks wide,
+    /// place the order this many ticks INSIDE the spread from our side (buy above the best bid,
+    /// sell below the best ask), never touching the opposite side. 0 = previous behaviour (join /
+    /// back off by <see cref="MakerEdgeBps"/>). Prices are always snapped to the instrument tick.
+    /// </summary>
+    public int MakerInsideSpreadTicks { get; set; } = 0;
+
+    /// <summary>
     /// [Sprint 1 — Track B, 2026-05-10] When true and the maker price nudge
     /// (see <see cref="MakerEdgeBps"/>) cannot be applied because there is no
     /// live order-book snapshot for the symbol, refuse to submit the order
@@ -164,6 +172,7 @@ public sealed class OrderExecutionOptions
         if (MakerPatientTimeoutMs <= 0) MakerPatientTimeoutMs = 5_000;
         if (MakerUrgentTimeoutMs <= 0) MakerUrgentTimeoutMs = 1_000;
         if (MakerEdgeBps < 0m) MakerEdgeBps = 0m;
+        if (MakerInsideSpreadTicks < 0) MakerInsideSpreadTicks = 0;
         if (PostOnlyRejectRetries < 0) PostOnlyRejectRetries = 0;
         if (PostOnlyRejectRetryWideningBps < 0m) PostOnlyRejectRetryWideningBps = 0m;
         if (CancelVerifyPollAttempts < 0) CancelVerifyPollAttempts = 0;
