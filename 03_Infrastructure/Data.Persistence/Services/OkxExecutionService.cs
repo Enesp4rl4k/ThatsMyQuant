@@ -22,7 +22,7 @@ namespace ThatsMyQuant.Infrastructure.Services;
 /// Uses OKX REST API v5 with HMAC-SHA256 + Base64 signature scheme.
 /// Symbol normalization: BTCUSDT → BTC-USDT (OKX uses hyphenated format).
 /// </summary>
-public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateProvider, IVenueTradeFeeProvider, IExchangePositionReader, IDisposable
+public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateProvider, IVenueTradeFeeProvider, IExchangePositionReader, IOrphanOrderSweeper, IDisposable
 {
     private readonly ILogger<OkxExecutionService> _logger;
     private readonly IConfiguration _configuration;
@@ -1225,7 +1225,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             }
             return true;
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "OKX: exception while cancelling order {OrdId}.", ordId);
@@ -1328,7 +1328,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                         break;
                 }
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "OKX cancel-verify exception attempt {Attempt}/{Max} for ordId={OrdId}", attempt, attempts, ordId);
@@ -1454,7 +1454,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             var pollResult = await PollFillStatusAsync(iocOrdId, okxSymbol, qty, cancellationToken).ConfigureAwait(false);
             return pollResult;
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             // [2026-05-14 BUG #2 FIX] Exception after submit is the same uncertainty as HTTP error.
@@ -1503,7 +1503,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                     "OKX market fallback rejected (attempt {Attempt}/{Max}) for {Symbol} qty={Qty}; retrying in {Ms}ms.",
                     attempt, attempts, okxSymbol, remainingQty, backoffMs);
                 try { await Task.Delay(backoffMs, cancellationToken).ConfigureAwait(false); }
-                catch (OperationCanceledException) { throw; }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
             }
         }
 
@@ -1628,7 +1628,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             }
             return polled with { Outcome = FillPollOutcome.Unknown };
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogError(ex, "OKX: exception during market fallback submission (attempt {Attempt}).", attemptNumber);
@@ -2089,6 +2089,61 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         }
     }
 
+    /// <summary>
+    /// True for ids this service generates: a 32-char hex id, or its market-fallback form
+    /// (truncated + "M", "M2"...). Orders placed by hand on the venue have an empty clOrdId.
+    /// </summary>
+    internal static bool IsBotClientOrderId(string? clOrdId) =>
+        !string.IsNullOrEmpty(clOrdId)
+        && clOrdId.Length <= 32
+        && System.Text.RegularExpressions.Regex.IsMatch(clOrdId, "^[0-9a-f]{28,32}(M[0-9]{0,2})?$");
+
+    /// <inheritdoc />
+    public async Task<int> CancelOwnRestingOrdersAsync(CancellationToken cancellationToken = default)
+    {
+        var path = IsSwapMode ? "/api/v5/trade/orders-pending?instType=SWAP" : "/api/v5/trade/orders-pending?instType=SPOT";
+        var timestamp = GetIsoTimestamp();
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{BaseUrl}{path}");
+        request.Headers.Add("OK-ACCESS-KEY", ApiKey);
+        request.Headers.Add("OK-ACCESS-SIGN", ComputeSignature(timestamp, "GET", path, string.Empty));
+        request.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
+        request.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+        if (IsDemoMode) request.Headers.Add("x-simulated-trading", "1");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+        {
+            TrackHttpFailure(response);
+            _logger.LogWarning("OKX orphan-order sweep: pending orders query failed with HTTP {Status}.", response.StatusCode);
+            return 0;
+        }
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+        if (doc.RootElement.GetProperty("code").GetString() != "0")
+        {
+            _logger.LogWarning("OKX orphan-order sweep: pending orders query returned {Code}.", doc.RootElement.GetProperty("code").GetString());
+            return 0;
+        }
+
+        var cancelled = 0;
+        foreach (var order in doc.RootElement.GetProperty("data").EnumerateArray())
+        {
+            var clOrdId = order.TryGetProperty("clOrdId", out var c) ? c.GetString() : null;
+            if (!IsBotClientOrderId(clOrdId)) continue;
+            var instId = order.GetProperty("instId").GetString() ?? string.Empty;
+            var ordId = order.GetProperty("ordId").GetString() ?? string.Empty;
+            if (await TryCancelOrderAsync(instId, ordId, cancellationToken).ConfigureAwait(false))
+            {
+                cancelled++;
+                _logger.LogWarning("OKX orphan-order sweep: cancelled {OrdId} ({ClOrdId}) on {InstId}.", ordId, clOrdId, instId);
+            }
+            else
+            {
+                _logger.LogError("OKX orphan-order sweep: could not cancel {OrdId} ({ClOrdId}) on {InstId}.", ordId, clOrdId, instId);
+            }
+        }
+        return cancelled;
+    }
+
     public async Task<int> CancelAllOrdersAsync(CancellationToken cancellationToken = default)
     {
         int cancelledCount = 0;
@@ -2322,7 +2377,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
             }
             return list;
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogError(ex, "OKX: GetClosedPositionsHistoryAsync failed.");
@@ -2526,7 +2581,7 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
                 SubType: subType,
                 RealizedPnl: realizedPnl);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "OKX: GetLastFillAsync failed for {Symbol}", symbol);

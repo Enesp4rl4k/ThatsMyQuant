@@ -96,7 +96,10 @@ public sealed class ExchangeHealthProbeHostedService : BackgroundService
 
             _health.RecordSuccess(_exchangeMode, _isDemoMode, account.Balance);
         }
-        catch (OperationCanceledException) { throw; }
+        // Only a real shutdown may rethrow. An HttpClient timeout is an OperationCanceledException too:
+        // rethrowing it ended ExecuteAsync and, with BackgroundServiceExceptionBehavior.StopHost, the
+        // whole bot (5 times by 2026-11-01, each time a network stall hit this probe).
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _health.RecordFailure(_exchangeMode, _isDemoMode, ex.Message);
