@@ -106,12 +106,30 @@ public static class DependencyInjection
             var maxDd = 5.0m;
             if (config != null && decimal.TryParse(config["Risk:Supervisor:MaxDrawdownPercent"], NumberStyles.Any, CultureInfo.InvariantCulture, out var dd))
                 maxDd = dd;
+            // Drawdown is judged against the capital the strategies actually trade: explicit
+            // Risk:Supervisor:BasisUsd, else the paper basis cap (Paper:InitialBalance).
+            decimal? basisUsd = null;
+            foreach (var key in new[] { "Risk:Supervisor:BasisUsd", "Paper:InitialBalance" })
+            {
+                if (config != null && decimal.TryParse(config[key], NumberStyles.Any, CultureInfo.InvariantCulture, out var b) && b > 0m)
+                {
+                    basisUsd = b;
+                    break;
+                }
+            }
+            var equityPollSec = 30;
+            if (config != null && int.TryParse(config["Risk:Supervisor:EquityPollSeconds"], out var ep))
+                equityPollSec = Math.Clamp(ep, 5, 600);
+            var exchange = sp.GetRequiredService<IExchangeService>();
             return new RiskSupervisorService(
                 sp.GetRequiredService<ILogger<RiskSupervisorService>>(),
-                sp.GetRequiredService<IExchangeService>(),
+                exchange,
                 sp.GetRequiredService<IPortfolioManager>(),
                 maxDrawdownPercent: maxDd,
-                monitoringInterval: TimeSpan.FromMilliseconds(intervalMs));
+                monitoringInterval: TimeSpan.FromMilliseconds(intervalMs),
+                equityProvider: async _ => (await exchange.GetAccountStatusAsync().ConfigureAwait(false)).Equity,
+                basisUsd: basisUsd,
+                equityPollInterval: TimeSpan.FromSeconds(equityPollSec));
         });
 
         // Application Layer Services - Scoped (Logic/Handlers/LLM-Dependent)
