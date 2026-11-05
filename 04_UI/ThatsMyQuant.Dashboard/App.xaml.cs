@@ -338,7 +338,8 @@ public partial class App : System.Windows.Application
 
         services.AddDbContext<QuantDbContext>(options =>
         {
-            options.UseLazyLoadingProxies();
+            // No lazy-loading proxies: no entity has virtual navigations, and the proxy
+            // convention throws at model build for sealed entities (OperatorAlertEvent etc.).
             options.UseConfiguredQuantDatabase(runtimeConfiguration);
         });
         services.AddScoped<ISignalRepository, Infrastructure.Repositories.SignalRepository>();
