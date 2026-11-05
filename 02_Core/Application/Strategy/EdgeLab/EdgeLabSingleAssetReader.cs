@@ -46,6 +46,41 @@ public static class EdgeLabSingleAssetReader
     public static string ResolveLatestPath(string inputDir, string strategy) =>
         Path.Combine(inputDir, strategy, "latest.json");
 
+    /// <summary>
+    /// Bar size for a strategy, taken from its current signal's <c>metadata.timeframe</c>
+    /// ("1h", "4h", "1d", "15m"). Drives the as_of+timeframe execution gate and the
+    /// 2× staleness window, so a 4h/1d strategy must not run on the 1h default.
+    /// Falls back when the file is missing, unreadable, or the value is unparseable.
+    /// </summary>
+    public static TimeSpan ResolveTimeframe(string inputDir, string strategy, TimeSpan fallback)
+    {
+        try
+        {
+            var path = ResolveLatestPath(inputDir, strategy);
+            if (!File.Exists(path)) return fallback;
+            using var fs = File.OpenRead(path);
+            var doc = JsonSerializer.Deserialize<EdgeLabSignalDocument>(fs);
+            return ParseTimeframe(doc?.Metadata?.Timeframe) ?? fallback;
+        }
+        catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return fallback;
+        }
+    }
+
+    public static TimeSpan? ParseTimeframe(string? tf)
+    {
+        if (string.IsNullOrWhiteSpace(tf) || tf.Length < 2) return null;
+        if (!int.TryParse(tf.AsSpan(0, tf.Length - 1), out var n) || n <= 0) return null;
+        return char.ToLowerInvariant(tf[^1]) switch
+        {
+            'm' => TimeSpan.FromMinutes(n),
+            'h' => TimeSpan.FromHours(n),
+            'd' => TimeSpan.FromDays(n),
+            _ => null,
+        };
+    }
+
     public static EdgeLabSingleAssetReadResult Read(
         string inputDir, string strategy, DateTimeOffset now,
         TimeSpan? timeframe = null)

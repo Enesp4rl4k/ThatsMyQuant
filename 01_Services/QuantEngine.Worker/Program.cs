@@ -535,10 +535,10 @@ switch (runMode)
                               ?? new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions();
         if (singleAssetOpts.Enabled && singleAssetOpts.Strategies != null)
         {
-            // Per-strategy timeframe parsing — single-asset strategies may run on
-            // different cadences (1h for ada/funding_zscore variants, daily for
-            // unlock-event strategies). For now, use a fixed 1h fallback; operator
-            // can extend to per-strategy timeframe map in future.
+            // Per-strategy timeframe from each signal's metadata.timeframe (1h / 4h / 1d).
+            // It drives the as_of+timeframe execution gate and the 2× staleness window;
+            // running a 4h or daily strategy on 1h made its closed-bar signals look stale.
+            // 1h fallback when the signal file is missing or has no timeframe.
             var defaultTimeframe = TimeSpan.FromHours(1);
             foreach (var saName in singleAssetOpts.Strategies)
             {
@@ -564,7 +564,8 @@ switch (runMode)
                         sp,
                         singleAssetOpts,
                         saNameCaptured,
-                        defaultTimeframe,
+                        ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetReader.ResolveTimeframe(
+                            singleAssetOpts.InputDir, saNameCaptured, defaultTimeframe),
                         sp.GetRequiredService<ThatsMyQuant.Contracts.Models.PaperPortfolio>(),
                         saDryRun, saSynth, saRecon,
                         sp.GetService<ThatsMyQuant.Contracts.Interfaces.IOperatorAlertPublisher>(),
