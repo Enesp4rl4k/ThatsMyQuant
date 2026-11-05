@@ -527,14 +527,19 @@ switch (runMode)
         // Reads same signals/<strategy>/latest.json contract but with metadata.strategy_kind ==
         // "single_asset"; one hosted-service instance per entry in EdgeLabSingleAsset:Strategies.
         // Defaults to disabled — operator opts in by setting Enabled=true and listing strategies.
-        // Order placement is currently scaffolded as dry-run-log only; live order wiring is a
-        // TODO inside EdgeLabSingleAssetHostedService.ApplyCycle (operator review required).
+        // HybridMode live places real orders via IExchangeService.ExecuteOrderAsync (SubmitAsync).
         var singleAssetSection = builder.Configuration.GetSection(
             ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions.SectionName);
         var singleAssetOpts = singleAssetSection.Get<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions>()
                               ?? new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions();
         if (singleAssetOpts.Enabled && singleAssetOpts.Strategies != null)
         {
+            // Per-strategy ownership of live positions (net-mode venue): lets several strategies
+            // trade the same symbol without each sizing against the whole symbol position.
+            builder.Services.AddSingleton(new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabLivePositionBook(
+                System.IO.Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "ThatsMyQuant", "edgelab_live_positions.json")));
             // Per-strategy timeframe from each signal's metadata.timeframe (1h / 4h / 1d).
             // It drives the as_of+timeframe execution gate and the 2× staleness window;
             // running a 4h or daily strategy on 1h made its closed-bar signals look stale.

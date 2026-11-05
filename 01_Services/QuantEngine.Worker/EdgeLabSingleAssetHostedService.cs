@@ -369,11 +369,26 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         {
             var positions = scope.ServiceProvider.GetRequiredService<IExchangePositionReader>();
             var openSnapshots = await positions.GetOpenPositionsAsync(ct).ConfigureAwait(false);
+            var exchangeQty = 0m;
             foreach (var p in openSnapshots)
             {
                 if (p.Symbol != symbol) continue;
-                var signed = (p.IsLong ? 1m : -1m) * p.Quantity * mark;
-                currentNotional += signed;
+                exchangeQty += (p.IsLong ? 1m : -1m) * p.Quantity;
+            }
+            // Net-mode venue: size against THIS strategy's share, not the whole symbol position,
+            // so several strategies can trade the same symbol without fighting each other.
+            var book = _serviceProvider.GetService<EdgeLabLivePositionBook>();
+            if (book is not null)
+            {
+                book.Register(_strategy, symbol);
+                var owned = book.Resolve(_strategy, symbol, exchangeQty, out var bookWarning);
+                if (bookWarning is not null)
+                    _logger.LogWarning("EdgeLabSingleAsset[{Strategy}] position book: {Warning}", _strategy, bookWarning);
+                currentNotional = owned * mark;
+            }
+            else
+            {
+                currentNotional = exchangeQty * mark;
             }
         }
 
@@ -680,6 +695,8 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
 
             var submitResult = await SubmitAsync(exchange, signal, mode).ConfigureAwait(false);
             orderResult = (submitResult.Symbol, submitResult.Ok, submitResult.Err, true);
+            if (mode == HybridMode.Live && submitResult.FilledSignedQty != 0m)
+                _serviceProvider.GetService<EdgeLabLivePositionBook>()?.ApplyFill(_strategy, symbol, submitResult.FilledSignedQty);
         }
 
         // Step 6 — reconciliation entry every cycle (period PnL on held positions matters)
@@ -950,14 +967,15 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         }
     }
 
-    private async Task<(string Symbol, bool Ok, string? Err)> SubmitAsync(
+    /// <returns>FilledSignedQty = base qty actually filled (buy +, sell −), 0 when nothing filled.</returns>
+    private async Task<(string Symbol, bool Ok, string? Err, decimal FilledSignedQty)> SubmitAsync(
         IExchangeService exchange, Signal signal, HybridMode mode)
     {
         if (mode == HybridMode.DryRun)
         {
             _logger.LogDebug("EdgeLabSingleAsset WOULD submit: {Sym} {Side} qty={Qty:N6} @ {Px:N4}",
                 signal.Symbol, signal.Side, signal.Quantity, signal.Price);
-            return (signal.Symbol, true, null);
+            return (signal.Symbol, true, null, 0m);
         }
         try
         {
@@ -1095,7 +1113,11 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                     _logger.LogDebug(ex, "EdgeLabSingleAsset: PositionOpenedNotification publish failed");
                 }
             }
-            return (signal.Symbol, true, null);
+            // Partial fills count too: the book must hold exactly what this strategy got.
+            var filledSigned = trade is not null && trade.FilledQuantity > 0m
+                ? (signal.Side == TradeSide.Buy ? trade.FilledQuantity : -trade.FilledQuantity)
+                : 0m;
+            return (signal.Symbol, true, null, filledSigned);
         }
         catch (Exception ex)
         {
@@ -1116,7 +1138,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                 }
                 catch (Exception alertEx) { _logger.LogDebug(alertEx, "EdgeLabSingleAsset: live-fail Telegram publish failed"); }
             }
-            return (signal.Symbol, false, ex.Message);
+            return (signal.Symbol, false, ex.Message, 0m);
         }
     }
 
