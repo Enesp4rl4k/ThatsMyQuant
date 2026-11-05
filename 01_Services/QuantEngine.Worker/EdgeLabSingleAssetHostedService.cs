@@ -309,11 +309,9 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         // for restart. Resolved via root provider (singleton) — no DI scope needed.
         var killState = _serviceProvider.GetService<EdgeLabKillSwitchState>();
         var killMultiplier = killState is not null ? killState.GetMultiplier(_strategy) : 1.0m;
-        if (killMultiplier == EdgeLabKillSwitch.HardKillMultiplier)
-        {
-            // Hard kill = treat declared mode as dry-run regardless of gate.
-            declaredMode = "dry-run";
-        }
+        // Hard kill stays in the declared mode: the multiplier takes the target to zero below, so a live
+        // strategy flattens and then stays flat. Forcing dry-run here sent no order at all, which left
+        // the open position on the venue with nothing managing it (no exit, no stop).
 
         // Push the latest contract thresholds to the kill switch service so its next
         // hourly evaluation uses them. Cheap dict update; no IO.
@@ -368,7 +366,16 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         else if (mode == HybridMode.Live)
         {
             var positions = scope.ServiceProvider.GetRequiredService<IExchangePositionReader>();
-            var openSnapshots = await positions.GetOpenPositionsAsync(ct).ConfigureAwait(false);
+            var (positionsOk, openSnapshots) = await positions.TryGetOpenPositionsAsync(ct).ConfigureAwait(false);
+            if (!positionsOk)
+            {
+                // A failed read is NOT "flat": sizing against 0 re-opened full positions on top
+                // of existing ones (seen on HTTP 429). Skip and retry on the next poll.
+                _logger.LogWarning(
+                    "EdgeLabSingleAsset[{Strategy}]: exchange positions unavailable, skipping cycle (will retry).",
+                    _strategy);
+                return false;
+            }
             var exchangeQty = 0m;
             foreach (var p in openSnapshots)
             {
@@ -400,8 +407,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         //   1.0  = full Kelly (default)
         //   0.5  = half Kelly (realized 30c Sharpe < soft threshold, e.g. -0.3)
         //   0.0  = hard kill (realized 30c Sharpe < hard threshold, e.g. -1.0). Position
-        //          targets to zero → next rebalance flattens; declaredMode also forced
-        //          to dry-run above to avoid sending real orders.
+        //          targets to zero → next rebalance flattens.
         // [2026-05-17 Quantlab handoff §2] Kelly haircut from signal metadata.
         // Quantlab now tunes per-strategy fractional Kelly without re-deploying TMQ;
         // missing field → fall back to host default (0.5 = half-Kelly, safe-low).
@@ -958,7 +964,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                 }
             }
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
             _logger.LogError(ex,

@@ -3,7 +3,8 @@
 [CmdletBinding()] param(
     [string]$WorkDir   = "C:\Users\parlak\Downloads\ThatsMyQuant",
     [string]$LogDir    = "C:\Users\parlak\Downloads\ThatsMyQuant\_runtime_logs",
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$ShowLogs    # open the live log viewer window; off by default so relaunches stay invisible
 )
 
 Set-Location -LiteralPath $WorkDir
@@ -78,7 +79,7 @@ Write-Host '[RUN] dotnet run (Release, paper mode, --no-launch-profile to honour
 # Spawn the live log viewer in its OWN visible window so the user can watch trades + decisions
 # in real time. The viewer waits for the worker's CLEF log to appear before tailing.
 $logViewerPath = Join-Path $WorkDir 'Show-PaperTradeLogs.ps1'
-if (Test-Path $logViewerPath)
+if ($ShowLogs -and (Test-Path $logViewerPath))
 {
     try
     {

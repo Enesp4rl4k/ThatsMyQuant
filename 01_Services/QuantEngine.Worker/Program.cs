@@ -534,6 +534,8 @@ switch (runMode)
                               ?? new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabSingleAssetOptions();
         if (singleAssetOpts.Enabled && singleAssetOpts.Strategies != null)
         {
+            // Before the strategies: hosts await StartAsync in registration order.
+            builder.Services.AddHostedService<ThatsMyQuant.Bot.StartupOrphanOrderSweep>();
             // Per-strategy ownership of live positions (net-mode venue): lets several strategies
             // trade the same symbol without each sizing against the whole symbol position.
             builder.Services.AddSingleton(new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabLivePositionBook(

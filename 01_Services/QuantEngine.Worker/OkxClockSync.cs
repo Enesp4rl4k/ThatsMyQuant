@@ -106,7 +106,7 @@ public sealed class OkxClockSync : BackgroundService
             }
             okxUtc = DateTimeOffset.FromUnixTimeMilliseconds(okxMs).UtcDateTime;
         }
-        catch (OperationCanceledException) { throw; }  // honor shutdown promptly, don't log "fetch failed"
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }  // honor shutdown promptly, don't log "fetch failed"
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "OkxClockSync: OKX time fetch failed; keeping previous offset.");

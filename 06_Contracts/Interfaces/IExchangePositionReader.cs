@@ -12,6 +12,16 @@ public interface IExchangePositionReader
     Task<IReadOnlyList<ExchangePositionSnapshot>> GetOpenPositionsAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Like <see cref="GetOpenPositionsAsync"/> but distinguishes "no open positions" (Ok, empty)
+    /// from "could not read" (not Ok). Sizing code must never treat a failed read as flat:
+    /// GetOpenPositionsAsync returns an empty list on HTTP/429 errors, which made strategies
+    /// re-open full positions on top of existing ones.
+    /// </summary>
+    async Task<(bool Ok, IReadOnlyList<ExchangePositionSnapshot> Positions)> TryGetOpenPositionsAsync(
+        CancellationToken cancellationToken = default)
+        => (true, await GetOpenPositionsAsync(cancellationToken).ConfigureAwait(false));
+
+    /// <summary>
     /// Returns the most recent fill for a symbol within the last <paramref name="lookbackMinutes"/>
     /// minutes (a closing fill of a bracket TP/SL trigger, for example), or <c>null</c> if no
     /// fill is found in that window. Default 5 minutes preserves the original tight-window
