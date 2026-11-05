@@ -237,8 +237,11 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
             return;
         }
 
-        await ApplyCycleAsync(doc, result.Symbol!, result.TargetWeight, ct).ConfigureAwait(false);
-        _lastAppliedAsOfBar = asOfBar;
+        // Only mark the bar applied when the cycle actually ran. Transient skips (basis not
+        // yet seeded at boot, basis drift, missing mark) must retry on the next poll instead
+        // of silently dropping the signal until the next bar.
+        if (await ApplyCycleAsync(doc, result.Symbol!, result.TargetWeight, ct).ConfigureAwait(false))
+            _lastAppliedAsOfBar = asOfBar;
     }
 
     /// <summary>
@@ -251,8 +254,11 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
     ///   5. Submit order if |delta| > MinDeltaUsd
     ///   6. Append to dry-run ledger + reconciliation ledger
     ///   7. Commit synthetic book to next cycle's targets
+    /// Returns false when the cycle was skipped for a transient reason and should be
+    /// retried on the next poll; true once the bar is handled (including deliberate
+    /// cap / risk-gate blocks, which would only re-block on retry).
     /// </summary>
-    private async Task ApplyCycleAsync(
+    private async Task<bool> ApplyCycleAsync(
         EdgeLabSignalDocument doc, string symbol, double weight, CancellationToken ct)
     {
         var basis = _portfolio.InitialBalance;
@@ -260,9 +266,9 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         {
             _logger.LogWarning(
                 "EdgeLabSingleAsset[{Strategy}]: PaperPortfolio.InitialBalance=0, " +
-                "skipping cycle as_of={AsOf}.",
+                "skipping cycle as_of={AsOf} (will retry).",
                 _strategy, doc.AsOfBar);
-            return;
+            return false;
         }
 
         // 2026-05-11: Basis-drift hard veto. If the runtime basis exceeds the config
@@ -284,7 +290,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                 "that ExchangeBalanceSync hasn't re-anchored yet. Skipping cycle to prevent " +
                 "over-sized order. as_of={AsOf}.",
                 _strategy, basis, configBasis, doc.AsOfBar);
-            return;
+            return false;
         }
 
         var leverage = doc.Metadata?.Leverage ?? 1.0;
@@ -339,9 +345,9 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         if (mark <= 0m)
         {
             _logger.LogWarning(
-                "EdgeLabSingleAsset[{Strategy}]: no mark price for {Sym}, skipping cycle.",
+                "EdgeLabSingleAsset[{Strategy}]: no mark price for {Sym}, skipping cycle (will retry).",
                 _strategy, symbol);
-            return;
+            return false;
         }
         var currentMarks = new Dictionary<string, decimal>(StringComparer.Ordinal) { [symbol] = mark };
 
@@ -460,7 +466,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                     $"cap ${capDecision.CapUsd:F2}, would_be ${capDecision.WouldBeTotalAbsUsd:F2}, headroom ${capDecision.HeadroomUsd:F2}. {capDecision.Reason}",
                     ct);
             }
-            return;
+            return true;
         }
 
         // [2026-05-21 handoff §3] Alt-short AGGREGATE exposure cap. When this strategy is
@@ -533,7 +539,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                         $"combined alt-short would be ${altDecision.WouldBeGroupAbsUsd:F2} > cap ${altDecision.CapUsd:F2}. {altDecision.Reason}",
                         ct);
                 }
-                return;
+                return true;
             }
         }
 
@@ -575,7 +581,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
                             _logger.LogWarning(
                                 "EdgeLabSingleAsset[{Strategy}] {Symbol} entry BLOCKED by PreEntryRiskGate: {Reason}",
                                 _strategy, symbol, preGateDecision.RejectReason);
-                            return;
+                            return true;
                         }
                     }
                 }
@@ -738,6 +744,7 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         // Read-only path; never gates anything. Decision logic mirrors the actual cycle outcome.
         PublishCycleDiagnostic(symbol, weight, killMultiplier, deltaNotional,
             _options.MinDeltaUsd, orderResult, currentNotional);
+        return true;
     }
 
     /// <summary>
