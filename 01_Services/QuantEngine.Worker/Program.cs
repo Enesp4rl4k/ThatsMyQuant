@@ -536,6 +536,23 @@ switch (runMode)
         {
             // Before the strategies: hosts await StartAsync in registration order.
             builder.Services.AddHostedService<ThatsMyQuant.Bot.StartupOrphanOrderSweep>();
+            builder.Services.AddSingleton(new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabStopBlock(
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "edgelab_stop_block.json")));
+            if (string.Equals(singleAssetOpts.HybridMode, "live", StringComparison.OrdinalIgnoreCase))
+            {
+                builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+                {
+                    var execOpts = new ThatsMyQuant.Contracts.Options.OrderExecutionOptions();
+                    builder.Configuration.GetSection(ThatsMyQuant.Contracts.Options.OrderExecutionOptions.SectionName).Bind(execOpts);
+                    execOpts.Normalize();
+                    var venue = sp.GetRequiredService<IExchangeService>() as ThatsMyQuant.Contracts.Interfaces.ICatastropheStopVenue;
+                    return venue is null
+                        ? (Microsoft.Extensions.Hosting.IHostedService)new ThatsMyQuant.Bot.NoopHostedService()
+                        : new ThatsMyQuant.Bot.CatastropheStopHostedService(venue, sp.GetRequiredService<IExchangePositionReader>(),
+                            sp.GetRequiredService<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabStopBlock>(), execOpts,
+                            sp.GetRequiredService<ILogger<ThatsMyQuant.Bot.CatastropheStopHostedService>>());
+                });
+            }
             // Per-strategy ownership of live positions (net-mode venue): lets several strategies
             // trade the same symbol without each sizing against the whole symbol position.
             builder.Services.AddSingleton(new ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabLivePositionBook(

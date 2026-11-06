@@ -415,6 +415,14 @@ public sealed class EdgeLabSingleAssetHostedService : BackgroundService
         var kellyHaircut = (decimal)Math.Clamp(kellyHaircutRaw, 0.0, 1.0);
         var effectiveStrategyWeight = _strategyWeight * killMultiplier * kellyHaircut;
         var targetNotional = basis * effectiveStrategyWeight * (decimal)(weight * leverage);
+        // After a catastrophe stop, the stopped side stays flat until the signal goes flat or flips.
+        var stopBlock = _serviceProvider.GetService<EdgeLabStopBlock>();
+        if (stopBlock is not null && mode == HybridMode.Live)
+        {
+            targetNotional = stopBlock.Apply(symbol, targetNotional, out var stopBlocked);
+            if (stopBlocked)
+                _logger.LogInformation("EdgeLabSingleAsset[{Strategy}] {Sym}: re-entry blocked after a catastrophe stop (target held at 0).", _strategy, symbol);
+        }
         var deltaNotional = targetNotional - currentNotional;
 
         // [Sprint 7 — 2026-05-11] Per-symbol notional cap evaluation.
