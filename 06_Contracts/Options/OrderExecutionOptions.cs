@@ -163,6 +163,19 @@ public sealed class OrderExecutionOptions
     /// </summary>
     public decimal SmartRoutingIocPriceOffsetBps { get; set; } = 5.0m;
 
+    /// <summary>
+    /// Isolated leverage the bot sets on every swap instrument it trades (0 = leave the venue setting).
+    /// Leverage does not change position size; it sets the margin locked and how far the liquidation
+    /// price is. With a 15% catastrophe stop, 4x keeps liquidation beyond the stop (1 / (0.15+0.05+0.01) ≈ 4.8).
+    /// </summary>
+    public int SwapLeverage { get; set; } = 0;
+
+    /// <summary>
+    /// Exchange-side catastrophe stop distance from the average entry (0.15 = 15%), mark-price trigger,
+    /// closes the whole position. 0 disables. RESULTS_stops_take_profit_2026_11_06.
+    /// </summary>
+    public decimal CatastropheStopPct { get; set; } = 0m;
+
     public void Normalize()
     {
         if (LimitFillPollIntervalMs < 250) LimitFillPollIntervalMs = 250;
@@ -180,6 +193,10 @@ public sealed class OrderExecutionOptions
         if (CancelVerifyPollDelayMs > 5000) CancelVerifyPollDelayMs = 5000;
         if (MarketFallbackRetryAttempts < 1) MarketFallbackRetryAttempts = 1;
         if (SmartRoutingIocPriceOffsetBps < 0m) SmartRoutingIocPriceOffsetBps = 0m;
+        if (SwapLeverage < 0) SwapLeverage = 0;
+        if (SwapLeverage > 10) SwapLeverage = 10;
+        if (CatastropheStopPct < 0m) CatastropheStopPct = 0m;
+        if (CatastropheStopPct > 0.5m) CatastropheStopPct = 0.5m;
     }
 }
 

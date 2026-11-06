@@ -22,7 +22,7 @@ namespace ThatsMyQuant.Infrastructure.Services;
 /// Uses OKX REST API v5 with HMAC-SHA256 + Base64 signature scheme.
 /// Symbol normalization: BTCUSDT → BTC-USDT (OKX uses hyphenated format).
 /// </summary>
-public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateProvider, IVenueTradeFeeProvider, IExchangePositionReader, IOrphanOrderSweeper, IDisposable
+public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateProvider, IVenueTradeFeeProvider, IExchangePositionReader, IOrphanOrderSweeper, ICatastropheStopVenue, IDisposable
 {
     private readonly ILogger<OkxExecutionService> _logger;
     private readonly IConfiguration _configuration;
@@ -64,6 +64,8 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     // minSz: minimum order size (in contracts)
     private record OkxContractSpec(decimal CtVal, decimal LotSz, decimal MinSz, decimal TickSz = 0m);
     private readonly ConcurrentDictionary<string, OkxContractSpec> _contractSpecCache = new();
+    private readonly ConcurrentDictionary<string, int> _leverageSet = new(StringComparer.OrdinalIgnoreCase);
+    internal const string CatastropheStopPrefix = "tmqcs";
 
     public OkxExecutionService(
         ILogger<OkxExecutionService> logger,
@@ -234,6 +236,8 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         // reduceOnly: only meaningful in one-way mode for closes; hedge mode uses posSide to close
         string? posSide = null;
         bool? reduceOnlyField = null;
+        if (IsSwapMode && tdMode == "isolated")
+            await EnsureLeverageAsync(signal.Symbol).ConfigureAwait(false);
         if (IsSwapMode)
         {
             if (IsHedgeMode)
@@ -2086,6 +2090,130 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
         {
             _logger.LogDebug(ex, "OKX trade fee lookup failed for {Symbol}", symbol);
             return null;
+        }
+    }
+
+    private async Task<(bool Ok, JsonDocument? Doc)> SendSignedAsync(HttpMethod method, string path, string body, CancellationToken ct)
+    {
+        var timestamp = GetIsoTimestamp();
+        using var req = new HttpRequestMessage(method, $"{BaseUrl}{path}");
+        if (method != HttpMethod.Get)
+            req.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        req.Headers.Add("OK-ACCESS-KEY", ApiKey);
+        req.Headers.Add("OK-ACCESS-SIGN", ComputeSignature(timestamp, method.Method, path, method == HttpMethod.Get ? string.Empty : body));
+        req.Headers.Add("OK-ACCESS-TIMESTAMP", timestamp);
+        req.Headers.Add("OK-ACCESS-PASSPHRASE", Passphrase);
+        if (IsDemoMode) req.Headers.Add("x-simulated-trading", "1");
+        using var resp = await _httpClient.SendAsync(req, ct).ConfigureAwait(false);
+        if (!resp.IsSuccessStatusCode) { TrackHttpFailure(resp); return (false, null); }
+        var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+        return (doc.RootElement.GetProperty("code").GetString() == "0", doc);
+    }
+
+    /// <inheritdoc />
+    public async Task EnsureLeverageAsync(string symbol, CancellationToken cancellationToken = default)
+    {
+        var lever = _execOptions.SwapLeverage;
+        if (lever <= 0 || !IsSwapMode) return;
+        var instId = ResolveOkxInstrumentId(symbol);
+        if (_leverageSet.TryGetValue(instId, out var done) && done == lever) return;
+        try
+        {
+            var body = JsonSerializer.Serialize(new { instId, lever = lever.ToString(CultureInfo.InvariantCulture), mgnMode = "isolated" });
+            var (ok, doc) = await SendSignedAsync(HttpMethod.Post, "/api/v5/account/set-leverage", body, cancellationToken).ConfigureAwait(false);
+            using (doc)
+            {
+                if (ok)
+                {
+                    _leverageSet[instId] = lever;
+                    _logger.LogInformation("OKX leverage set: {InstId} isolated {Lever}x.", instId, lever);
+                }
+                else
+                {
+                    _logger.LogWarning("OKX set-leverage {InstId} {Lever}x refused: {Body}", instId, lever, doc?.RootElement.ToString());
+                }
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException || (ex is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            _logger.LogWarning(ex, "OKX set-leverage {InstId} failed; order proceeds with the venue setting.", instId);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<decimal> GetTickSizeAsync(string symbol, CancellationToken cancellationToken = default)
+        => (await GetContractSpecAsync(ResolveOkxInstrumentId(symbol), cancellationToken).ConfigureAwait(false)).TickSz;
+
+    private static VenueStopOrder? ParseBotStop(JsonElement o)
+    {
+        var cl = o.TryGetProperty("algoClOrdId", out var c) ? c.GetString() ?? "" : "";
+        if (!cl.StartsWith(CatastropheStopPrefix, StringComparison.Ordinal)) return null;
+        var instId = o.GetProperty("instId").GetString() ?? "";
+        var trig = decimal.TryParse(o.TryGetProperty("slTriggerPx", out var t) ? t.GetString() : null, NumberStyles.Any, CultureInfo.InvariantCulture, out var px) ? px : 0m;
+        var side = o.TryGetProperty("side", out var s) ? s.GetString() : "";
+        var uTime = o.TryGetProperty("uTime", out var u) && long.TryParse(u.GetString(), out var ms)
+            ? DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime : DateTime.UtcNow;
+        return new VenueStopOrder(NormalizeFromOkx(instId.Replace("-SWAP", "", StringComparison.OrdinalIgnoreCase)),
+            o.GetProperty("algoId").GetString() ?? "", cl, trig, side == "sell", uTime);
+    }
+
+    private async Task<IReadOnlyList<VenueStopOrder>> ListBotStopsAsync(string path, CancellationToken ct)
+    {
+        var (ok, doc) = await SendSignedAsync(HttpMethod.Get, path, string.Empty, ct).ConfigureAwait(false);
+        using (doc)
+        {
+            if (!ok || doc is null) return Array.Empty<VenueStopOrder>();
+            return doc.RootElement.GetProperty("data").EnumerateArray().Select(ParseBotStop).OfType<VenueStopOrder>().ToList();
+        }
+    }
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<VenueStopOrder>> GetBotStopOrdersAsync(CancellationToken cancellationToken = default)
+        => ListBotStopsAsync("/api/v5/trade/orders-algo-pending?ordType=conditional&instType=SWAP", cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<VenueStopOrder>> GetTriggeredBotStopsAsync(DateTime sinceUtc, CancellationToken cancellationToken = default)
+        => (await ListBotStopsAsync("/api/v5/trade/orders-algo-history?ordType=conditional&state=effective&instType=SWAP", cancellationToken)
+               .ConfigureAwait(false)).Where(s => s.UpdatedUtc >= sinceUtc).ToList();
+
+    /// <inheritdoc />
+    public async Task<bool> PlaceCatastropheStopAsync(string symbol, bool positionIsLong, decimal triggerPx, CancellationToken cancellationToken = default)
+    {
+        var instId = ResolveOkxInstrumentId(symbol);
+        var algoClOrdId = CatastropheStopPrefix + Guid.NewGuid().ToString("N")[..20];
+        var body = JsonSerializer.Serialize(new
+        {
+            instId,
+            tdMode = "isolated",
+            side = positionIsLong ? "sell" : "buy",
+            posSide = IsHedgeMode ? (positionIsLong ? "long" : "short") : "net",
+            ordType = "conditional",
+            closeFraction = "1",          // whole position, whatever its size after rebalances
+            reduceOnly = true,
+            slTriggerPx = triggerPx.ToString(CultureInfo.InvariantCulture),
+            slOrdPx = "-1",               // market once triggered
+            slTriggerPxType = "mark",     // mark price: a single-venue wick does not fire it
+            algoClOrdId,
+        });
+        var (ok, doc) = await SendSignedAsync(HttpMethod.Post, "/api/v5/trade/order-algo", body, cancellationToken).ConfigureAwait(false);
+        using (doc)
+        {
+            if (!ok)
+                _logger.LogError("OKX catastrophe stop for {InstId} rejected: {Body}", instId, doc?.RootElement.ToString());
+            return ok;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> CancelStopAsync(string symbol, string algoId, CancellationToken cancellationToken = default)
+    {
+        var instId = ResolveOkxInstrumentId(symbol);
+        var body = JsonSerializer.Serialize(new[] { new { algoId, instId } });
+        var (ok, doc) = await SendSignedAsync(HttpMethod.Post, "/api/v5/trade/cancel-algos", body, cancellationToken).ConfigureAwait(false);
+        using (doc)
+        {
+            if (!ok) _logger.LogWarning("OKX cancel stop {AlgoId} on {InstId} failed: {Body}", algoId, instId, doc?.RootElement.ToString());
+            return ok;
         }
     }
 
