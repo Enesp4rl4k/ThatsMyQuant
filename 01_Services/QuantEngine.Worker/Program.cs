@@ -540,7 +540,7 @@ switch (runMode)
                 System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "edgelab_stop_block.json")));
             if (string.Equals(singleAssetOpts.HybridMode, "live", StringComparison.OrdinalIgnoreCase))
             {
-                builder.Services.AddHostedService(sp =>
+                builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
                 {
                     var execOpts = new ThatsMyQuant.Contracts.Options.OrderExecutionOptions();
                     builder.Configuration.GetSection(ThatsMyQuant.Contracts.Options.OrderExecutionOptions.SectionName).Bind(execOpts);
