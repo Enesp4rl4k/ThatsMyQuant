@@ -64,7 +64,10 @@ public sealed class CatastropheStopHostedService : BackgroundService
         }
         _block.MarkChecked(now);
 
-        // 2. one correct stop per open position, leverage on every held instrument
+        // 2. isolated margin back to notional / leverage, so liquidation stays beyond the stop
+        await _venue.TopUpIsolatedMarginAsync(ct).ConfigureAwait(false);
+
+        // 3. one correct stop per open position, leverage on every held instrument
         var (ok, positions) = await _positions.TryGetOpenPositionsAsync(ct).ConfigureAwait(false);
         if (!ok) return;                                            // never act on a failed read
         var stops = await _venue.GetBotStopOrdersAsync(ct).ConfigureAwait(false);

@@ -25,4 +25,10 @@ public interface ICatastropheStopVenue
     Task<bool> PlaceCatastropheStopAsync(string symbol, bool positionIsLong, decimal triggerPx, CancellationToken cancellationToken = default);
 
     Task<bool> CancelStopAsync(string symbol, string algoId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Adds isolated margin to any position whose margin fell below notional / leverage, so the liquidation price stays
+    /// beyond the catastrophe stop. Returns the number of positions topped up.
+    /// </summary>
+    Task<int> TopUpIsolatedMarginAsync(CancellationToken cancellationToken = default);
 }

@@ -2205,6 +2205,49 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     }
 
     /// <inheritdoc />
+    /// <summary>Margin to add so an isolated position is back at notional / leverage; 0 when it is within 10% of that.</summary>
+    internal static decimal MarginShortfall(decimal notionalUsd, decimal margin, decimal lever)
+    {
+        if (notionalUsd <= 0m || lever <= 0m) return 0m;
+        var want = notionalUsd / lever;
+        return margin >= want * 0.9m ? 0m : Math.Round(want - margin, 2, MidpointRounding.AwayFromZero);
+    }
+
+    /// <inheritdoc />
+    public async Task<int> TopUpIsolatedMarginAsync(CancellationToken cancellationToken = default)
+    {
+        // On 2026-11-08/09 two demo positions were liquidated 4% and 10% from entry, before their 15% stops: their isolated
+        // margin had shrunk well below notional / leverage (ARB was at an effective 7.1x on 2026-11-12). Restore it.
+        var (ok, doc) = await SendSignedAsync(HttpMethod.Get, "/api/v5/account/positions?instType=SWAP", string.Empty, cancellationToken).ConfigureAwait(false);
+        using (doc)
+        {
+            if (!ok || doc is null) return 0;
+            var n = 0;
+            foreach (var p in doc.RootElement.GetProperty("data").EnumerateArray())
+            {
+                if ((p.TryGetProperty("mgnMode", out var mm) ? mm.GetString() : "") != "isolated") continue;
+                decimal Dec(string k) => p.TryGetProperty(k, out var v) && decimal.TryParse(v.GetString(), NumberStyles.Any, CultureInfo.InvariantCulture, out var d) ? d : 0m;
+                var add = MarginShortfall(Math.Abs(Dec("notionalUsd")), Dec("margin"), Dec("lever"));
+                if (add <= 0m) continue;
+                var instId = p.GetProperty("instId").GetString() ?? "";
+                var body = JsonSerializer.Serialize(new
+                {
+                    instId,
+                    posSide = IsHedgeMode ? (p.TryGetProperty("posSide", out var ps) ? ps.GetString() : "net") : "net",
+                    type = "add",
+                    amt = add.ToString(CultureInfo.InvariantCulture),
+                });
+                var (added, resp) = await SendSignedAsync(HttpMethod.Post, "/api/v5/account/position/margin-balance", body, cancellationToken).ConfigureAwait(false);
+                using (resp)
+                {
+                    if (added) { n++; _logger.LogWarning("OKX isolated margin topped up: {InstId} +{Amt} USDT (was below notional / lever).", instId, add); }
+                    else _logger.LogError("OKX margin top-up for {InstId} failed: {Body}", instId, resp?.RootElement.ToString());
+                }
+            }
+            return n;
+        }
+    }
+
     public async Task<bool> CancelStopAsync(string symbol, string algoId, CancellationToken cancellationToken = default)
     {
         var instId = ResolveOkxInstrumentId(symbol);
