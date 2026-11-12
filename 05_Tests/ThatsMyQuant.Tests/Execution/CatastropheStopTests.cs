@@ -122,4 +122,46 @@ public class CatastropheStopTests
         h.Calls[0].Path.Should().EndWith("/account/set-leverage");
         h.Calls[0].Body.Should().Contain("\"lever\":\"4\"").And.Contain("\"mgnMode\":\"isolated\"");
     }
+
+    [Theory]
+    [InlineData(14.56, 2.04, 4, 1.60)]   // ARB on 2026-11-12: effective 7.1x -> add 1.60 to get back to 3.64
+    [InlineData(22.30, 5.58, 4, 0.0)]    // healthy 4x position: nothing to add
+    [InlineData(20.00, 4.60, 4, 0.0)]    // within 10% of the target margin: left alone
+    public void MarginShortfall_RestoresNotionalOverLeverage(double notional, double margin, double lever, double expected)
+        => OkxExecutionService.MarginShortfall((decimal)notional, (decimal)margin, (decimal)lever).Should().Be((decimal)expected);
+
+    private sealed class PositionsHandler : HttpMessageHandler
+    {
+        public readonly List<(string Path, string Body)> Posts = new();
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage r, CancellationToken ct)
+        {
+            var json = """{"code":"0","data":[{"sCode":"0"}]}""";
+            if (r.Method == HttpMethod.Get)
+                json = """
+                    {"code":"0","data":[
+                      {"instId":"ARB-USDT-SWAP","mgnMode":"isolated","notionalUsd":"14.56","margin":"2.04","lever":"4","pos":"-100"},
+                      {"instId":"ETH-USDT-SWAP","mgnMode":"isolated","notionalUsd":"36.2","margin":"9.54","lever":"4","pos":"-0.17"},
+                      {"instId":"BTC-USDT-SWAP","mgnMode":"cross","notionalUsd":"40","margin":"1","lever":"4","pos":"-0.0005"}]}
+                    """;
+            else
+                Posts.Add((r.RequestUri!.AbsolutePath, await r.Content!.ReadAsStringAsync(ct)));
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+        }
+    }
+
+    [Fact]
+    public async Task TopUp_AddsMargin_OnlyToShortIsolatedPositions()
+    {
+        var h = new PositionsHandler();
+        var svc = new OkxExecutionService(Substitute.For<ILogger<OkxExecutionService>>(), new HttpClient(h),
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["OKX:SecretKey"] = "s", ["OKX:ApiKey"] = "k", ["OKX:Passphrase"] = "p", ["OKX:IsDemoMode"] = "true", ["TMQ_EXCHANGE_MODE"] = "OKX_SWAP",
+            }).Build(), Substitute.For<ISharedPortfolioStateManager>());
+
+        (await svc.TopUpIsolatedMarginAsync()).Should().Be(1);
+        var (path, body) = h.Posts.Single();
+        path.Should().EndWith("/account/position/margin-balance");
+        body.Should().Contain("\"instId\":\"ARB-USDT-SWAP\"").And.Contain("\"type\":\"add\"").And.Contain("\"amt\":\"1.60\"");
+    }
 }
