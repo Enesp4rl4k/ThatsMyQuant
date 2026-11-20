@@ -31,4 +31,18 @@ public interface ICatastropheStopVenue
     /// beyond the catastrophe stop. Returns the number of positions topped up.
     /// </summary>
     Task<int> TopUpIsolatedMarginAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// True when orders match on a paper engine (OKX demo) whose prices can drift from the real market. Stops are then
+    /// run bot-side against the real mark price instead of resting on the venue.
+    /// </summary>
+    bool IsPaperVenue => false;
+
+    /// <summary>Real-market mark price low / high over the 1-minute candles since <paramref name="sinceUtc"/>; null when unavailable.</summary>
+    Task<(decimal Low, decimal High)?> GetLiveMarkRangeAsync(string symbol, DateTime sinceUtc, CancellationToken cancellationToken = default)
+        => Task.FromResult<(decimal Low, decimal High)?>(null);
+
+    /// <summary>Closes the whole position at market (reduce-only).</summary>
+    Task<bool> ClosePositionAtMarketAsync(string symbol, bool positionIsLong, CancellationToken cancellationToken = default)
+        => Task.FromResult(false);
 }

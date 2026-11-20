@@ -550,7 +550,9 @@ switch (runMode)
                         ? (Microsoft.Extensions.Hosting.IHostedService)new ThatsMyQuant.Bot.NoopHostedService()
                         : new ThatsMyQuant.Bot.CatastropheStopHostedService(venue, sp.GetRequiredService<IExchangePositionReader>(),
                             sp.GetRequiredService<ThatsMyQuant.Application.Strategy.EdgeLab.EdgeLabStopBlock>(), execOpts,
-                            sp.GetRequiredService<ILogger<ThatsMyQuant.Bot.CatastropheStopHostedService>>());
+                            sp.GetRequiredService<ILogger<ThatsMyQuant.Bot.CatastropheStopHostedService>>(),
+                            new ThatsMyQuant.Application.Strategy.EdgeLab.LiveMarkEntryBook(System.IO.Path.Combine(
+                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ThatsMyQuant", "paper_live_mark_entries.json")));
                 });
             }
             // Per-strategy ownership of live positions (net-mode venue): lets several strategies

@@ -2205,6 +2205,59 @@ public sealed class OkxExecutionService : IExchangeService, IExchangeOrderStateP
     }
 
     /// <inheritdoc />
+    public bool IsPaperVenue => IsDemoMode;
+
+    /// <inheritdoc />
+    public async Task<(decimal Low, decimal High)?> GetLiveMarkRangeAsync(string symbol, DateTime sinceUtc, CancellationToken cancellationToken = default)
+    {
+        // Public endpoint WITHOUT the demo header: the real market's mark price, not the demo engine's.
+        var instId = ResolveOkxInstrumentId(symbol);
+        try
+        {
+            using var resp = await _httpClient.GetAsync($"{BaseUrl}/api/v5/market/mark-price-candles?instId={instId}&bar=1m&limit=10", cancellationToken).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) { TrackHttpFailure(resp); return null; }
+            using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            if (doc.RootElement.GetProperty("code").GetString() != "0") return null;
+            var since = new DateTimeOffset(DateTime.SpecifyKind(sinceUtc, DateTimeKind.Utc)).ToUnixTimeMilliseconds();
+            decimal? lo = null, hi = null;
+            foreach (var c in doc.RootElement.GetProperty("data").EnumerateArray())
+            {
+                if (long.Parse(c[0].GetString()!, CultureInfo.InvariantCulture) + 60_000 <= since) continue;
+                var h = decimal.Parse(c[2].GetString()!, CultureInfo.InvariantCulture);
+                var l = decimal.Parse(c[3].GetString()!, CultureInfo.InvariantCulture);
+                hi = hi is null ? h : Math.Max(hi.Value, h);
+                lo = lo is null ? l : Math.Min(lo.Value, l);
+            }
+            return lo is null || hi is null ? null : (lo.Value, hi.Value);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or FormatException or TaskCanceledException)
+        {
+            _logger.LogDebug(ex, "OKX live mark range for {InstId} unavailable", instId);
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> ClosePositionAtMarketAsync(string symbol, bool positionIsLong, CancellationToken cancellationToken = default)
+    {
+        var instId = ResolveOkxInstrumentId(symbol);
+        var body = JsonSerializer.Serialize(new
+        {
+            instId,
+            mgnMode = "isolated",
+            posSide = IsHedgeMode ? (positionIsLong ? "long" : "short") : "net",
+            autoCxl = true,               // cancel the position's pending orders, which would otherwise block the close
+        });
+        var (ok, doc) = await SendSignedAsync(HttpMethod.Post, "/api/v5/trade/close-position", body, cancellationToken).ConfigureAwait(false);
+        using (doc)
+        {
+            if (!ok)
+                _logger.LogError("OKX close-position for {InstId} rejected: {Body}", instId, doc?.RootElement.ToString());
+            return ok;
+        }
+    }
+
+    /// <inheritdoc />
     /// <summary>Margin to add so an isolated position is back at notional / leverage; 0 when it is within 10% of that.</summary>
     internal static decimal MarginShortfall(decimal notionalUsd, decimal margin, decimal lever)
     {
